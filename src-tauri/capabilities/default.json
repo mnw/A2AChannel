@@ -1,0 +1,22 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for the A2AChannel app window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:path:default",
+    "core:window:default",
+    "core:webview:default",
+    "core:event:default",
+    "core:app:default",
+    "shell:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        { "name": "binaries/hub-bin", "sidecar": true },
+        { "name": "binaries/channel-bin", "sidecar": true }
+      ]
+    }
+  ]
+}

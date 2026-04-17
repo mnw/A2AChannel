@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Bun
+bun.lockb
+*.bun-build
+
+# Rust / Tauri build artifacts
+src-tauri/target/
+src-tauri/gen/
+
+# Compiled sidecar binaries (rebuilt via scripts/build-sidecars.sh)
+src-tauri/binaries/*
+!src-tauri/binaries/.gitkeep
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log

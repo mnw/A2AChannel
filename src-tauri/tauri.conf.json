@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "A2AChannel",
+  "version": "0.1.0",
+  "identifier": "com.mnw.a2achannel",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "A2AChannel",
+        "width": 980,
+        "height": 720,
+        "minWidth": 640,
+        "minHeight": 480
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:8011 ipc: http://ipc.localhost; img-src 'self' http://127.0.0.1:8011 data: asset: http://asset.localhost; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "icon": [
+      "icons/icon.icns"
+    ],
+    "externalBin": [
+      "binaries/hub-bin",
+      "binaries/channel-bin"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    }
+  },
+  "plugins": {}
+}
