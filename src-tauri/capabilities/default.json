@@ -14,8 +14,7 @@
     {
       "identifier": "shell:allow-execute",
       "allow": [
-        { "name": "binaries/hub-bin", "sidecar": true },
-        { "name": "binaries/channel-bin", "sidecar": true }
+        { "name": "binaries/a2a-bin", "sidecar": true }
       ]
     }
   ]

@@ -33,24 +33,24 @@ fn logs_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/tmp/A2AChannel-logs"))
 }
 
-fn resolve_channel_bin() -> Result<PathBuf, String> {
+fn resolve_a2a_bin() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = exe
         .parent()
         .ok_or_else(|| "no exe dir".to_string())?
         .to_path_buf();
-    // In bundled .app: Contents/MacOS/channel-bin (no triple).
-    // In `tauri dev`: ./channel-bin-<triple> (triple retained).
-    let plain = dir.join("channel-bin");
+    // In bundled .app: Contents/MacOS/a2a-bin (Tauri strips the triple).
+    // In `tauri dev`: ./a2a-bin-<triple> (triple retained).
+    let plain = dir.join("a2a-bin");
     if plain.exists() {
         return Ok(plain);
     }
-    let with_triple = dir.join(format!("channel-bin-{}", target_triple()));
+    let with_triple = dir.join(format!("a2a-bin-{}", target_triple()));
     if with_triple.exists() {
         return Ok(with_triple);
     }
     Err(format!(
-        "channel-bin not found in {} (looked for 'channel-bin' and 'channel-bin-{}')",
+        "a2a-bin not found in {} (looked for 'a2a-bin' and 'a2a-bin-{}')",
         dir.display(),
         target_triple()
     ))
@@ -119,13 +119,14 @@ fn get_hub_url(state: State<HubState>) -> Result<String, String> {
 
 #[tauri::command]
 fn get_mcp_template() -> Result<String, String> {
-    let channel_bin = resolve_channel_bin()?;
+    let a2a_bin = resolve_a2a_bin()?;
     let cfg = json!({
         "mcpServers": {
             "chatbridge": {
-                "command": channel_bin.to_string_lossy(),
+                "command": a2a_bin.to_string_lossy(),
                 "args": [],
                 "env": {
+                    "A2A_MODE": "channel",
                     "CHATBRIDGE_AGENT": "agent",
                 }
             }
@@ -162,11 +163,12 @@ pub fn run() {
 
             let shell = handle.shell();
             let cmd = shell
-                .sidecar("hub-bin")
+                .sidecar("a2a-bin")
                 .map_err(|e| format!("sidecar builder: {e}"))?
-                .env("PORT", port.to_string());
+                .env("PORT", port.to_string())
+                .env("A2A_MODE", "hub");
 
-            let (rx, child) = cmd.spawn().map_err(|e| format!("spawn hub-bin: {e}"))?;
+            let (rx, child) = cmd.spawn().map_err(|e| format!("spawn a2a-bin: {e}"))?;
 
             {
                 let state = handle.state::<HubState>();
