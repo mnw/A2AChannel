@@ -24,6 +24,15 @@ fi
 echo "==> ad-hoc codesign"
 codesign --force --deep --sign - "$APP"
 
+echo "==> stopping running A2AChannel (NOT channel-bin subprocesses of Claude sessions)"
+# Match only the main app binary by exact name. A broader "-f A2AChannel.app"
+# pattern would also match channel-bin processes spawned by Claude Code
+# sessions, which would break every active MCP session and force the user
+# to restart every Claude session. hub-bin dies via the Tauri cleanup
+# handler when the parent a2achannel process exits.
+pkill -x a2achannel 2>/dev/null || true
+sleep 0.3
+
 echo "==> installing to /Applications"
 rm -rf /Applications/A2AChannel.app
 cp -R "$APP" /Applications/
