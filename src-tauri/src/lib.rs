@@ -1,19 +1,30 @@
-use std::{fs, path::PathBuf, sync::Mutex};
+use std::{fs, net::TcpListener, path::PathBuf, sync::Mutex};
 
 use serde_json::json;
-use tauri::{Manager, RunEvent, WindowEvent};
+use tauri::{Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent},
     ShellExt,
 };
 use tokio::io::AsyncWriteExt;
 
-const HUB_PORT: &str = "8011";
-
-struct HubState(Mutex<Option<CommandChild>>);
+struct HubState {
+    child: Mutex<Option<CommandChild>>,
+    url: Mutex<Option<String>>,
+}
 
 fn target_triple() -> String {
     format!("{}-apple-darwin", std::env::consts::ARCH)
+}
+
+fn app_data_dir() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("A2AChannel")
+}
+
+fn discovery_file() -> PathBuf {
+    app_data_dir().join("hub.url")
 }
 
 fn logs_dir() -> PathBuf {
@@ -43,6 +54,28 @@ fn resolve_channel_bin() -> Result<PathBuf, String> {
         dir.display(),
         target_triple()
     ))
+}
+
+fn pick_free_port() -> Result<u16, String> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| format!("bind 127.0.0.1:0 failed: {e}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("local_addr: {e}"))?
+        .port();
+    drop(listener);
+    Ok(port)
+}
+
+fn write_discovery_file(url: &str) -> Result<(), String> {
+    let dir = app_data_dir();
+    fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let target = discovery_file();
+    let tmp = dir.join("hub.url.tmp");
+    fs::write(&tmp, url).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    fs::rename(&tmp, &target)
+        .map_err(|e| format!("rename {} -> {}: {e}", tmp.display(), target.display()))?;
+    Ok(())
 }
 
 async fn stream_to_log(
@@ -75,6 +108,16 @@ async fn stream_to_log(
 }
 
 #[tauri::command]
+fn get_hub_url(state: State<HubState>) -> Result<String, String> {
+    state
+        .url
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "hub URL not yet initialized".to_string())
+}
+
+#[tauri::command]
 fn get_mcp_template() -> Result<String, String> {
     let channel_bin = resolve_channel_bin()?;
     let cfg = json!({
@@ -84,7 +127,6 @@ fn get_mcp_template() -> Result<String, String> {
                 "args": [],
                 "env": {
                     "CHATBRIDGE_AGENT": "agent",
-                    "CHATBRIDGE_HUB": format!("http://127.0.0.1:{HUB_PORT}"),
                 }
             }
         }
@@ -95,24 +137,41 @@ fn get_mcp_template() -> Result<String, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .manage(HubState(Mutex::new(None)))
-        .invoke_handler(tauri::generate_handler![get_mcp_template])
+        .manage(HubState {
+            child: Mutex::new(None),
+            url: Mutex::new(None),
+        })
+        .invoke_handler(tauri::generate_handler![get_hub_url, get_mcp_template])
         .setup(|app| {
             let handle = app.handle().clone();
 
             let _ = fs::create_dir_all(logs_dir());
 
+            let port = pick_free_port()?;
+            let url = format!("http://127.0.0.1:{port}");
+            println!("[setup] hub port: {port}");
+
+            if let Err(e) = write_discovery_file(&url) {
+                eprintln!("[setup] discovery file write failed: {e}");
+            } else {
+                println!(
+                    "[setup] wrote discovery file: {}",
+                    discovery_file().display()
+                );
+            }
+
             let shell = handle.shell();
             let cmd = shell
                 .sidecar("hub-bin")
                 .map_err(|e| format!("sidecar builder: {e}"))?
-                .env("PORT", HUB_PORT);
+                .env("PORT", port.to_string());
 
             let (rx, child) = cmd.spawn().map_err(|e| format!("spawn hub-bin: {e}"))?;
 
             {
                 let state = handle.state::<HubState>();
-                *state.0.lock().unwrap() = Some(child);
+                *state.child.lock().unwrap() = Some(child);
+                *state.url.lock().unwrap() = Some(url);
             }
 
             let log_path = logs_dir().join("hub.log");
@@ -127,7 +186,7 @@ pub fn run() {
         .run(|handle, event| {
             let kill = || {
                 let state = handle.state::<HubState>();
-                let child_opt = state.0.lock().unwrap().take();
+                let child_opt = state.child.lock().unwrap().take();
                 if let Some(child) = child_opt {
                     let _ = child.kill();
                 }

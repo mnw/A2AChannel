@@ -1,6 +1,6 @@
 # A2AChannel — Agent-to-Agent Chat Bridge
 
-A macOS desktop app that lets multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions talk to each other — and to you — in a shared chat room.
+A macOS desktop app that lets multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions talk to each other — and to you — in a shared chat room. The hub picks a free port at launch; agent configs don't need a URL.
 
 Each Claude Code session joins as a named agent via the [MCP channels](https://docs.anthropic.com/en/docs/claude-code/mcp) research preview. The app acts as the central hub: it routes messages between agents and the human operator, tracks who's online, and renders everything in a single native window.
 
@@ -89,15 +89,14 @@ Click **MCP configs** in the app header. A modal shows the JSON snippet:
       "command": "/Applications/A2AChannel.app/Contents/MacOS/channel-bin",
       "args": [],
       "env": {
-        "CHATBRIDGE_AGENT": "agent",
-        "CHATBRIDGE_HUB": "http://127.0.0.1:8011"
+        "CHATBRIDGE_AGENT": "agent"
       }
     }
   }
 }
 ```
 
-Change `"agent"` to whatever identity this session should have (e.g. `"alice"`, `"backend"`, `"reviewer"`). Click **Copy**.
+Change `"agent"` to whatever identity this session should have (e.g. `"alice"`, `"backend"`, `"reviewer"`). Click **Copy**. The hub URL is not included — `channel-bin` discovers it at runtime from `~/Library/Application Support/A2AChannel/hub.url`.
 
 ### 3. Wire up a Claude Code session
 
@@ -131,14 +130,15 @@ Repeat steps 2–3 for each Claude Code session. Each gets its own `CHATBRIDGE_A
 | Path | Purpose |
 |---|---|
 | `/Applications/A2AChannel.app` | The app bundle (~130 MB). |
+| `~/Library/Application Support/A2AChannel/hub.url` | Discovery file — plain text URL of the currently-running hub. Rewritten atomically on each app launch. Read by `channel-bin`. |
 | `~/Library/Logs/A2AChannel/hub.log` | Hub sidecar stdout/stderr. Check here if the UI shows "connecting..." or agents don't appear. |
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| UI stuck on "connecting..." | Hub didn't start, or port 8011 is already in use. | Check `~/Library/Logs/A2AChannel/hub.log` for `EADDRINUSE`. Kill whatever holds port 8011. |
-| Agent pill never appears | `.mcp.json` points to wrong hub URL or the Claude session wasn't started with `--dangerously-load-development-channels`. | Verify `CHATBRIDGE_HUB` is `http://127.0.0.1:8011`. Restart session with the flag. |
+| UI stuck on "connecting..." | Hub didn't start, or the webview couldn't fetch the URL. | Check `~/Library/Logs/A2AChannel/hub.log` and `~/Library/Application Support/A2AChannel/hub.url`. |
+| Agent pill never appears | Claude session wasn't started with `--dangerously-load-development-channels`, or `channel-bin` can't find the hub (stale `CHATBRIDGE_HUB` env pinning a dead port). | Ensure the flag is present. If `.mcp.json` has a `CHATBRIDGE_HUB` entry pinning a specific port, remove it so discovery takes over. |
 | Agent posts but never receives messages | Missing `--dangerously-load-development-channels` flag. Without it, the `post` tool works but channel notifications are dropped. | Restart the Claude session with the flag. |
 | Messages appear duplicated | SSE reconnected and replayed history. | Fixed in current build. If it recurs, quit and relaunch the app (resets localStorage dedup state). |
 | "unidentified developer" dialog on first launch | macOS Gatekeeper quarantine. | `xattr -dr com.apple.quarantine /Applications/A2AChannel.app` or right-click → Open once. `install.sh` does this automatically. |
@@ -148,7 +148,7 @@ Repeat steps 2–3 for each Claude Code session. Each gets its own `CHATBRIDGE_A
 - **macOS ARM64 only.** No Windows, Linux, or Intel Mac builds.
 - **Ad-hoc signed.** Sharing the `.app` requires a paid Apple Developer ID ($99/yr) and notarization. For personal use, ad-hoc signing with quarantine stripping works fine.
 - **~130 MB bundle.** Each Bun-compiled sidecar embeds the full Bun runtime (~60 MB).
-- **Port 8011 hardcoded.** Change `HUB_PORT` in `src-tauri/src/lib.rs` and `PORT` default in `hub/hub.ts` to use a different port, then rebuild.
+- **Dynamic port.** The hub picks a free OS-assigned port at each launch and publishes the URL to `~/Library/Application Support/A2AChannel/hub.url`. Set `CHATBRIDGE_HUB` in an agent's `.mcp.json` to pin a specific URL (e.g. for debugging against a dev hub on a fixed port).
 - **Dynamic roster resets on app restart.** Agent names and presence are in-memory only.
 - **Research preview.** The `claude/channel` MCP capability is a Claude Code research preview. The notification shape or flag name may change in future releases.
 

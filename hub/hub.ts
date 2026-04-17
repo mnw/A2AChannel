@@ -14,6 +14,7 @@ const AGENT_QUEUE_MAX = 500;
 const UI_QUEUE_MAX = 500;
 const IMAGE_MAX_BYTES = 8 * 1024 * 1024;
 const IMAGE_CACHE_MAX = 64;
+const STALE_AGENT_MS = 15_000;  // time after last disconnect before auto-removal
 const ALLOWED_IMAGE_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -84,6 +85,7 @@ const uiSubscribers = new Set<DropQueue<Entry>>();
 const agentQueues = new Map<string, DropQueue<Entry>>();
 const agentConnections = new Map<string, number>();
 const imageStore = new Map<string, { ctype: string; data: Uint8Array }>();
+const staleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 let entrySeq = 0;
 const SESSION_ID = randomId(8);
 
@@ -109,7 +111,8 @@ function colorFromName(name: string): string {
     h = (h * 31 + name.charCodeAt(i)) >>> 0;
   }
   const hue = h % 360;
-  return `hsl(${hue}, 60%, 60%)`;
+  // Saturation/lightness tuned to sit comfortably on the Catppuccin Mocha base.
+  return `hsl(${hue}, 70%, 75%)`;
 }
 
 function validName(name: string): boolean {
@@ -123,7 +126,11 @@ function validName(name: string): boolean {
 function ensureAgent(name: string): Agent | null {
   if (!validName(name)) return null;
   const existing = knownAgents.get(name);
-  if (existing) return existing;
+  if (existing) {
+    // Reconnecting an agent that was pending stale-removal: cancel the timer.
+    cancelStaleTimer(name);
+    return existing;
+  }
   const a: Agent = { name, color: colorFromName(name) };
   knownAgents.set(name, a);
   agentQueues.set(name, new DropQueue<Entry>(AGENT_QUEUE_MAX));
@@ -131,6 +138,37 @@ function ensureAgent(name: string): Agent | null {
   console.log(`[hub] agent joined: ${name} (${a.color})`);
   broadcastRoster();
   return a;
+}
+
+function removeAgent(name: string, reason: string): boolean {
+  if (!knownAgents.has(name)) return false;
+  cancelStaleTimer(name);
+  knownAgents.delete(name);
+  agentQueues.delete(name);
+  agentConnections.delete(name);
+  console.log(`[hub] agent removed: ${name} (${reason})`);
+  broadcastRoster();
+  broadcastPresence();
+  return true;
+}
+
+function cancelStaleTimer(name: string): void {
+  const t = staleTimers.get(name);
+  if (t) {
+    clearTimeout(t);
+    staleTimers.delete(name);
+  }
+}
+
+function scheduleStaleRemoval(name: string): void {
+  cancelStaleTimer(name);
+  const t = setTimeout(() => {
+    staleTimers.delete(name);
+    // Guard: agent may have reconnected within the window.
+    if ((agentConnections.get(name) ?? 0) > 0) return;
+    removeAgent(name, "stale (no connection)");
+  }, STALE_AGENT_MS);
+  staleTimers.set(name, t);
 }
 
 function broadcastUI(entry: Entry): void {
@@ -426,8 +464,21 @@ function handleAgentStream(agent: string): Response {
       const n = Math.max(0, (agentConnections.get(agent) ?? 1) - 1);
       agentConnections.set(agent, n);
       broadcastPresence();
+      if (n === 0 && knownAgents.has(agent)) {
+        // No live connections left — schedule auto-removal after the stale window.
+        scheduleStaleRemoval(agent);
+      }
     }
   });
+}
+
+async function handleRemove(req: Request): Promise<Response> {
+  const body = (await req.json().catch(() => ({}))) as { agent?: string };
+  const name = (body.agent ?? "").trim();
+  if (!name) return json({ error: "missing agent" }, { status: 400 });
+  const removed = removeAgent(name, "manual");
+  if (!removed) return json({ error: `unknown agent: ${name}` }, { status: 404 });
+  return json({ ok: true });
 }
 
 // ── Server ─────────────────────────────────────────────────────
@@ -457,6 +508,7 @@ const server = Bun.serve({
       }
       if (req.method === "POST" && pathname === "/send") return handleSend(req);
       if (req.method === "POST" && pathname === "/post") return handlePost(req);
+      if (req.method === "POST" && pathname === "/remove") return handleRemove(req);
       if (req.method === "POST" && pathname === "/upload") return handleUpload(req);
       if (req.method === "GET" && pathname.startsWith("/image/")) {
         return handleImage(pathname.slice("/image/".length));

@@ -27,3 +27,10 @@ src-tauri/binaries/*
 
 # Logs
 *.log
+
+# AI assistant local config / memory (not part of the product)
+CLAUDE.md
+.claude/
+.cursor/
+.cursorrules
+.github/copilot-instructions.md

@@ -7,8 +7,19 @@
  *
  * Env:
  *   CHATBRIDGE_AGENT   this session's identity (required)
- *   CHATBRIDGE_HUB     URL of hub (default http://127.0.0.1:8011)
+ *   CHATBRIDGE_HUB     (optional) pin to a specific hub URL
+ *
+ * If CHATBRIDGE_HUB is unset or empty, the hub URL is read from the
+ * discovery file written by A2AChannel.app:
+ *   ~/Library/Application Support/A2AChannel/hub.url
+ *
+ * The file is re-read on each retry so stale URLs self-heal when the
+ * app restarts on a different port.
  */
+
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -18,15 +29,31 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 const AGENT = process.env.CHATBRIDGE_AGENT ?? process.argv[2] ?? "";
-const HUB = process.env.CHATBRIDGE_HUB ?? "http://127.0.0.1:8011";
+const HUB_ENV = (process.env.CHATBRIDGE_HUB ?? "").trim();
+const DISCOVERY_PATH = join(
+  homedir(),
+  "Library/Application Support/A2AChannel/hub.url",
+);
 
 if (!AGENT) {
   console.error("CHATBRIDGE_AGENT env var is required");
   process.exit(1);
 }
 
+function resolveHubUrl(): string | null {
+  if (HUB_ENV) return HUB_ENV;
+  try {
+    if (!existsSync(DISCOVERY_PATH)) return null;
+    const raw = readFileSync(DISCOVERY_PATH, "utf8").trim();
+    if (!raw || !/^https?:\/\//i.test(raw)) return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
 const mcp = new Server(
-  { name: "chatbridge", version: "0.3.0" },
+  { name: "chatbridge", version: "0.4.0" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },
@@ -68,7 +95,13 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (req.params.name === "post") {
     const { text, to } = req.params.arguments as { text: string; to: string };
-    const r = await fetch(`${HUB}/post`, {
+    const hub = resolveHubUrl();
+    if (!hub) {
+      throw new Error(
+        `hub URL not found (no CHATBRIDGE_HUB env and no discovery file at ${DISCOVERY_PATH})`,
+      );
+    }
+    const r = await fetch(`${hub}/post`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ from: AGENT, to, text }),
@@ -87,9 +120,23 @@ await mcp.connect(new StdioServerTransport());
 const BUF_MAX = 1 << 20;
 
 async function tailHub(): Promise<void> {
-  const url = `${HUB}/agent-stream?agent=${encodeURIComponent(AGENT)}`;
+  let loggedMissingOnce = false;
   while (true) {
+    const hub = resolveHubUrl();
+    if (!hub) {
+      if (!loggedMissingOnce) {
+        console.error(
+          `[channel] hub URL not found; waiting for A2AChannel.app to start (discovery: ${DISCOVERY_PATH})`,
+        );
+        loggedMissingOnce = true;
+      }
+      await new Promise((s) => setTimeout(s, 2000));
+      continue;
+    }
+    loggedMissingOnce = false;
+
     try {
+      const url = `${hub}/agent-stream?agent=${encodeURIComponent(AGENT)}`;
       const r = await fetch(url);
       if (!r.ok || !r.body) {
         await new Promise((s) => setTimeout(s, 2000));

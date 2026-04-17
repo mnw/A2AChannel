@@ -5,12 +5,59 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>A2AChannel</title>
 <style>
+/* ── Bundled fonts ─────────────────────────────────────────── */
+@font-face {
+  font-family: 'CaskaydiaMono Nerd Font';
+  src: url('fonts/CaskaydiaMonoNerdFont-Regular.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'CaskaydiaMono Nerd Font';
+  src: url('fonts/CaskaydiaMonoNerdFont-Bold.ttf') format('truetype');
+  font-weight: bold;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ── Catppuccin Mocha palette ──────────────────────────────── */
+:root {
+  --ctp-rosewater: #f5e0dc;
+  --ctp-flamingo:  #f2cdcd;
+  --ctp-pink:      #f5c2e7;
+  --ctp-mauve:     #cba6f7;
+  --ctp-red:       #f38ba8;
+  --ctp-maroon:    #eba0ac;
+  --ctp-peach:     #fab387;
+  --ctp-yellow:    #f9e2af;
+  --ctp-green:     #a6e3a1;
+  --ctp-teal:      #94e2d5;
+  --ctp-sky:       #89dceb;
+  --ctp-sapphire:  #74c7ec;
+  --ctp-blue:      #89b4fa;
+  --ctp-lavender:  #b4befe;
+
+  --ctp-text:      #cdd6f4;
+  --ctp-subtext1:  #bac2de;
+  --ctp-subtext0:  #a6adc8;
+  --ctp-overlay2:  #9399b2;
+  --ctp-overlay1:  #7f849c;
+  --ctp-overlay0:  #6c7086;
+  --ctp-surface2:  #585b70;
+  --ctp-surface1:  #45475a;
+  --ctp-surface0:  #313244;
+  --ctp-base:      #1e1e2e;
+  --ctp-mantle:    #181825;
+  --ctp-crust:     #11111b;
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-  background: #0d0f12;
-  color: #d4d8e2;
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  background: var(--ctp-base);
+  color: var(--ctp-text);
+  font-family: 'CaskaydiaMono Nerd Font', 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
   font-size: 13px;
   height: 100vh;
   display: flex;
@@ -23,7 +70,7 @@ header {
   gap: 16px;
   padding: 12px 20px;
   border-bottom: 1px solid rgba(255,255,255,0.07);
-  background: #11131a;
+  background: var(--ctp-mantle);
   flex-shrink: 0;
 }
 
@@ -31,7 +78,7 @@ header h1 {
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.08em;
-  color: #7a8aaa;
+  color: var(--ctp-subtext0);
   text-transform: uppercase;
 }
 
@@ -40,16 +87,16 @@ header h1 {
   align-items: center;
   gap: 6px;
   font-size: 11px;
-  color: #5a6070;
+  color: var(--ctp-overlay0);
   margin-left: auto;
 }
 
 .dot {
   width: 7px; height: 7px; border-radius: 50%;
-  background: #3a4050; transition: background 0.3s;
+  background: var(--ctp-surface2); transition: background 0.3s;
 }
-.dot.live { background: #3ecf6e; box-shadow: 0 0 6px rgba(62,207,110,0.5); }
-.dot.error { background: #e05050; }
+.dot.live { background: var(--ctp-green); box-shadow: 0 0 6px rgba(166, 227, 161, 0.5); }
+.dot.error { background: var(--ctp-red); }
 
 .legend { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .legend-item {
@@ -57,7 +104,7 @@ header h1 {
   align-items: center;
   gap: 6px;
   font-size: 11px;
-  color: #5a6070;
+  color: var(--ctp-overlay0);
   padding: 3px 10px;
   border-radius: 999px;
   border: 1px solid rgba(255,255,255,0.1);
@@ -66,38 +113,53 @@ header h1 {
 }
 .legend-item.offline { opacity: 0.5; }
 .legend-item.online {
-  border-color: rgba(62,207,110,0.45);
-  background: rgba(62,207,110,0.08);
-  color: #ffffff;
+  border-color: rgba(166, 227, 161, 0.5);
+  background: rgba(166, 227, 161, 0.12);
+  color: var(--ctp-text);
 }
 .legend-dot {
   width: 8px; height: 8px; border-radius: 50%;
   transition: box-shadow 0.25s;
 }
-.legend-item.online .legend-dot { box-shadow: 0 0 0 2px rgba(62,207,110,0.3); }
+.legend-item.online .legend-dot { box-shadow: 0 0 0 2px rgba(166, 227, 161, 0.35); }
 .presence-dot {
   width: 6px; height: 6px; border-radius: 50%;
-  background: #3a4050;
+  background: var(--ctp-surface2);
   transition: background 0.25s, box-shadow 0.25s;
 }
 .legend-item.online .presence-dot {
-  background: #3ecf6e;
-  box-shadow: 0 0 6px rgba(62,207,110,0.6);
+  background: var(--ctp-green);
+  box-shadow: 0 0 6px rgba(166, 227, 161, 0.65);
 }
-.legend-item.offline .presence-dot { background: #5a3030; }
+.legend-item.offline .presence-dot { background: #5a3647; }
 .legend-label {
   letter-spacing: 0.02em;
   font-weight: 500;
 }
-.legend-item.online .legend-label { color: #ffffff; }
+.legend-item.online .legend-label { color: var(--ctp-text); }
 .legend-state {
   font-size: 9px;
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: #3a4050;
+  color: var(--ctp-surface2);
 }
-.legend-item.online .legend-state { color: #ffffff; }
-.legend-item.offline .legend-state { color: #7a4040; }
+.legend-item.online .legend-state { color: var(--ctp-text); }
+.legend-item.offline .legend-state { color: var(--ctp-maroon); }
+
+.legend-remove {
+  display: none;
+  background: transparent;
+  border: none;
+  color: var(--ctp-overlay0);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  margin-left: 2px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.legend-remove:hover { color: var(--ctp-red); background: rgba(243, 139, 168, 0.15); }
+.legend-item.offline .legend-remove { display: inline-flex; align-items: center; }
 
 #messages {
   flex: 1;
@@ -138,17 +200,17 @@ header h1 {
 }
 
 .msg-name { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; }
-.msg-ts { font-size: 10px; color: #3a4050; margin-top: 2px; }
-.msg-arrow { font-size: 11px; color: #2a3040; flex-shrink: 0; margin-top: 1px; }
+.msg-ts { font-size: 10px; color: var(--ctp-surface2); margin-top: 2px; }
+.msg-arrow { font-size: 11px; color: var(--ctp-surface1); flex-shrink: 0; margin-top: 1px; }
 .msg-body {
   font-size: 12.5px;
   line-height: 1.6;
-  color: #b0b8cc;
+  color: var(--ctp-subtext1);
   flex: 1;
   word-break: break-word;
   white-space: pre-wrap;
 }
-.msg-to { font-size: 10px; color: #3a4050; margin-top: 1px; }
+.msg-to { font-size: 10px; color: var(--ctp-surface2); margin-top: 1px; }
 
 .msg-body img {
   display: block;
@@ -161,18 +223,18 @@ header h1 {
 }
 
 /* colour coding — 'you' and 'system' are static; agents are injected at runtime */
-.from-you     .msg-name { color: #6aafff; }
-.from-you     .msg-body { color: #99bbdd; }
-.from-system  .msg-name { color: #e05050; }
-.from-system  .msg-body { color: #cc7070; font-style: italic; }
-.leg-you      { background: #6aafff; }
+.from-you     .msg-name { color: var(--ctp-blue); }
+.from-you     .msg-body { color: var(--ctp-lavender); }
+.from-system  .msg-name { color: var(--ctp-red); }
+.from-system  .msg-body { color: var(--ctp-maroon); font-style: italic; }
+.leg-you      { background: var(--ctp-blue); }
 
 .sep { height: 1px; background: rgba(255,255,255,0.04); margin: 6px 0; }
 
 footer {
   border-top: 1px solid rgba(255,255,255,0.07);
   padding: 12px 20px;
-  background: #11131a;
+  background: var(--ctp-mantle);
   flex-shrink: 0;
 }
 
@@ -193,16 +255,16 @@ footer {
 }
 
 .icon-btn {
-  background: #1a1d25;
+  background: var(--ctp-surface0);
   border: 1px solid rgba(255,255,255,0.1);
-  color: #7a8aaa;
+  color: var(--ctp-subtext0);
   font-size: 15px;
   padding: 6px 10px;
   border-radius: 5px;
   cursor: pointer;
   line-height: 1;
 }
-.icon-btn:hover { background: #22262f; color: #d4d8e2; }
+.icon-btn:hover { background: var(--ctp-surface1); color: var(--ctp-text); }
 
 .emoji-popover {
   position: absolute;
@@ -211,7 +273,7 @@ footer {
   display: none;
   grid-template-columns: repeat(10, 1fr);
   gap: 2px;
-  background: #1a1d25;
+  background: var(--ctp-surface0);
   border: 1px solid rgba(255,255,255,0.12);
   border-radius: 6px;
   padding: 6px;
@@ -227,7 +289,7 @@ footer {
   left: 0;
   display: none;
   flex-direction: column;
-  background: #1a1d25;
+  background: var(--ctp-surface0);
   border: 1px solid rgba(255,255,255,0.12);
   border-radius: 6px;
   padding: 4px;
@@ -245,16 +307,16 @@ footer {
   cursor: pointer;
   border-radius: 4px;
   font-size: 12px;
-  color: #d4d8e2;
+  color: var(--ctp-text);
 }
-.mention-item:hover, .mention-item.active { background: rgba(100, 150, 255, 0.15); }
+.mention-item:hover, .mention-item.active { background: rgba(137, 180, 250, 0.18); }
 .mention-item .dot { width: 8px; height: 8px; border-radius: 50%; }
-.mention-item .meta { font-size: 10px; color: #5a6070; margin-left: auto; }
+.mention-item .meta { font-size: 10px; color: var(--ctp-overlay0); margin-left: auto; }
 .mention-item.offline { opacity: 0.6; }
 
 .mention {
-  background: rgba(100, 150, 255, 0.15);
-  color: #6aafff;
+  background: rgba(137, 180, 250, 0.18);
+  color: var(--ctp-blue);
   padding: 1px 4px;
   border-radius: 3px;
   font-weight: 600;
@@ -277,21 +339,21 @@ footer {
   align-items: center;
   margin-bottom: 6px;
   font-size: 11px;
-  color: #7a8aaa;
+  color: var(--ctp-subtext0);
 }
 .attachment-row:empty { display: none; }
 .attachment-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background: #1a1d25;
+  background: var(--ctp-surface0);
   border: 1px solid rgba(255,255,255,0.1);
   padding: 4px 8px;
   border-radius: 4px;
 }
 .attachment-chip img { width: 24px; height: 24px; object-fit: cover; border-radius: 3px; }
 .attachment-chip .x {
-  color: #e05050;
+  color: var(--ctp-red);
   cursor: pointer;
   font-weight: bold;
   padding: 0 2px;
@@ -300,12 +362,12 @@ footer {
 #drop-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(30, 45, 80, 0.35);
-  border: 2px dashed rgba(100, 175, 255, 0.5);
+  background: rgba(30, 30, 46, 0.7);
+  border: 2px dashed rgba(137, 180, 250, 0.55);
   display: none;
   align-items: center;
   justify-content: center;
-  color: #6aafff;
+  color: var(--ctp-blue);
   font-size: 15px;
   z-index: 100;
   pointer-events: none;
@@ -325,7 +387,7 @@ footer {
 .modal-backdrop.open { display: flex; }
 
 .modal {
-  background: #11131a;
+  background: var(--ctp-mantle);
   border: 1px solid rgba(255,255,255,0.12);
   border-radius: 8px;
   padding: 18px 20px;
@@ -339,21 +401,21 @@ footer {
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.08em;
-  color: #7a8aaa;
+  color: var(--ctp-subtext0);
   text-transform: uppercase;
 }
 .modal p {
   font-size: 11px;
   line-height: 1.5;
-  color: #5a6070;
+  color: var(--ctp-overlay0);
 }
 .modal textarea {
   width: 100%;
   min-height: 200px;
-  background: #1a1d25;
+  background: var(--ctp-surface0);
   border: 1px solid rgba(255,255,255,0.1);
-  color: #d4d8e2;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  color: var(--ctp-text);
+  font-family: 'CaskaydiaMono Nerd Font', 'SF Mono', 'Fira Code', monospace;
   font-size: 12px;
   padding: 10px 12px;
   border-radius: 5px;
@@ -370,7 +432,7 @@ footer {
 .modal-actions .status {
   margin-right: auto;
   font-size: 11px;
-  color: #3ecf6e;
+  color: var(--ctp-green);
   align-self: center;
   opacity: 0;
   transition: opacity 0.2s;
@@ -384,9 +446,9 @@ select, input[type=text], textarea, button {
 }
 
 select {
-  background: #1a1d25;
+  background: var(--ctp-surface0);
   border: 1px solid rgba(255,255,255,0.1);
-  color: #7a8aaa;
+  color: var(--ctp-subtext0);
   font-size: 12px;
   padding: 8px 10px;
   cursor: pointer;
@@ -395,14 +457,14 @@ select:focus { border-color: rgba(255,255,255,0.2); }
 
 input[type=text], textarea {
   flex: 1;
-  background: #1a1d25;
+  background: var(--ctp-surface0);
   border: 1px solid rgba(255,255,255,0.1);
-  color: #d4d8e2;
+  color: var(--ctp-text);
   font-size: 13px;
   padding: 8px 12px;
 }
 input[type=text]:focus, textarea:focus { border-color: rgba(255,255,255,0.25); }
-input[type=text]::placeholder, textarea::placeholder { color: #3a4050; }
+input[type=text]::placeholder, textarea::placeholder { color: var(--ctp-surface2); }
 
 textarea#msg-input {
   resize: none;
@@ -414,28 +476,28 @@ textarea#msg-input {
 }
 
 button {
-  background: #1e2d50;
-  border: 1px solid rgba(100,150,255,0.2);
-  color: #6aafff;
+  background: var(--ctp-surface0);
+  border: 1px solid rgba(137, 180, 250, 0.35);
+  color: var(--ctp-blue);
   font-size: 12px;
   font-weight: 600;
   padding: 8px 16px;
   cursor: pointer;
   letter-spacing: 0.04em;
-  transition: background 0.15s;
+  transition: background 0.15s, border-color 0.15s;
 }
-button:hover { background: #253860; }
-button:active { background: #1a2540; }
+button:hover { background: var(--ctp-surface1); border-color: rgba(137, 180, 250, 0.6); }
+button:active { background: var(--ctp-surface0); }
 button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 button.danger {
-  background: #3a1a1a;
-  border-color: rgba(224,80,80,0.3);
-  color: #e07070;
+  background: var(--ctp-surface0);
+  border-color: rgba(243, 139, 168, 0.35);
+  color: var(--ctp-red);
 }
-button.danger:hover { background: #4a2020; }
+button.danger:hover { background: var(--ctp-surface1); border-color: rgba(243, 139, 168, 0.6); }
 
-.hint { font-size: 10px; color: #2a3040; margin-top: 6px; padding-left: 2px; }
+.hint { font-size: 10px; color: var(--ctp-surface1); margin-top: 6px; padding-left: 2px; }
 </style>
 </head>
 <body>
@@ -470,7 +532,7 @@ button.danger:hover { background: #4a2020; }
     <div class="emoji-popover" id="emoji-popover"></div>
     <div class="mention-popover" id="mention-popover"></div>
   </div>
-  <div class="hint">Enter to send &nbsp;·&nbsp; Shift+Enter for newline &nbsp;·&nbsp; @name to target &nbsp;·&nbsp; no @ = broadcast &nbsp;·&nbsp; hub :8011</div>
+  <div class="hint">Enter to send &nbsp;·&nbsp; Shift+Enter for newline &nbsp;·&nbsp; @name to target &nbsp;·&nbsp; no @ = broadcast</div>
 </footer>
 
 <div id="drop-overlay">Drop image to attach</div>
@@ -493,7 +555,7 @@ button.danger:hover { background: #4a2020; }
 </div>
 
 <script>
-const BUS = 'http://127.0.0.1:8011';
+let BUS = 'http://127.0.0.1:8011';  // overridden at bootstrap via Tauri invoke
 const messagesEl = document.getElementById('messages');
 const dot = document.getElementById('dot');
 const statusText = document.getElementById('status-text');
@@ -567,6 +629,31 @@ function applyRoster(agents) {
   renderTargetDropdown();
 }
 
+legendEl.addEventListener('click', async (e) => {
+  const btn = e.target.closest?.('.legend-remove');
+  if (!btn) return;
+  const item = btn.closest('.legend-item');
+  const name = item?.dataset?.agent;
+  if (!name || name === 'you') return;
+  btn.disabled = true;
+  try {
+    const r = await fetch(`${BUS}/remove`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: name }),
+    });
+    if (!r.ok) {
+      const err = await r.text();
+      addMessage({ from: 'system', to: 'you', text: `Remove failed: ${err}`, ts: '' });
+      btn.disabled = false;
+    }
+    // On success the hub broadcasts roster update → UI rebuilds itself.
+  } catch (err) {
+    addMessage({ from: 'system', to: 'you', text: `Remove failed: ${err}`, ts: '' });
+    btn.disabled = false;
+  }
+});
+
 function renderLegend() {
   // Preserve the 'you' entry (always first), rebuild agents.
   const youEntry = legendEl.querySelector('[data-agent="you"]');
@@ -582,7 +669,8 @@ function renderLegend() {
       `<div class="legend-dot leg-${cn}"></div>` +
       `<span class="legend-label">${a.name}</span>` +
       `<span class="presence-dot" title="offline"></span>` +
-      `<span class="legend-state">off</span>`;
+      `<span class="legend-state">off</span>` +
+      `<button type="button" class="legend-remove" title="Remove agent" aria-label="Remove ${a.name}">×</button>`;
     legendEl.appendChild(legItem);
   }
 
@@ -667,7 +755,7 @@ function escAttr(s) {
 
 function linkify(s) {
   return s.replace(/(https?:\/\/[^\s<]+)/g,
-    '<a href="$1" target="_blank" rel="noopener" style="color:#6aafff">$1</a>');
+    '<a href="$1" target="_blank" rel="noopener" style="color:var(--ctp-blue)">$1</a>');
 }
 
 function highlightMentions(html) {
@@ -852,7 +940,7 @@ function renderMentionPopover() {
     const item = document.createElement('div');
     item.className = 'mention-item' + (i === mentionActive ? ' active' : '') +
                      (online === false ? ' offline' : '');
-    const color = name === 'all' ? '#7a8aaa' : (COLORS[name] || '#7a8aaa');
+    const color = name === 'all' ? 'var(--ctp-subtext0)' : (COLORS[name] || 'var(--ctp-subtext0)');
     const meta = name === 'all' ? 'broadcast' : (online ? 'online' : 'offline');
     item.innerHTML = `<span class="dot" style="background:${color}"></span>` +
                      `<span>${name}</span>` +
@@ -997,10 +1085,31 @@ window.addEventListener('drop', (e) => {
   if (f) uploadImage(f);
 });
 
-loadRoster().then(connect).catch(e => {
-  statusText.textContent = `roster load failed: ${e}`;
-  dot.className = 'dot error';
-});
+async function bootstrap() {
+  const invoke =
+    window.__TAURI_INTERNALS__?.invoke ||
+    window.__TAURI__?.core?.invoke ||
+    window.__TAURI__?.invoke;
+  if (invoke) {
+    try {
+      const url = await invoke('get_hub_url');
+      if (typeof url === 'string' && url) BUS = url;
+    } catch (e) {
+      statusText.textContent = `hub URL lookup failed: ${e}`;
+      dot.className = 'dot error';
+      return;
+    }
+  }
+  try {
+    await loadRoster();
+    connect();
+  } catch (e) {
+    statusText.textContent = `roster load failed: ${e}`;
+    dot.className = 'dot error';
+  }
+}
+
+bootstrap();
 
 /* ── MCP config modal ───────────────────────────────────────── */
 const mcpBtn = document.getElementById('reveal-btn');
@@ -1029,7 +1138,6 @@ function fallbackTemplate() {
         args: [],
         env: {
           CHATBRIDGE_AGENT: 'agent',
-          CHATBRIDGE_HUB: 'http://127.0.0.1:8011',
         },
       },
     },
