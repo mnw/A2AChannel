@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <!-- Dark background gradient: Catppuccin Mocha surface0 → crust -->
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#313244"/>
+      <stop offset="100%" stop-color="#11111b"/>
+    </linearGradient>
+
+    <!-- Speech bubble fill: lavender → text (off-white) -->
+    <linearGradient id="bubble" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#b4befe"/>
+      <stop offset="100%" stop-color="#cdd6f4"/>
+    </linearGradient>
+
+    <!-- Subtle top-light sheen on the bubble -->
+    <linearGradient id="sheen" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#ffffff" stop-opacity="0.35"/>
+      <stop offset="60%"  stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- Radial highlights for the three dots -->
+    <radialGradient id="dot-blue"  cx="40%" cy="30%" r="70%">
+      <stop offset="0%"  stop-color="#c5dbff"/>
+      <stop offset="70%" stop-color="#89b4fa"/>
+      <stop offset="100%" stop-color="#5978c6"/>
+    </radialGradient>
+    <radialGradient id="dot-green" cx="40%" cy="30%" r="70%">
+      <stop offset="0%"  stop-color="#d6f4d1"/>
+      <stop offset="70%" stop-color="#a6e3a1"/>
+      <stop offset="100%" stop-color="#6fae66"/>
+    </radialGradient>
+    <radialGradient id="dot-peach" cx="40%" cy="30%" r="70%">
+      <stop offset="0%"  stop-color="#fddcc3"/>
+      <stop offset="70%" stop-color="#fab387"/>
+      <stop offset="100%" stop-color="#c07c52"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Rounded-square background -->
+  <rect x="0" y="0" width="128" height="128" rx="28" ry="28" fill="url(#bg)"/>
+
+  <!-- Speech bubble body -->
+  <rect x="22" y="30" width="84" height="56" rx="15" ry="15" fill="url(#bubble)"/>
+
+  <!-- Tail (pointed down-left) -->
+  <path d="M 40 86 L 55 86 L 44 102 Z" fill="#cdd6f4"/>
+
+  <!-- Glossy top sheen across the bubble -->
+  <rect x="24" y="32" width="80" height="22" rx="12" ry="12" fill="url(#sheen)"/>
+
+  <!-- Three participant dots: blue, green, peach -->
+  <circle cx="44" cy="58" r="7.5" fill="url(#dot-blue)"/>
+  <circle cx="64" cy="58" r="7.5" fill="url(#dot-green)"/>
+  <circle cx="84" cy="58" r="7.5" fill="url(#dot-peach)"/>
+</svg>

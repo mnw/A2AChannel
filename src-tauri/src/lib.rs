@@ -1,8 +1,8 @@
 use std::{
-    fs::{self, File},
-    io::Read,
+    fs::{self, File, OpenOptions},
+    io::{Read, Write as _},
     net::TcpListener,
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -22,7 +22,8 @@ const TOKEN_BYTES: usize = 32;
 struct HubState {
     child: Mutex<Option<CommandChild>>,
     info: Mutex<Option<HubInfo>>,
-    images_dir: Mutex<Option<PathBuf>>,
+    attachments_dir: Mutex<Option<PathBuf>>,
+    human_name: Mutex<Option<String>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -34,7 +35,61 @@ struct HubInfo {
 #[derive(Deserialize, Default)]
 struct AppConfig {
     #[serde(default)]
+    attachments_dir: Option<String>,
+    // Legacy key, read only if `attachments_dir` is absent. Kept so configs
+    // written by ≤ v0.4.x continue to work after the v0.5.0 rename.
+    #[serde(default)]
     images_dir: Option<String>,
+    #[serde(default)]
+    human_name: Option<String>,
+    #[serde(default)]
+    attachment_extensions: Option<Vec<String>>,
+}
+
+const RESERVED_NAMES: &[&str] = &["you", "all", "system"];
+
+fn default_attachment_extensions() -> Vec<String> {
+    vec!["jpg", "jpeg", "png", "pdf", "md"]
+        .into_iter()
+        .map(String::from)
+        .collect()
+}
+
+// Validate one extension entry. Lowercase letters/digits, no dot,
+// 1..=10 chars. Anything else is rejected so the env var stays a
+// well-formed comma-separated list.
+fn valid_extension(ext: &str) -> bool {
+    let n = ext.chars().count();
+    if !(1..=10).contains(&n) {
+        return false;
+    }
+    ext.chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+}
+
+// Resolve the configured attachment extensions, falling back to the
+// default set on missing/empty config. Filters out invalid entries
+// silently so a typo doesn't brick uploads — the validated set is
+// logged on startup so users can see what survived.
+fn resolve_attachment_extensions() -> Vec<String> {
+    let cfg = load_config();
+    let raw = cfg
+        .attachment_extensions
+        .unwrap_or_else(default_attachment_extensions);
+    let mut clean: Vec<String> = raw
+        .into_iter()
+        .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
+        .filter(|e| valid_extension(e))
+        .collect();
+    clean.sort();
+    clean.dedup();
+    if clean.is_empty() {
+        eprintln!(
+            "[setup] attachment_extensions is empty after validation; falling back to defaults"
+        );
+        return default_attachment_extensions();
+    }
+    clean
 }
 
 fn target_triple() -> String {
@@ -59,13 +114,59 @@ fn config_file() -> PathBuf {
     app_data_dir().join("config.json")
 }
 
-fn default_images_dir() -> PathBuf {
+fn ledger_file() -> PathBuf {
+    app_data_dir().join("ledger.db")
+}
+
+fn default_human_name() -> String {
+    "human".to_string()
+}
+
+// Validate a human name against the same constraints the hub applies to
+// agent names: must match AGENT_NAME_RE and must not be reserved.
+// Returns Err(message) on invalid input.
+fn validate_human_name(name: &str) -> Result<(), String> {
+    if RESERVED_NAMES
+        .iter()
+        .any(|r| r.eq_ignore_ascii_case(name))
+    {
+        return Err(format!(
+            "human_name '{name}' collides with a reserved word ({}). \
+             Choose a different name in config.json.",
+            RESERVED_NAMES.join(", ")
+        ));
+    }
+    // Mirror the hub's regex check without pulling in a regex crate:
+    // enforce length + allowed-chars + boundary-non-space manually.
+    let n = name.chars().count();
+    if !(1..=64).contains(&n) {
+        return Err(format!("human_name '{name}' must be 1..=64 characters"));
+    }
+    let allowed = |c: char| {
+        c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' || c == ' '
+    };
+    if !name.chars().all(allowed) {
+        return Err(format!(
+            "human_name '{name}' contains characters outside [A-Za-z0-9 _.-]"
+        ));
+    }
+    let first = name.chars().next().unwrap();
+    let last = name.chars().last().unwrap();
+    if first == ' ' || last == ' ' {
+        return Err(format!(
+            "human_name '{name}' must not start or end with a space"
+        ));
+    }
+    Ok(())
+}
+
+fn default_attachments_dir() -> PathBuf {
     // Top-level home directory avoids macOS TCC protections on
     // ~/Documents, ~/Desktop, ~/Downloads, ~/Pictures — otherwise the
     // agent's Read tool fails with EPERM even after `--add-dir`.
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("a2a-images")
+        .join("a2a-attachments")
 }
 
 fn load_config() -> AppConfig {
@@ -85,22 +186,47 @@ fn load_config() -> AppConfig {
     }
 }
 
-// Choose the images folder (config override or default), ensure it exists.
-// On first launch, write a default config.json so users can find and edit it.
-fn resolve_images_dir() -> PathBuf {
+// Resolve the effective human identity name. Config override wins;
+// otherwise "human". Fails loudly on invalid input so misconfig never
+// ships as silent behavior drift.
+fn resolve_human_name() -> Result<String, String> {
     let cfg = load_config();
-    let dir = cfg
-        .images_dir
-        .as_ref()
+    let name = cfg.human_name.clone().unwrap_or_else(default_human_name);
+    validate_human_name(&name)?;
+    Ok(name)
+}
+
+// Choose the attachments folder (config override or default), ensure it
+// exists. On first launch, write a default config.json so users can find
+// and edit it.
+fn resolve_attachments_dir_and_seed(human_name: &str, extensions: &[String]) -> PathBuf {
+    let cfg = load_config();
+    // Prefer the modern key; fall back to the deprecated `images_dir` so
+    // configs from v0.4.x still resolve. Empty strings and nulls both
+    // count as "not set" so a user leaving the key blank falls through
+    // to the default rather than writing to an empty PathBuf.
+    let pick = |opt: Option<String>| -> Option<String> {
+        opt.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    };
+    let dir = pick(cfg.attachments_dir)
+        .or_else(|| pick(cfg.images_dir))
         .map(PathBuf::from)
-        .unwrap_or_else(default_images_dir);
+        .unwrap_or_else(default_attachments_dir);
     if let Err(e) = fs::create_dir_all(&dir) {
-        eprintln!("[setup] create images dir {} failed: {e}", dir.display());
+        eprintln!("[setup] create attachments dir {} failed: {e}", dir.display());
     }
-    // Seed config.json with the resolved path so it's discoverable.
+    // Seed config.json on first launch. `attachments_dir` is included as
+    // `null` so the default applies on every machine (no user-specific
+    // absolute path baked into the seed) while still letting a new user
+    // discover the key and replace `null` with a path. Empty string and
+    // `null` both resolve to the default in `pick` above.
     let cfg_path = config_file();
     if !cfg_path.exists() {
-        let seed = json!({ "images_dir": dir.to_string_lossy() });
+        let seed = json!({
+            "human_name": human_name,
+            "attachments_dir": serde_json::Value::Null,
+            "attachment_extensions": extensions,
+        });
         if let Err(e) = fs::create_dir_all(cfg_path.parent().unwrap_or(&PathBuf::from("/tmp"))) {
             eprintln!("[setup] create config dir failed: {e}");
         }
@@ -176,9 +302,22 @@ fn atomic_write(dir: &Path, name: &str, contents: &str) -> Result<(), String> {
     fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let target = dir.join(name);
     let tmp = dir.join(format!("{name}.tmp"));
-    fs::write(&tmp, contents).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-    // Tighten perms before the rename so there's no window where the file is world-readable.
-    chmod_0600(&tmp)?;
+    // Discard any leftover from a prior crash. We then create with
+    // O_EXCL + mode 0600 so the file never exists with looser perms,
+    // closing the chmod-after-write race.
+    let _ = fs::remove_file(&tmp);
+    {
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)
+            .map_err(|e| format!("create_new {}: {e}", tmp.display()))?;
+        f.write_all(contents.as_bytes())
+            .map_err(|e| format!("write {}: {e}", tmp.display()))?;
+        f.sync_all()
+            .map_err(|e| format!("sync {}: {e}", tmp.display()))?;
+    }
     fs::rename(&tmp, &target)
         .map_err(|e| format!("rename {} -> {}: {e}", tmp.display(), target.display()))?;
     Ok(())
@@ -202,6 +341,9 @@ fn rotate_log_if_oversized(log_path: &Path) {
                     log_path.display(),
                     rotated.display()
                 );
+            } else {
+                // Rotated archive may still hold tokens — keep it 0600 too.
+                let _ = chmod_0600(&rotated);
             }
         }
         _ => {}
@@ -225,6 +367,12 @@ async fn stream_to_log(
             return;
         }
     };
+    // Tokens land in this log via SSE/image URL query strings (see
+    // requireReadAuth in hub.ts). Always tighten to 0600 — the create()
+    // above doesn't override existing perms on a pre-existing file.
+    if let Err(e) = chmod_0600(&log_path) {
+        eprintln!("[hub-log] {e}");
+    }
     while let Some(ev) = rx.recv().await {
         let line = match ev {
             CommandEvent::Stdout(b) => format!("{}\n", String::from_utf8_lossy(&b)),
@@ -246,12 +394,107 @@ fn get_hub_url(state: State<HubState>) -> Result<HubInfo, String> {
 }
 
 #[tauri::command]
-fn get_images_dir(state: State<HubState>) -> Result<String, String> {
-    let guard = state.images_dir.lock().unwrap_or_else(|e| e.into_inner());
+fn get_attachments_dir(state: State<HubState>) -> Result<String, String> {
+    let guard = state.attachments_dir.lock().unwrap_or_else(|e| e.into_inner());
     guard
         .clone()
         .map(|p| p.to_string_lossy().to_string())
-        .ok_or_else(|| "images dir not yet initialized".to_string())
+        .ok_or_else(|| "attachments dir not yet initialized".to_string())
+}
+
+#[tauri::command]
+fn get_human_name(state: State<HubState>) -> Result<String, String> {
+    let guard = state.human_name.lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .clone()
+        .ok_or_else(|| "human name not yet initialized".to_string())
+}
+
+#[tauri::command]
+fn open_config_file() -> Result<(), String> {
+    let path = config_file();
+    if !path.exists() {
+        return Err(format!("config file not found at {}", path.display()));
+    }
+    std::process::Command::new("open")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| format!("open {}: {e}", path.display()))?;
+    Ok(())
+}
+
+// Re-read config.json and restart the hub sidecar with fresh env.
+// Returns the new {url, token} so the UI can hot-swap its bootstrap values
+// without a full app restart. Active Claude sessions' channel-bin subprocesses
+// reconnect automatically via the discovery-file retry loop.
+#[tauri::command]
+fn reload_settings(
+    handle: tauri::AppHandle,
+    state: State<HubState>,
+) -> Result<HubInfo, String> {
+    // Re-resolve config.
+    let human_name = resolve_human_name()?;
+    let extensions = resolve_attachment_extensions();
+    let attachments_dir = resolve_attachments_dir_and_seed(&human_name, &extensions);
+    let ledger_path = ledger_file();
+
+    // Mint fresh port + token (same policy as first boot).
+    let port = pick_free_port()?;
+    let url = format!("http://127.0.0.1:{port}");
+    let token = mint_token()?;
+
+    // Kill the existing child before writing new discovery files so there's no
+    // window where two hub-bin processes race for the same port.
+    {
+        let child_opt = state.child.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(child) = child_opt {
+            let _ = child.kill();
+        }
+    }
+
+    // Write discovery files atomically so any racing channel-bin retries see
+    // consistent (url, token) pairs.
+    if let Err(e) = write_discovery_file(&url) {
+        return Err(format!("write discovery file: {e}"));
+    }
+    if let Err(e) = write_token_file(&token) {
+        return Err(format!("write token file: {e}"));
+    }
+
+    // Spawn a fresh sidecar with the new env.
+    let shell = handle.shell();
+    let cmd = shell
+        .sidecar("a2a-bin")
+        .map_err(|e| format!("sidecar builder: {e}"))?
+        .env("PORT", port.to_string())
+        .env("A2A_MODE", "hub")
+        .env("A2A_TOKEN", &token)
+        .env("A2A_ATTACHMENTS_DIR", attachments_dir.to_string_lossy().to_string())
+        .env("A2A_LEDGER_DB", ledger_path.to_string_lossy().to_string())
+        .env("A2A_HUMAN_NAME", &human_name)
+        .env("A2A_ALLOWED_EXTENSIONS", extensions.join(","));
+    let (rx, child) = cmd.spawn().map_err(|e| format!("spawn a2a-bin: {e}"))?;
+
+    // Update state.
+    let new_info = HubInfo {
+        url: url.clone(),
+        token: token.clone(),
+    };
+    {
+        *state.child.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
+        *state.info.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_info.clone());
+        *state.attachments_dir.lock().unwrap_or_else(|e| e.into_inner()) = Some(attachments_dir);
+        *state.human_name.lock().unwrap_or_else(|e| e.into_inner()) = Some(human_name);
+    }
+
+    // Stream the new sidecar's output to the same log file.
+    let log_path = logs_dir().join("hub.log");
+    tauri::async_runtime::spawn(async move {
+        stream_to_log(rx, log_path).await;
+    });
+
+    println!("[settings] hub restarted on port {port}");
+    Ok(new_info)
 }
 
 #[tauri::command]
@@ -278,12 +521,16 @@ pub fn run() {
         .manage(HubState {
             child: Mutex::new(None),
             info: Mutex::new(None),
-            images_dir: Mutex::new(None),
+            attachments_dir: Mutex::new(None),
+            human_name: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             get_hub_url,
             get_mcp_template,
-            get_images_dir
+            get_attachments_dir,
+            get_human_name,
+            open_config_file,
+            reload_settings
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -304,8 +551,24 @@ pub fn run() {
                 eprintln!("[setup] token file write failed: {e}");
             }
 
-            let images_dir = resolve_images_dir();
-            println!("[setup] images dir: {}", images_dir.display());
+            // Resolve human identity first so it can seed config.json if missing.
+            let human_name = match resolve_human_name() {
+                Ok(n) => n,
+                Err(e) => {
+                    eprintln!("[setup] invalid human_name: {e}");
+                    return Err(Box::<dyn std::error::Error>::from(e));
+                }
+            };
+            println!("[setup] human name: {human_name}");
+
+            let extensions = resolve_attachment_extensions();
+            println!("[setup] attachment extensions: {}", extensions.join(","));
+
+            let attachments_dir = resolve_attachments_dir_and_seed(&human_name, &extensions);
+            println!("[setup] attachments dir: {}", attachments_dir.display());
+
+            let ledger_path = ledger_file();
+            println!("[setup] ledger: {}", ledger_path.display());
 
             let shell = handle.shell();
             let cmd = shell
@@ -314,7 +577,10 @@ pub fn run() {
                 .env("PORT", port.to_string())
                 .env("A2A_MODE", "hub")
                 .env("A2A_TOKEN", &token)
-                .env("A2A_IMAGES_DIR", images_dir.to_string_lossy().to_string());
+                .env("A2A_ATTACHMENTS_DIR", attachments_dir.to_string_lossy().to_string())
+                .env("A2A_LEDGER_DB", ledger_path.to_string_lossy().to_string())
+                .env("A2A_HUMAN_NAME", &human_name)
+                .env("A2A_ALLOWED_EXTENSIONS", extensions.join(","));
 
             let (rx, child) = cmd.spawn().map_err(|e| format!("spawn a2a-bin: {e}"))?;
 
@@ -329,9 +595,13 @@ pub fn run() {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner()) = Some(HubInfo { url, token });
                 *state
-                    .images_dir
+                    .attachments_dir
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = Some(images_dir);
+                    .unwrap_or_else(|e| e.into_inner()) = Some(attachments_dir);
+                *state
+                    .human_name
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(human_name);
             }
 
             tauri::async_runtime::spawn(async move {
