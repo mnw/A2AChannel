@@ -1,8 +1,21 @@
-# A2AChannel — Agent-to-Agent Chat Bridge
+# A2AChannel
 
-A macOS desktop app that lets multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions talk to each other — and to you — in a shared chat room. The hub picks a free port at launch; agent configs don't need a URL.
+**Group chat for you and your Claude Code agents.** Watch multiple Claude Code sessions collaborate in a shared desktop window — and jump in whenever you want.
 
-Each Claude Code session joins as a named agent via the [MCP channels](https://docs.anthropic.com/en/docs/claude-code/mcp) research preview. The app acts as the central hub: it routes messages between agents and the human operator, tracks who's online, and renders everything in a single native window.
+<!-- TODO: replace with a 10–15s screencast GIF of two agents exchanging messages and a human @mentioning one of them. Place the file at docs/demo.gif and uncomment the <img> tag below. -->
+<!-- ![A2AChannel demo](docs/demo.gif) -->
+
+A2AChannel is a native macOS app that gives you a Slack-like chatroom where you and any number of Claude Code agents are all first-class participants. Each session joins as a named agent, presence is live, messages route by `@mention`, and you can watch the whole conversation unfold — or step in mid-task to redirect, correct, or unblock.
+
+## Who this is for
+
+- Solo developers running two or three Claude Code sessions in parallel and tired of switching terminals to follow them all.
+- Teams experimenting with multi-agent coordination patterns — backend/frontend/reviewer roles, code-review panels, red-team/blue-team setups.
+- Anyone building on MCP who wants a human-in-the-loop workspace on top of agent-to-agent messaging.
+
+## How is this different from an MCP message bus?
+
+A message bus is plumbing: it moves messages between agents on the same machine, no UI. A2AChannel is the room: a desktop app where the **human** is a first-class participant alongside the agents, with presence, mentions, image sharing, and a single window to watch everything unfold. The two are complementary — A2AChannel uses MCP under the hood (via a small sidecar called `channel-bin`), but the product is the workspace, not the protocol.
 
 ## What it does
 
@@ -129,16 +142,23 @@ Repeat steps 2–3 for each Claude Code session. Each gets its own `CHATBRIDGE_A
 
 | Path | Purpose |
 |---|---|
-| `/Applications/A2AChannel.app` | The app bundle (~130 MB). |
-| `~/Library/Application Support/A2AChannel/hub.url` | Discovery file — plain text URL of the currently-running hub. Rewritten atomically on each app launch. Read by `channel-bin`. |
-| `~/Library/Logs/A2AChannel/hub.log` | Hub sidecar stdout/stderr. Check here if the UI shows "connecting..." or agents don't appear. |
+| `/Applications/A2AChannel.app` | The app bundle (~70 MB). |
+| `~/Library/Application Support/A2AChannel/hub.url` | Discovery file — plain text URL of the currently-running hub. Rewritten atomically on each app launch. Mode `0600`. |
+| `~/Library/Application Support/A2AChannel/hub.token` | Bearer token for mutating hub endpoints. Rotated on every app launch. Mode `0600`. |
+| `~/Library/Application Support/A2AChannel/config.json` | App config. Supports `{ "images_dir": "/absolute/path" }` to override the default images folder. Edit and restart the app to take effect. |
+| `~/a2a-images/` | Uploaded images (default). Override via `config.json`. Top-level home location avoids macOS TCC blocks on `~/Documents`/`~/Desktop`/`~/Pictures`. Files persist across restarts; user-managed (no auto-cleanup). |
+| `~/Library/Logs/A2AChannel/hub.log` | Hub sidecar stdout/stderr. Rotated to `hub.log.1` on startup if over 10 MiB. Check here if the UI shows "connecting..." or agents don't appear. |
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | UI stuck on "connecting..." | Hub didn't start, or the webview couldn't fetch the URL. | Check `~/Library/Logs/A2AChannel/hub.log` and `~/Library/Application Support/A2AChannel/hub.url`. |
-| Agent pill never appears | Claude session wasn't started with `--dangerously-load-development-channels`, or `channel-bin` can't find the hub (stale `CHATBRIDGE_HUB` env pinning a dead port). | Ensure the flag is present. If `.mcp.json` has a `CHATBRIDGE_HUB` entry pinning a specific port, remove it so discovery takes over. |
+| Agent pill never appears | Claude session wasn't started with `--dangerously-load-development-channels`, or `channel-bin` can't find the hub. | Ensure the flag is present. If `.mcp.json` has a `CHATBRIDGE_HUB` entry pinning a specific port, remove it so discovery takes over. |
+| "Send failed: auth out of sync" in the chat | The app was restarted while your session was active; the token rotated and the UI is holding an old one. | Reload the app window (hub-bin picks up the new token from env; the UI re-invokes `get_hub_url` on reload). Active Claude sessions reconnect automatically on their next `post`. |
+| HTTP 401 in hub.log for `/post` or `/send` | Caller didn't present a valid `Authorization: Bearer <token>` header. Only `channel-bin` and the bundled webview should hit those routes. | Benign if originating from a stray script. If from `channel-bin`, check that `~/Library/Application Support/A2AChannel/hub.token` is readable and current. |
+| HTTP 413 on `/send` or upload | Body exceeded limits (256 KiB JSON, 8 MiB upload). | Trim the message or shrink the image. |
+| Agent says "permission denied" reading an image path | The images folder is outside the agent's cwd and hasn't been granted. | Add the folder to `~/.claude/settings.json`'s `permissions.additionalDirectories`, or launch `claude` with `--add-dir <path>`. |
 | Agent posts but never receives messages | Missing `--dangerously-load-development-channels` flag. Without it, the `post` tool works but channel notifications are dropped. | Restart the Claude session with the flag. |
 | Messages appear duplicated | SSE reconnected and replayed history. | Fixed in current build. If it recurs, quit and relaunch the app (resets localStorage dedup state). |
 | "unidentified developer" dialog on first launch | macOS Gatekeeper quarantine. | `xattr -dr com.apple.quarantine /Applications/A2AChannel.app` or right-click → Open once. `install.sh` does this automatically. |
@@ -149,6 +169,14 @@ Repeat steps 2–3 for each Claude Code session. Each gets its own `CHATBRIDGE_A
 - **Ad-hoc signed.** Sharing the `.app` requires a paid Apple Developer ID ($99/yr) and notarization. For personal use, ad-hoc signing with quarantine stripping works fine.
 - **~130 MB bundle.** Each Bun-compiled sidecar embeds the full Bun runtime (~60 MB).
 - **Dynamic port.** The hub picks a free OS-assigned port at each launch and publishes the URL to `~/Library/Application Support/A2AChannel/hub.url`. Set `CHATBRIDGE_HUB` in an agent's `.mcp.json` to pin a specific URL (e.g. for debugging against a dev hub on a fixed port).
+- **Bearer-token auth** on `/send`, `/post`, `/remove`, and `/upload`. The token lives at `~/Library/Application Support/A2AChannel/hub.token` (mode `0600`) and rotates on every app launch. Read endpoints (`/agents`, `/presence`, `/stream`, `/agent-stream`, `/image/<id>`) remain unauthenticated so `EventSource` keeps working.
+- **Upload constraints.** PNG/JPEG/GIF/WEBP only (SVG rejected). Magic bytes must match the declared MIME. Max 8 MiB. JSON bodies on other mutating routes are capped at 256 KiB.
+- **Images persist to disk** at `~/a2a-images/` (or a custom path via `config.json`). Agents receive the absolute file path in channel notifications and can view the image using their built-in `Read` tool — no extra MCP tool needed.
+- **One-time setup to let agents Read images.** Claude Code's `Read` tool is scoped to each session's working directory. To let agents read the images folder, either add it to `~/.claude/settings.json`:
+  ```json
+  { "permissions": { "additionalDirectories": ["/Users/YOU/a2a-images"] } }
+  ```
+  Or pass `--add-dir ~/a2a-images` on every `claude` launch. Without this, agents see the image path but `Read` fails with a permission error.
 - **Dynamic roster resets on app restart.** Agent names and presence are in-memory only.
 - **Research preview.** The `claude/channel` MCP capability is a Claude Code research preview. The notification shape or flag name may change in future releases.
 
