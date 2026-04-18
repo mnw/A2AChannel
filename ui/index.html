@@ -528,7 +528,7 @@ button.danger:hover { background: var(--ctp-surface1); border-color: rgba(243, 1
     <button type="button" class="icon-btn" id="attach-btn" title="Attach image">&#128206;</button>
     <input type="file" id="file-input" accept="image/*" class="visually-hidden" tabindex="-1" aria-hidden="true" />
     <textarea id="msg-input" rows="1" placeholder="Type a message…  (Shift+Enter for newline, paste/drop an image)" autocomplete="off"></textarea>
-    <button id="send-btn" onclick="send()">Send</button>
+    <button id="send-btn" type="button">Send</button>
     <div class="emoji-popover" id="emoji-popover"></div>
     <div class="mention-popover" id="mention-popover"></div>
   </div>
@@ -555,12 +555,38 @@ button.danger:hover { background: var(--ctp-surface1); border-color: rgba(243, 1
 </div>
 
 <script>
-let BUS = 'http://127.0.0.1:8011';  // overridden at bootstrap via Tauri invoke
+let BUS = 'http://127.0.0.1:8011';       // overridden at bootstrap via Tauri invoke
+let AUTH_TOKEN = '';                     // filled by bootstrap(); bearer token for mutating routes
+const MESSAGE_DOM_LIMIT = 2000;          // trim #messages to this many nodes
+const IMAGE_URL_RE = /^\/image\/[A-Za-z0-9_-]+\.(png|jpe?g|gif|webp)$/i;
+
+// Wrapper that adds Authorization to mutating fetches.
+async function authedFetch(path, init = {}) {
+  const headers = { ...(init.headers || {}) };
+  if (AUTH_TOKEN) headers['Authorization'] = `Bearer ${AUTH_TOKEN}`;
+  return fetch(`${BUS}${path}`, { ...init, headers });
+}
+
+// Parse an error response body, preferring the JSON `error` field if present.
+async function parseErrorBody(r) {
+  try {
+    const body = await r.text();
+    if (!body) return `HTTP ${r.status}`;
+    try {
+      const obj = JSON.parse(body);
+      if (obj && typeof obj.error === 'string') return obj.error;
+    } catch {}
+    return body;
+  } catch {
+    return `HTTP ${r.status}`;
+  }
+}
 const messagesEl = document.getElementById('messages');
 const dot = document.getElementById('dot');
 const statusText = document.getElementById('status-text');
 const input = document.getElementById('msg-input');
 const sendBtn = document.getElementById('send-btn');
+sendBtn.addEventListener('click', () => send());
 const legendEl = document.getElementById('legend');
 const targetEl = document.getElementById('target');
 const emojiBtn = document.getElementById('emoji-btn');
@@ -612,7 +638,12 @@ function cssName(name) {
 
 function applyRoster(agents) {
   ROSTER = Array.isArray(agents) ? agents : [];
-  // Rebuild color styles.
+  // Rebuild NAMES/COLORS from scratch so entries for departed agents don't linger.
+  for (const k of Object.keys(NAMES)) {
+    if (k !== 'you' && k !== 'system' && k !== 'all') delete NAMES[k];
+  }
+  for (const k of Object.keys(COLORS)) delete COLORS[k];
+
   let css = '';
   for (const a of ROSTER) {
     NAMES[a.name] = cap(a.name);
@@ -637,19 +668,19 @@ legendEl.addEventListener('click', async (e) => {
   if (!name || name === 'you') return;
   btn.disabled = true;
   try {
-    const r = await fetch(`${BUS}/remove`, {
+    const r = await authedFetch('/remove', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ agent: name }),
     });
     if (!r.ok) {
-      const err = await r.text();
+      const err = await parseErrorBody(r);
       addMessage({ from: 'system', to: 'you', text: `Remove failed: ${err}`, ts: '' });
       btn.disabled = false;
     }
     // On success the hub broadcasts roster update → UI rebuilds itself.
   } catch (err) {
-    addMessage({ from: 'system', to: 'you', text: `Remove failed: ${err}`, ts: '' });
+    addMessage({ from: 'system', to: 'you', text: `Remove failed: ${err?.message ?? err}`, ts: '' });
     btn.disabled = false;
   }
 });
@@ -727,8 +758,11 @@ function addMessage(data) {
   const div = document.createElement('div');
   const cls = from === 'you' || from === 'system' ? `from-${from}` : `from-${cssName(from)}`;
   div.className = `msg ${cls}`;
-  const imgHtml = data.image
-    ? `<img src="${escAttr(imgUrl(data.image))}" alt="attachment" onclick="window.open(this.src, '_blank')" />`
+  // Only render image if it matches an allowed shape (local /image/<id>
+  // or an absolute http(s) URL). Other values are silently dropped.
+  const safeImg = data.image && isSafeImageSrc(data.image) ? data.image : null;
+  const imgHtml = safeImg
+    ? `<img src="${escAttr(imgUrl(safeImg))}" alt="attachment" data-zoomable="1" />`
     : '';
   div.innerHTML = `
     <div class="msg-meta">
@@ -740,13 +774,32 @@ function addMessage(data) {
     <div class="msg-body">${highlightMentions(linkify(escHtml(data.text || '')))}${imgHtml}</div>
   `;
   messagesEl.appendChild(div);
+  // Bound DOM growth on long sessions.
+  while (messagesEl.childElementCount > MESSAGE_DOM_LIMIT) {
+    messagesEl.removeChild(messagesEl.firstChild);
+  }
   messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function isSafeImageSrc(u) {
+  if (typeof u !== 'string' || !u) return false;
+  return IMAGE_URL_RE.test(u) || /^https?:\/\//.test(u);
 }
 
 function imgUrl(u) {
   if (!u) return '';
-  return u.startsWith('http') ? u : `${BUS}${u}`;
+  return /^https?:\/\//.test(u) ? u : `${BUS}${u}`;
 }
+
+// Delegated click-to-zoom for image attachments; re-validates URL before
+// opening to avoid anything weird that bypassed escaping.
+messagesEl.addEventListener('click', (e) => {
+  const img = e.target.closest?.('.msg-body img[data-zoomable]');
+  if (!img) return;
+  const src = img.getAttribute('src') || '';
+  if (!/^https?:\/\//.test(src) && !src.startsWith(BUS + '/image/')) return;
+  window.open(src, '_blank', 'noopener');
+});
 
 function escAttr(s) {
   return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
@@ -839,7 +892,10 @@ function connect() {
   const es = new EventSource(`${BUS}/stream${qs}`);
   activeES = es;
   es.onopen = () => { dot.className = 'dot live'; statusText.textContent = 'live'; };
-  es.onmessage = (e) => { try { handleEvent(JSON.parse(e.data)); } catch (_) {} };
+  es.onmessage = (e) => {
+    try { handleEvent(JSON.parse(e.data)); }
+    catch (err) { console.warn('[sse] parse failed:', err, e.data); }
+  };
   es.onerror = () => {
     dot.className = 'dot error';
     statusText.textContent = 'disconnected — retrying…';
@@ -871,17 +927,20 @@ async function send() {
   clearAttachment();
   hideMentionPopover();
   try {
-    const r = await fetch(`${BUS}/send`, {
+    const r = await authedFetch('/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     if (!r.ok) {
-      const err = await r.text();
-      addMessage({ from: 'system', to: 'you', text: `Send failed: ${err}`, ts: '' });
+      const err = await parseErrorBody(r);
+      const msg = r.status === 401
+        ? `Send failed: auth out of sync — did A2AChannel restart? (${err})`
+        : `Send failed: ${err}`;
+      addMessage({ from: 'system', to: 'you', text: msg, ts: '' });
     }
   } catch (e) {
-    addMessage({ from: 'system', to: 'you', text: `Could not reach bus: ${e}`, ts: '' });
+    addMessage({ from: 'system', to: 'you', text: `Could not reach bus: ${e?.message ?? e}`, ts: '' });
   } finally {
     sendBtn.disabled = false;
     input.focus();
@@ -1015,14 +1074,14 @@ async function uploadImage(file) {
   const fd = new FormData();
   fd.append('file', file);
   try {
-    const r = await fetch(`${BUS}/upload`, { method: 'POST', body: fd });
-    if (!r.ok) throw new Error(await r.text());
+    const r = await authedFetch('/upload', { method: 'POST', body: fd });
+    if (!r.ok) throw new Error(await parseErrorBody(r));
     const { url } = await r.json();
     pendingImageUrl = url;
     renderAttachment(url, file.name, false);
   } catch (e) {
     clearAttachment();
-    addMessage({ from: 'system', to: 'you', text: `Upload failed: ${e}`, ts: '' });
+    addMessage({ from: 'system', to: 'you', text: `Upload failed: ${e?.message ?? e}`, ts: '' });
   }
 }
 
@@ -1092,8 +1151,15 @@ async function bootstrap() {
     window.__TAURI__?.invoke;
   if (invoke) {
     try {
-      const url = await invoke('get_hub_url');
-      if (typeof url === 'string' && url) BUS = url;
+      const info = await invoke('get_hub_url');
+      // The Rust command now returns { url, token }. Accept the legacy
+      // bare-string return too, so a hub downgrade doesn't brick the UI.
+      if (info && typeof info === 'object') {
+        if (typeof info.url === 'string' && info.url) BUS = info.url;
+        if (typeof info.token === 'string') AUTH_TOKEN = info.token;
+      } else if (typeof info === 'string' && info) {
+        BUS = info;
+      }
     } catch (e) {
       statusText.textContent = `hub URL lookup failed: ${e}`;
       dot.className = 'dot error';
@@ -1134,9 +1200,10 @@ function fallbackTemplate() {
   return JSON.stringify({
     mcpServers: {
       chatbridge: {
-        command: '/Applications/A2AChannel.app/Contents/MacOS/channel-bin',
+        command: '/Applications/A2AChannel.app/Contents/MacOS/a2a-bin',
         args: [],
         env: {
+          A2A_MODE: 'channel',
           CHATBRIDGE_AGENT: 'agent',
         },
       },

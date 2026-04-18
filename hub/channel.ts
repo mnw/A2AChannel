@@ -9,12 +9,17 @@
  *   CHATBRIDGE_AGENT   this session's identity (required)
  *   CHATBRIDGE_HUB     (optional) pin to a specific hub URL
  *
- * If CHATBRIDGE_HUB is unset or empty, the hub URL is read from the
- * discovery file written by A2AChannel.app:
+ * If CHATBRIDGE_HUB is unset or empty, the hub URL and token are read
+ * from discovery files written by A2AChannel.app:
  *   ~/Library/Application Support/A2AChannel/hub.url
+ *   ~/Library/Application Support/A2AChannel/hub.token
  *
- * The file is re-read on each retry so stale URLs self-heal when the
- * app restarts on a different port.
+ * Both files are re-read on each retry so stale values self-heal when
+ * the app restarts (which mints a new URL/port and a new token).
+ *
+ * The hub requires Bearer-token auth on POST /post. GET /agent-stream
+ * is unauthenticated (EventSource cannot send custom headers), so the
+ * token is attached only to outbound POSTs.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -30,26 +35,40 @@ import {
 
 const AGENT = process.env.CHATBRIDGE_AGENT ?? process.argv[2] ?? "";
 const HUB_ENV = (process.env.CHATBRIDGE_HUB ?? "").trim();
-const DISCOVERY_PATH = join(
+const DISCOVERY_DIR = join(
   homedir(),
-  "Library/Application Support/A2AChannel/hub.url",
+  "Library/Application Support/A2AChannel",
 );
+const URL_PATH = join(DISCOVERY_DIR, "hub.url");
+const TOKEN_PATH = join(DISCOVERY_DIR, "hub.token");
 
 if (!AGENT) {
   console.error("CHATBRIDGE_AGENT env var is required");
   process.exit(1);
 }
 
-function resolveHubUrl(): string | null {
-  if (HUB_ENV) return HUB_ENV;
+type HubInfo = { url: string; token: string };
+
+function readTrimmed(path: string): string | null {
   try {
-    if (!existsSync(DISCOVERY_PATH)) return null;
-    const raw = readFileSync(DISCOVERY_PATH, "utf8").trim();
-    if (!raw || !/^https?:\/\//i.test(raw)) return null;
-    return raw;
+    if (!existsSync(path)) return null;
+    const raw = readFileSync(path, "utf8").trim();
+    return raw || null;
   } catch {
     return null;
   }
+}
+
+// Resolve both hub URL and auth token. An explicit CHATBRIDGE_HUB env
+// pins the URL (escape hatch for debugging); the token always comes
+// from disk. Returns null if any required piece is missing so the
+// outer loop retries.
+function resolveHub(): HubInfo | null {
+  const url = HUB_ENV || readTrimmed(URL_PATH);
+  if (!url || !/^https?:\/\//i.test(url)) return null;
+  const token = readTrimmed(TOKEN_PATH);
+  if (!token) return null;
+  return { url, token };
 }
 
 const mcp = new Server(
@@ -66,7 +85,13 @@ const mcp = new Server(
       `with to="${AGENT}" or to="all". Use the "post" tool to send messages. ` +
       `Always set from="${AGENT}". Set to="you" to address the human, ` +
       `to="<name>" to address another agent by name, or to="all" to broadcast. ` +
-      `Keep messages concise; large artifacts belong in files.`,
+      `Keep messages concise; large artifacts belong in files. ` +
+      `Messages may reference images as [image: <absolute-path>]; ` +
+      `use the Read tool on that path to view the image. ` +
+      `If Read fails with a permission error, tell the human to add ` +
+      `the folder to ~/.claude/settings.json ` +
+      `(permissions.additionalDirectories) or relaunch Claude Code ` +
+      `with --add-dir <folder>.`,
   },
 );
 
@@ -92,23 +117,42 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   ],
 }));
 
+async function postMessage(
+  hub: HubInfo,
+  body: string,
+): Promise<Response> {
+  return fetch(`${hub.url}/post`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${hub.token}`,
+    },
+    body,
+  });
+}
+
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (req.params.name === "post") {
     const { text, to } = req.params.arguments as { text: string; to: string };
-    const hub = resolveHubUrl();
+    let hub = resolveHub();
     if (!hub) {
       throw new Error(
-        `hub URL not found (no CHATBRIDGE_HUB env and no discovery file at ${DISCOVERY_PATH})`,
+        `hub not found (need ${URL_PATH} and ${TOKEN_PATH}, or CHATBRIDGE_HUB env)`,
       );
     }
-    const r = await fetch(`${hub}/post`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ from: AGENT, to, text }),
-    });
+    const body = JSON.stringify({ from: AGENT, to, text });
+    let r = await postMessage(hub, body);
+    // If the token was rotated (app restart), re-read once and retry.
+    if (r.status === 401) {
+      const refreshed = resolveHub();
+      if (refreshed && refreshed.token !== hub.token) {
+        hub = refreshed;
+        r = await postMessage(hub, body);
+      }
+    }
     if (!r.ok) {
-      const body = await r.text();
-      throw new Error(`hub /post failed: ${r.status} ${body}`);
+      const errBody = await r.text();
+      throw new Error(`hub /post failed: ${r.status} ${errBody}`);
     }
     return { content: [{ type: "text", text: "posted" }] };
   }
@@ -122,11 +166,11 @@ const BUF_MAX = 1 << 20;
 async function tailHub(): Promise<void> {
   let loggedMissingOnce = false;
   while (true) {
-    const hub = resolveHubUrl();
+    const hub = resolveHub();
     if (!hub) {
       if (!loggedMissingOnce) {
         console.error(
-          `[channel] hub URL not found; waiting for A2AChannel.app to start (discovery: ${DISCOVERY_PATH})`,
+          `[channel] hub not found; waiting for A2AChannel.app to start (expects ${URL_PATH} and ${TOKEN_PATH})`,
         );
         loggedMissingOnce = true;
       }
@@ -136,7 +180,7 @@ async function tailHub(): Promise<void> {
     loggedMissingOnce = false;
 
     try {
-      const url = `${hub}/agent-stream?agent=${encodeURIComponent(AGENT)}`;
+      const url = `${hub.url}/agent-stream?agent=${encodeURIComponent(AGENT)}`;
       const r = await fetch(url);
       if (!r.ok || !r.body) {
         await new Promise((s) => setTimeout(s, 2000));
@@ -161,20 +205,25 @@ async function tailHub(): Promise<void> {
           let evt: { from: string; to: string; text: string; ts: string };
           try {
             evt = JSON.parse(dataLine.slice(6));
-          } catch {
+          } catch (e) {
+            console.error("[channel] SSE JSON parse failed:", e);
             continue;
           }
-          await mcp.notification({
-            method: "notifications/claude/channel",
-            params: {
-              content: evt.text,
-              meta: { from: evt.from, to: evt.to, ts: evt.ts },
-            },
-          });
+          try {
+            await mcp.notification({
+              method: "notifications/claude/channel",
+              params: {
+                content: evt.text,
+                meta: { from: evt.from, to: evt.to, ts: evt.ts },
+              },
+            });
+          } catch (e) {
+            console.error("[channel] notification failed:", e);
+          }
         }
       }
-    } catch {
-      // fall through to backoff
+    } catch (e) {
+      console.error("[channel] tail error:", (e as Error).message ?? e);
     }
     await new Promise((s) => setTimeout(s, 2000));
   }
