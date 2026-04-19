@@ -159,21 +159,9 @@ header h1 {
   border-radius: 4px;
 }
 .legend-remove:hover { color: var(--ctp-red); background: rgba(243, 139, 168, 0.15); }
-.legend-item.offline .legend-remove { display: inline-flex; align-items: center; }
+.legend-item:hover .legend-remove { display: inline-flex; align-items: center; }
 
-#messages {
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  scroll-behavior: smooth;
-}
-
-#messages::-webkit-scrollbar { width: 4px; }
-#messages::-webkit-scrollbar-track { background: transparent; }
-#messages::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+/* Room messages are styled via .room-messages (see tab bar section). */
 
 .msg {
   display: flex;
@@ -471,6 +459,68 @@ footer {
 }
 .modal-actions .status.visible { opacity: 1; }
 
+/* ── Generic dialog (replaces prompt/confirm/alert) ──────── */
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 300;
+}
+.dialog-backdrop.open { display: flex; }
+.dialog {
+  background: var(--ctp-mantle);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  padding: 18px 20px;
+  width: min(380px, 85vw);
+  box-shadow: 0 16px 48px rgba(0,0,0,0.6);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.dialog h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ctp-text);
+}
+.dialog input[type="text"] {
+  width: 100%;
+  background: var(--ctp-surface0);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: var(--ctp-text);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: 5px;
+  outline: none;
+}
+.dialog input[type="text"]:focus { border-color: rgba(255,255,255,0.25); }
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.dialog-actions button {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 14px;
+  border-radius: 4px;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: var(--ctp-surface0);
+  color: var(--ctp-text);
+  cursor: pointer;
+}
+.dialog-actions button:hover { background: var(--ctp-surface1); }
+.dialog-actions button.primary {
+  background: var(--ctp-blue);
+  color: var(--ctp-crust);
+  border-color: transparent;
+}
+.dialog-actions button.primary:hover { opacity: 0.85; }
+
 /* ── Handoff cards ────────────────────────────────────────── */
 .handoff-card {
   background: var(--ctp-mantle);
@@ -612,6 +662,219 @@ button.danger {
 button.danger:hover { background: var(--ctp-surface1); border-color: rgba(243, 139, 168, 0.6); }
 
 .hint { font-size: 10px; color: var(--ctp-surface1); margin-top: 6px; padding-left: 2px; }
+
+/* ── Tab bar ─────────────────────────────────────────────── */
+.tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 20px;
+  background: var(--ctp-crust);
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+.tab-bar::-webkit-scrollbar { height: 0; }
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ctp-overlay0);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px 5px 0 0;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  letter-spacing: 0.02em;
+}
+.tab:hover { color: var(--ctp-subtext1); background: rgba(255,255,255,0.03); }
+.tab.active {
+  color: var(--ctp-text);
+  background: var(--ctp-base);
+  border-color: rgba(255,255,255,0.07);
+  border-bottom-color: var(--ctp-base);
+}
+.tab .tab-close {
+  display: none;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+  color: var(--ctp-overlay0);
+  cursor: pointer;
+  border-radius: 3px;
+}
+.tab:hover .tab-close { display: inline; }
+.tab .tab-close:hover { color: var(--ctp-red); background: rgba(243, 139, 168, 0.15); }
+.tab-add {
+  padding: 4px 8px;
+  font-size: 14px;
+  color: var(--ctp-overlay0);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+  line-height: 1;
+}
+.tab-add:hover { color: var(--ctp-text); background: rgba(255,255,255,0.05); }
+.tab-unread {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--ctp-blue);
+  display: none;
+}
+.tab .tab-unread.visible { display: inline-block; }
+.tab-label[contenteditable="true"] {
+  outline: 1px solid rgba(137, 180, 250, 0.5);
+  border-radius: 3px;
+  padding: 0 4px;
+  min-width: 30px;
+  background: var(--ctp-surface0);
+  cursor: text;
+}
+
+/* ── Room creation / member management ───────────────────── */
+.room-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 250;
+}
+.room-modal-backdrop.open { display: flex; }
+.room-modal {
+  background: var(--ctp-mantle);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  padding: 18px 20px;
+  width: min(400px, 90vw);
+  box-shadow: 0 16px 48px rgba(0,0,0,0.6);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.room-modal h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ctp-text);
+  margin: 0;
+}
+.room-modal input[type="text"] {
+  width: 100%;
+  background: var(--ctp-surface0);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: var(--ctp-text);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: 5px;
+  outline: none;
+}
+.room-modal input[type="text"]:focus { border-color: rgba(255,255,255,0.25); }
+.agent-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+.agent-checklist:empty::after {
+  content: 'No agents connected';
+  color: var(--ctp-overlay0);
+  font-size: 11px;
+  font-style: italic;
+}
+.agent-check-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--ctp-text);
+}
+.agent-check-item:hover { background: rgba(255,255,255,0.04); }
+.agent-check-item input[type="checkbox"] { accent-color: var(--ctp-blue); }
+.agent-check-item .agent-color-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.agent-check-item .agent-status {
+  font-size: 10px;
+  color: var(--ctp-overlay0);
+  margin-left: auto;
+}
+
+/* ── Room member bar (below tabs) ─────────────────────────── */
+.room-member-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 20px;
+  background: var(--ctp-crust);
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  min-height: 28px;
+}
+.room-member-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  color: var(--ctp-subtext0);
+  background: var(--ctp-surface0);
+  border: 1px solid rgba(255,255,255,0.06);
+}
+.room-member-pill .pill-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+}
+.room-member-pill .pill-remove {
+  cursor: pointer;
+  color: var(--ctp-overlay0);
+  font-size: 12px;
+  line-height: 1;
+  padding: 0 1px;
+  border-radius: 3px;
+}
+.room-member-pill .pill-remove:hover { color: var(--ctp-red); }
+.room-member-add {
+  padding: 2px 6px;
+  font-size: 12px;
+  color: var(--ctp-overlay0);
+  background: transparent;
+  border: 1px dashed rgba(255,255,255,0.1);
+  border-radius: 10px;
+  cursor: pointer;
+  line-height: 1;
+}
+.room-member-add:hover { color: var(--ctp-text); border-color: rgba(255,255,255,0.2); }
+
+.room-container { display: none; flex: 1; flex-direction: column; overflow: hidden; }
+.room-container.active { display: flex; }
+.room-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  scroll-behavior: smooth;
+}
+.room-messages::-webkit-scrollbar { width: 4px; }
+.room-messages::-webkit-scrollbar-track { background: transparent; }
+.room-messages::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 </style>
 </head>
 <body>
@@ -628,7 +891,26 @@ button.danger:hover { background: var(--ctp-surface1); border-color: rgba(243, 1
   </div>
 </header>
 
-<div id="messages"></div>
+<div class="tab-bar" id="tab-bar">
+  <button type="button" class="tab-add" id="tab-add-btn" title="New room">+</button>
+</div>
+
+<div class="room-member-bar" id="room-member-bar" style="display:none;"></div>
+
+<div id="rooms-wrapper" style="flex:1;display:flex;flex-direction:column;overflow:hidden;"></div>
+
+<div class="room-modal-backdrop" id="room-modal-backdrop">
+  <div class="room-modal">
+    <h3 id="room-modal-title">New room</h3>
+    <input type="text" id="room-modal-name" placeholder="Room name" autocomplete="off" spellcheck="false">
+    <div style="font-size:11px;color:var(--ctp-overlay0);margin-top:-4px;">Select participants:</div>
+    <div class="agent-checklist" id="room-modal-agents"></div>
+    <div class="dialog-actions">
+      <button type="button" id="room-modal-cancel">Cancel</button>
+      <button type="button" id="room-modal-ok" class="primary">Create</button>
+    </div>
+  </div>
+</div>
 
 <footer>
   <div class="attachment-row" id="attachment-row"></div>
@@ -646,6 +928,17 @@ button.danger:hover { background: var(--ctp-surface1); border-color: rgba(243, 1
 </footer>
 
 <div id="drop-overlay">Drop file to attach</div>
+
+<div class="dialog-backdrop" id="dialog-backdrop">
+  <div class="dialog">
+    <h3 id="dialog-title"></h3>
+    <input type="text" id="dialog-input" autocomplete="off" spellcheck="false">
+    <div class="dialog-actions">
+      <button type="button" id="dialog-cancel">Cancel</button>
+      <button type="button" id="dialog-ok" class="primary">OK</button>
+    </div>
+  </div>
+</div>
 
 <div class="modal-backdrop" id="mcp-modal">
   <div class="modal">
@@ -669,12 +962,390 @@ let BUS = 'http://127.0.0.1:8011';       // overridden at bootstrap via Tauri in
 let AUTH_TOKEN = '';                     // filled by bootstrap(); bearer token for mutating routes
 let HUMAN_NAME = 'you';                  // filled by bootstrap(); the human's identity in the roster
 const handoffCards = new Map();          // handoff_id → { element, version, status, snapshot }
-const MESSAGE_DOM_LIMIT = 2000;          // trim #messages to this many nodes
-// Generic attachment URL — any allowlisted extension served at /image/<id>.
-// (The route is named /image/ for back-compat; the hub allowlist is what
-// actually decides which extensions are accepted at upload time.)
+const MESSAGE_DOM_LIMIT = 2000;          // trim per-room to this many nodes
 const ATTACHMENT_URL_RE = /^\/image\/[A-Za-z0-9_-]+\.[a-z0-9]{1,10}$/i;
 const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp)$/i;
+
+// ── Custom dialog helpers (Tauri WebView blocks native prompt/confirm/alert) ──
+const dialogBackdrop = document.getElementById('dialog-backdrop');
+const dialogTitle    = document.getElementById('dialog-title');
+const dialogInput    = document.getElementById('dialog-input');
+const dialogOk       = document.getElementById('dialog-ok');
+const dialogCancel   = document.getElementById('dialog-cancel');
+
+let _dialogResolve = null;
+
+function _openDialog(title, { input = false, defaultValue = '', okLabel = 'OK', cancelLabel = 'Cancel', showCancel = true } = {}) {
+  return new Promise(resolve => {
+    _dialogResolve = resolve;
+    dialogTitle.textContent = title;
+    dialogInput.style.display = input ? '' : 'none';
+    dialogInput.value = defaultValue;
+    dialogOk.textContent = okLabel;
+    dialogCancel.textContent = cancelLabel;
+    dialogCancel.style.display = showCancel ? '' : 'none';
+    dialogBackdrop.classList.add('open');
+    if (input) { dialogInput.focus(); dialogInput.select(); }
+    else dialogOk.focus();
+  });
+}
+
+function _closeDialog(value) {
+  dialogBackdrop.classList.remove('open');
+  if (_dialogResolve) { _dialogResolve(value); _dialogResolve = null; }
+}
+
+dialogOk.addEventListener('click', () => {
+  const hasInput = dialogInput.style.display !== 'none';
+  _closeDialog(hasInput ? dialogInput.value : true);
+});
+dialogCancel.addEventListener('click', () => _closeDialog(null));
+dialogBackdrop.addEventListener('click', (e) => { if (e.target === dialogBackdrop) _closeDialog(null); });
+dialogInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); dialogOk.click(); }
+  if (e.key === 'Escape') { e.preventDefault(); dialogCancel.click(); }
+});
+
+async function dlgPrompt(title, defaultValue = '') {
+  return _openDialog(title, { input: true, defaultValue });
+}
+async function dlgConfirm(title) {
+  return _openDialog(title, { input: false });
+}
+async function dlgAlert(title) {
+  return _openDialog(title, { input: false, showCancel: false });
+}
+
+// ── Room / tab state ──────────────────────────────────────────
+let ROOMS = [{ id: 'general', name: 'General', members: [] }];
+let activeRoomId = 'general';
+const roomState = new Map(); // roomId → { container, messagesEl, lastFrom, handoffCards }
+const roomsWrapper = document.getElementById('rooms-wrapper');
+const tabBar = document.getElementById('tab-bar');
+const tabAddBtn = document.getElementById('tab-add-btn');
+
+function ensureRoomState(roomId) {
+  if (roomState.has(roomId)) return roomState.get(roomId);
+  const container = document.createElement('div');
+  container.className = 'room-container';
+  container.dataset.room = roomId;
+  const msgEl = document.createElement('div');
+  msgEl.className = 'room-messages';
+  container.appendChild(msgEl);
+  roomsWrapper.appendChild(container);
+  const state = { container, messagesEl: msgEl, lastFrom: null, handoffCards: new Map() };
+  roomState.set(roomId, state);
+  return state;
+}
+
+function switchRoom(roomId) {
+  activeRoomId = roomId;
+  for (const [id, s] of roomState) {
+    s.container.classList.toggle('active', id === roomId);
+  }
+  renderTabs();
+  renderLegend();
+  applyPresence(presenceState);
+  renderMemberBar();
+  renderTargetDropdown();
+  const s = roomState.get(roomId);
+  if (s) s.messagesEl.scrollTop = s.messagesEl.scrollHeight;
+  const indicator = tabBar.querySelector('.tab-unread[data-room="' + roomId + '"]');
+  if (indicator) indicator.classList.remove('visible');
+  localStorage.setItem('a2achannel_active_room', roomId);
+}
+
+function renderTabs() {
+  tabBar.querySelectorAll('.tab').forEach(t => t.remove());
+  for (const room of ROOMS) {
+    const tab = document.createElement('div');
+    tab.className = 'tab' + (room.id === activeRoomId ? ' active' : '');
+    tab.dataset.room = room.id;
+    const label = document.createElement('span');
+    label.className = 'tab-label';
+    label.textContent = room.name;
+    label.addEventListener('dblclick', (e) => { e.stopPropagation(); renameRoom(room.id, label); });
+    tab.appendChild(label);
+    const unread = document.createElement('span');
+    unread.className = 'tab-unread';
+    unread.dataset.room = room.id;
+    tab.appendChild(unread);
+    if (room.id !== 'general') {
+      const close = document.createElement('span');
+      close.className = 'tab-close';
+      close.textContent = '\u00d7';
+      close.addEventListener('click', (e) => { e.stopPropagation(); deleteRoom(room.id); });
+      tab.appendChild(close);
+    }
+    tab.addEventListener('click', () => switchRoom(room.id));
+    tabBar.insertBefore(tab, tabAddBtn);
+  }
+}
+
+function applyRooms(roomList) {
+  if (!Array.isArray(roomList) || !roomList.length) return;
+  ROOMS = roomList;
+  for (const r of ROOMS) ensureRoomState(r.id);
+  if (!ROOMS.find(r => r.id === activeRoomId)) activeRoomId = 'general';
+  switchRoom(activeRoomId);
+}
+
+// ── Room creation modal ─────────────────────────────────────
+const roomModalBackdrop = document.getElementById('room-modal-backdrop');
+const roomModalName     = document.getElementById('room-modal-name');
+const roomModalAgents   = document.getElementById('room-modal-agents');
+const roomModalOk       = document.getElementById('room-modal-ok');
+const roomModalCancel   = document.getElementById('room-modal-cancel');
+const roomMemberBar     = document.getElementById('room-member-bar');
+
+function openRoomModal() {
+  roomModalName.value = '';
+  roomModalAgents.innerHTML = '';
+  for (const a of ROSTER) {
+    if (a.name === HUMAN_NAME) continue;
+    const item = document.createElement('label');
+    item.className = 'agent-check-item';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = a.name;
+    const dot = document.createElement('span');
+    dot.className = 'agent-color-dot';
+    dot.style.background = a.color;
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = a.name;
+    const status = document.createElement('span');
+    status.className = 'agent-status';
+    status.textContent = presenceState[a.name] ? 'online' : 'offline';
+    item.appendChild(cb);
+    item.appendChild(dot);
+    item.appendChild(nameSpan);
+    item.appendChild(status);
+    roomModalAgents.appendChild(item);
+  }
+  roomModalBackdrop.classList.add('open');
+  roomModalName.focus();
+}
+
+function closeRoomModal() {
+  roomModalBackdrop.classList.remove('open');
+}
+
+async function submitRoomModal() {
+  const name = roomModalName.value.trim();
+  if (!name) { roomModalName.focus(); return; }
+  const members = [...roomModalAgents.querySelectorAll('input:checked')].map(cb => cb.value);
+  closeRoomModal();
+  try {
+    const r = await authedFetch('/rooms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, members }),
+    });
+    if (!r.ok) {
+      const err = await parseErrorBody(r);
+      await dlgAlert('Failed to create room: ' + err);
+      return;
+    }
+    const room = await r.json();
+    if (!ROOMS.find(rm => rm.id === room.id)) ROOMS.push(room);
+    ensureRoomState(room.id);
+    switchRoom(room.id);
+  } catch (e) {
+    await dlgAlert('Failed: ' + (e?.message ?? e));
+  }
+}
+
+roomModalOk.addEventListener('click', submitRoomModal);
+roomModalCancel.addEventListener('click', closeRoomModal);
+roomModalBackdrop.addEventListener('click', (e) => { if (e.target === roomModalBackdrop) closeRoomModal(); });
+roomModalName.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); submitRoomModal(); }
+  if (e.key === 'Escape') { e.preventDefault(); closeRoomModal(); }
+});
+
+function createRoom() {
+  openRoomModal();
+}
+
+// ── Room member bar ─────────────────────────────────────────
+function renderMemberBar() {
+  roomMemberBar.innerHTML = '';
+  const room = ROOMS.find(r => r.id === activeRoomId);
+  if (!room) return;
+  const members = room.members || [];
+  for (const name of members) {
+    const pill = document.createElement('span');
+    pill.className = 'room-member-pill';
+    const dot = document.createElement('span');
+    dot.className = 'pill-dot';
+    const agent = ROSTER.find(a => a.name === name);
+    dot.style.background = agent ? agent.color : 'var(--ctp-surface2)';
+    pill.appendChild(dot);
+    const label = document.createElement('span');
+    label.textContent = name === HUMAN_NAME ? 'You' : name;
+    pill.appendChild(label);
+    if (name !== HUMAN_NAME) {
+      const remove = document.createElement('span');
+      remove.className = 'pill-remove';
+      remove.textContent = '\u00d7';
+      remove.title = 'Remove from room';
+      remove.addEventListener('click', () => removeMemberFromRoom(activeRoomId, name));
+      pill.appendChild(remove);
+    }
+    roomMemberBar.appendChild(pill);
+  }
+  const addBtn = document.createElement('span');
+  addBtn.className = 'room-member-add';
+  addBtn.textContent = '+';
+  addBtn.title = 'Add participant';
+  addBtn.addEventListener('click', () => showAddMemberPopover());
+  roomMemberBar.appendChild(addBtn);
+}
+
+async function removeMemberFromRoom(roomId, agentName) {
+  try {
+    const r = await authedFetch(`/rooms/${encodeURIComponent(roomId)}/members/${encodeURIComponent(agentName)}`, {
+      method: 'DELETE',
+    });
+    if (!r.ok) {
+      const err = await parseErrorBody(r);
+      addMessage({ from: 'system', to: HUMAN_NAME, text: `Remove member failed: ${err}`, ts: '' });
+    }
+  } catch (e) {
+    addMessage({ from: 'system', to: HUMAN_NAME, text: `Remove member failed: ${e?.message ?? e}`, ts: '' });
+  }
+}
+
+async function addMemberToRoom(roomId, agentName) {
+  try {
+    await authedFetch(`/rooms/${encodeURIComponent(roomId)}/members`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: agentName }),
+    });
+  } catch {}
+}
+
+async function showAddMemberPopover() {
+  const room = ROOMS.find(r => r.id === activeRoomId);
+  if (!room) return;
+  const currentMembers = new Set(room.members || []);
+  const available = ROSTER.filter(a => !currentMembers.has(a.name) && a.name !== HUMAN_NAME);
+  if (!available.length) {
+    await dlgAlert('All connected agents are already in this room.');
+    return;
+  }
+  // Reuse the room modal for adding members
+  roomModalName.value = room.name;
+  roomModalName.disabled = true;
+  roomModalAgents.innerHTML = '';
+  document.getElementById('room-modal-title').textContent = 'Add participants';
+  roomModalOk.textContent = 'Add';
+  for (const a of available) {
+    const item = document.createElement('label');
+    item.className = 'agent-check-item';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = a.name;
+    const dot = document.createElement('span');
+    dot.className = 'agent-color-dot';
+    dot.style.background = a.color;
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = a.name;
+    const status = document.createElement('span');
+    status.className = 'agent-status';
+    status.textContent = presenceState[a.name] ? 'online' : 'offline';
+    item.appendChild(cb);
+    item.appendChild(dot);
+    item.appendChild(nameSpan);
+    item.appendChild(status);
+    roomModalAgents.appendChild(item);
+  }
+
+  // Temporarily override the OK handler for add-member mode
+  const origOk = roomModalOk.onclick;
+  roomModalOk.onclick = null;
+  const handler = async () => {
+    const selected = [...roomModalAgents.querySelectorAll('input:checked')].map(cb => cb.value);
+    closeRoomModal();
+    roomModalName.disabled = false;
+    document.getElementById('room-modal-title').textContent = 'New room';
+    roomModalOk.textContent = 'Create';
+    roomModalOk.removeEventListener('click', handler);
+    roomModalOk.addEventListener('click', submitRoomModal);
+    for (const name of selected) {
+      await addMemberToRoom(activeRoomId, name);
+    }
+  };
+  roomModalOk.removeEventListener('click', submitRoomModal);
+  roomModalOk.addEventListener('click', handler);
+  const cancelHandler = () => {
+    closeRoomModal();
+    roomModalName.disabled = false;
+    document.getElementById('room-modal-title').textContent = 'New room';
+    roomModalOk.textContent = 'Create';
+    roomModalOk.removeEventListener('click', handler);
+    roomModalOk.addEventListener('click', submitRoomModal);
+    roomModalCancel.removeEventListener('click', cancelHandler);
+    roomModalCancel.addEventListener('click', closeRoomModal);
+  };
+  roomModalCancel.removeEventListener('click', closeRoomModal);
+  roomModalCancel.addEventListener('click', cancelHandler);
+  roomModalBackdrop.classList.add('open');
+}
+
+async function deleteRoom(roomId) {
+  if (roomId === 'general') return;
+  if (!(await dlgConfirm('Delete this room?'))) return;
+  try {
+    const r = await authedFetch(`/rooms/${encodeURIComponent(roomId)}`, { method: 'DELETE' });
+    if (!r.ok) {
+      const err = await parseErrorBody(r);
+      addMessage({ from: 'system', to: HUMAN_NAME, text: `Delete room failed: ${err}`, ts: '' });
+    }
+  } catch (e) {
+    addMessage({ from: 'system', to: HUMAN_NAME, text: `Delete room failed: ${e?.message ?? e}`, ts: '' });
+  }
+}
+
+function renameRoom(roomId, labelEl) {
+  const room = ROOMS.find(r => r.id === roomId);
+  if (!room || !labelEl) return;
+  labelEl.contentEditable = 'true';
+  labelEl.spellcheck = false;
+  labelEl.focus();
+  const range = document.createRange();
+  range.selectNodeContents(labelEl);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+
+  function commit() {
+    labelEl.contentEditable = 'false';
+    labelEl.removeEventListener('blur', onBlur);
+    labelEl.removeEventListener('keydown', onKey);
+    const name = labelEl.textContent.trim();
+    if (!name || name === room.name) {
+      labelEl.textContent = room.name;
+      return;
+    }
+    authedFetch(`/rooms/${encodeURIComponent(roomId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    }).catch(() => {});
+  }
+
+  function onBlur() { commit(); }
+  function onKey(e) {
+    if (e.key === 'Enter') { e.preventDefault(); labelEl.blur(); }
+    if (e.key === 'Escape') { e.preventDefault(); labelEl.textContent = room.name; labelEl.blur(); }
+  }
+  labelEl.addEventListener('blur', onBlur, { once: true });
+  labelEl.addEventListener('keydown', onKey);
+}
+
+tabAddBtn.addEventListener('click', createRoom);
 
 // Wrapper that adds Authorization to mutating fetches.
 async function authedFetch(path, init = {}) {
@@ -697,7 +1368,6 @@ async function parseErrorBody(r) {
     return `HTTP ${r.status}`;
   }
 }
-const messagesEl = document.getElementById('messages');
 const dot = document.getElementById('dot');
 const statusText = document.getElementById('status-text');
 const input = document.getElementById('msg-input');
@@ -712,7 +1382,6 @@ const attachBtn = document.getElementById('attach-btn');
 const fileInput = document.getElementById('file-input');
 const attachRow = document.getElementById('attachment-row');
 const dropOverlay = document.getElementById('drop-overlay');
-let lastFrom = null;
 let pendingImageUrl = null;
 let presenceState = {};        // {agent: bool}
 let mentionMatches = [];       // current autocomplete matches
@@ -773,6 +1442,7 @@ function applyRoster(agents) {
   agentStyleEl.textContent = css;
 
   renderLegend();
+  applyPresence(presenceState);
   renderTargetDropdown();
 }
 
@@ -781,41 +1451,27 @@ legendEl.addEventListener('click', async (e) => {
   if (!btn) return;
   const item = btn.closest('.legend-item');
   const name = item?.dataset?.agent;
-  if (!name || name === 'you') return;
+  if (!name || name === HUMAN_NAME) return;
   btn.disabled = true;
-  try {
-    const r = await authedFetch('/remove', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent: name }),
-    });
-    if (!r.ok) {
-      const err = await parseErrorBody(r);
-      addMessage({ from: 'system', to: 'you', text: `Remove failed: ${err}`, ts: '' });
-      btn.disabled = false;
-    }
-    // On success the hub broadcasts roster update → UI rebuilds itself.
-  } catch (err) {
-    addMessage({ from: 'system', to: 'you', text: `Remove failed: ${err?.message ?? err}`, ts: '' });
-    btn.disabled = false;
-  }
+  await removeMemberFromRoom(activeRoomId, name);
+  btn.disabled = false;
 });
 
 function renderLegend() {
-  // The human is just another roster member (registered by the hub at startup).
-  // Rebuild all pills from ROSTER; the human comes through naturally.
   legendEl.innerHTML = '';
+  const room = ROOMS.find(r => r.id === activeRoomId);
+  const members = new Set(room?.members || []);
+  const roomRoster = ROSTER.filter(a => members.has(a.name));
 
-  for (const a of ROSTER) {
+  for (const a of roomRoster) {
     const cn = cssName(a.name);
     const isHuman = a.name === HUMAN_NAME;
     const legItem = document.createElement('div');
     legItem.className = 'legend-item offline';
     legItem.dataset.agent = a.name;
-    // The human pill never gets a remove button — it's a permanent roster member.
     const removeBtn = isHuman
       ? ''
-      : `<button type="button" class="legend-remove" title="Remove agent" aria-label="Remove ${a.name}">×</button>`;
+      : `<button type="button" class="legend-remove" title="Remove from room" aria-label="Remove ${a.name}">×</button>`;
     legItem.innerHTML =
       `<div class="legend-dot leg-${cn}"></div>` +
       `<span class="legend-label">${a.name}</span>` +
@@ -825,29 +1481,41 @@ function renderLegend() {
     legendEl.appendChild(legItem);
   }
 
-  if (!ROSTER.length) {
+  if (!roomRoster.length) {
     const empty = document.createElement('div');
     empty.className = 'legend-item offline';
     empty.style.fontStyle = 'italic';
-    empty.innerHTML = '<span class="legend-label">waiting for agents…</span>';
+    empty.innerHTML = '<span class="legend-label">no participants</span>';
     legendEl.appendChild(empty);
   }
+
+  // Add-member button in the legend
+  const addBtn = document.createElement('div');
+  addBtn.className = 'legend-item';
+  addBtn.style.cssText = 'cursor:pointer; opacity:0.6; border-style:dashed;';
+  addBtn.innerHTML = '<span class="legend-label">+ add</span>';
+  addBtn.title = 'Add participant to this room';
+  addBtn.addEventListener('click', () => showAddMemberPopover());
+  legendEl.appendChild(addBtn);
 }
 
 function renderTargetDropdown() {
   const prev = targetEl.value || 'auto';
   targetEl.innerHTML = '';
+  const room = ROOMS.find(r => r.id === activeRoomId);
+  const members = new Set(room?.members || []);
+  const roomAgents = ROSTER.filter(a => members.has(a.name) && a.name !== HUMAN_NAME);
   const optAuto = document.createElement('option');
   optAuto.value = 'auto';
   optAuto.textContent = '@ mentions';
   targetEl.appendChild(optAuto);
-  for (const a of ROSTER) {
+  for (const a of roomAgents) {
     const opt = document.createElement('option');
     opt.value = a.name;
     opt.textContent = `→ ${cap(a.name)}`;
     targetEl.appendChild(opt);
   }
-  if (ROSTER.length > 1) {
+  if (roomAgents.length > 1) {
     const optAll = document.createElement('option');
     optAll.value = 'all';
     optAll.textContent = '→ All';
@@ -900,37 +1568,61 @@ function withToken(path) {
 }
 
 function addMessage(data) {
+  const roomId = data.room || 'general';
+  const rs = ensureRoomState(roomId);
+  const msgEl = rs.messagesEl;
   const from = data.from || 'system';
-  if (lastFrom && lastFrom !== from) {
+  if (rs.lastFrom && rs.lastFrom !== from) {
     const sep = document.createElement('div');
     sep.className = 'sep';
-    messagesEl.appendChild(sep);
+    msgEl.appendChild(sep);
   }
-  lastFrom = from;
+  rs.lastFrom = from;
 
   const div = document.createElement('div');
   const cls = from === 'you' || from === 'system' ? `from-${from}` : `from-${cssName(from)}`;
-  div.className = `msg ${cls}`;
-  // Render attachment: inline <img> for image extensions, otherwise a
-  // download link/chip with the filename. Both go through the
-  // safety check (URL must be a local /image/<id> or http(s)).
+  div.className = 'msg ' + cls;
   const safeAttachment = data.image && isSafeAttachmentSrc(data.image) ? data.image : null;
   const attachmentHtml = safeAttachment ? renderAttachmentHtml(safeAttachment) : '';
-  div.innerHTML = `
-    <div class="msg-meta">
-      <span class="msg-name">${NAMES[from] || from}</span>
-      <span class="msg-ts">${data.ts || ''}</span>
-      <span class="msg-to">→ ${NAMES[data.to] || data.to || ''}</span>
-    </div>
-    <span class="msg-arrow">╌</span>
-    <div class="msg-body">${highlightMentions(linkify(escHtml(data.text || '')))}${attachmentHtml}</div>
-  `;
-  messagesEl.appendChild(div);
-  // Bound DOM growth on long sessions.
-  while (messagesEl.childElementCount > MESSAGE_DOM_LIMIT) {
-    messagesEl.removeChild(messagesEl.firstChild);
+
+  // Build message DOM safely — all dynamic text goes through escHtml().
+  const meta = document.createElement('div');
+  meta.className = 'msg-meta';
+  const nameSpan = document.createElement('span');
+  nameSpan.className = 'msg-name';
+  nameSpan.textContent = NAMES[from] || from;
+  const tsSpan = document.createElement('span');
+  tsSpan.className = 'msg-ts';
+  tsSpan.textContent = data.ts || '';
+  const toSpan = document.createElement('span');
+  toSpan.className = 'msg-to';
+  toSpan.textContent = '\u2192 ' + (NAMES[data.to] || data.to || '');
+  meta.appendChild(nameSpan);
+  meta.appendChild(tsSpan);
+  meta.appendChild(toSpan);
+  div.appendChild(meta);
+
+  const arrow = document.createElement('span');
+  arrow.className = 'msg-arrow';
+  arrow.textContent = '\u254c';
+  div.appendChild(arrow);
+
+  const body = document.createElement('div');
+  body.className = 'msg-body';
+  // highlightMentions and linkify operate on already-escaped HTML — same
+  // pattern as the original code with all user content going through escHtml().
+  body.innerHTML = highlightMentions(linkify(escHtml(data.text || ''))) + attachmentHtml;
+  div.appendChild(body);
+
+  msgEl.appendChild(div);
+  while (msgEl.childElementCount > MESSAGE_DOM_LIMIT) {
+    msgEl.removeChild(msgEl.firstChild);
   }
-  messagesEl.scrollTop = messagesEl.scrollHeight;
+  msgEl.scrollTop = msgEl.scrollHeight;
+  if (roomId !== activeRoomId) {
+    const indicator = tabBar.querySelector('.tab-unread[data-room="' + roomId + '"]');
+    if (indicator) indicator.classList.add('visible');
+  }
 }
 
 function isSafeAttachmentSrc(u) {
@@ -963,9 +1655,8 @@ function imgUrl(u) {
   return `${BUS}${withToken(u)}`;
 }
 
-// Delegated click-to-zoom for image attachments; re-validates URL before
-// opening to avoid anything weird that bypassed escaping.
-messagesEl.addEventListener('click', (e) => {
+// Delegated click-to-zoom for image attachments.
+roomsWrapper.addEventListener('click', (e) => {
   const img = e.target.closest?.('.msg-body img[data-zoomable]');
   if (!img) return;
   const src = img.getAttribute('src') || '';
@@ -1018,9 +1709,10 @@ function applyPresence(agents) {
     const pd = item.querySelector('.presence-dot');
     if (pd) pd.title = online ? 'connected' : 'offline';
   }
-  const names = ROSTER.map(a => a.name);
-  const onCount = names.filter(n => agents[n]).length;
-  statusText.textContent = `live · ${onCount}/${names.length} agents online`;
+  const room = ROOMS.find(r => r.id === activeRoomId);
+  const members = (room?.members || []).filter(m => m !== HUMAN_NAME);
+  const onCount = members.filter(n => agents[n]).length;
+  statusText.textContent = `live · ${onCount}/${members.length} agents in room`;
   if (mentionPop.classList.contains('open')) updateMentionPopover();
 }
 
@@ -1048,6 +1740,7 @@ function handleEvent(data) {
   }
   if (data.type === 'roster')   { applyRoster(data.agents || []); return; }
   if (data.type === 'presence') { applyPresence(data.agents || {}); return; }
+  if (data.type === 'rooms')    { applyRooms(data.rooms || []); return; }
   // Dedup chat entries by their server-assigned id.
   if (typeof data.id === 'number') {
     if (data.id <= lastSeenId) return;
@@ -1091,7 +1784,7 @@ async function send() {
 
   const mode = targetEl.value || 'auto';
   const mentions = parseMentions(text);
-  let body = { text, image };
+  let body = { text, image, room: activeRoomId };
   if (mode === 'auto') {
     if (mentions.length) body.targets = mentions;
     else body.target = 'all';
@@ -1161,9 +1854,11 @@ function currentMentionContext() {
 function updateMentionPopover() {
   const ctx = currentMentionContext();
   if (!ctx) { hideMentionPopover(); return; }
-  const names = ROSTER.map(a => a.name);
+  const room = ROOMS.find(r => r.id === activeRoomId);
+  const members = new Set(room?.members || []);
+  const names = ROSTER.filter(a => members.has(a.name)).map(a => a.name);
   mentionMatches = names.filter(n => n.toLowerCase().startsWith(ctx.query));
-  if (ROSTER.length > 1 && 'all'.startsWith(ctx.query)) mentionMatches.push('all');
+  if (names.length > 1 && 'all'.startsWith(ctx.query)) mentionMatches.push('all');
   if (!mentionMatches.length) { hideMentionPopover(); return; }
   if (mentionActive >= mentionMatches.length) mentionActive = 0;
   renderMentionPopover();
@@ -1352,20 +2047,22 @@ function renderHandoffCard(event) {
     existing.snapshot = snapshot;
   } else {
     const el = buildHandoffCardDom(snapshot, event);
-    messagesEl.appendChild(el);
+    // Handoffs go to the active room's message area.
+    const rs = ensureRoomState(activeRoomId);
+    const msgEl = rs.messagesEl;
+    msgEl.appendChild(el);
     handoffCards.set(event.handoff_id, {
       element: el,
       version: incomingVersion,
       status: snapshot.status,
       snapshot,
     });
-    // Trim DOM to bound.
-    while (messagesEl.childElementCount > MESSAGE_DOM_LIMIT) {
-      const first = messagesEl.firstChild;
+    while (msgEl.childElementCount > MESSAGE_DOM_LIMIT) {
+      const first = msgEl.firstChild;
       if (first && first._handoffId) handoffCards.delete(first._handoffId);
-      messagesEl.removeChild(first);
+      msgEl.removeChild(first);
     }
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+    msgEl.scrollTop = msgEl.scrollHeight;
   }
 }
 
@@ -1448,11 +2145,11 @@ async function handleHandoffAction(id, action) {
   if (action === 'accept') {
     body = { by: HUMAN_NAME };
   } else if (action === 'decline') {
-    const reason = prompt('Decline reason?');
+    const reason = await dlgPrompt('Decline reason?');
     if (!reason) return;
     body = { by: HUMAN_NAME, reason };
   } else if (action === 'cancel') {
-    const reason = prompt('Cancel reason? (optional)') ?? '';
+    const reason = (await dlgPrompt('Cancel reason? (optional)')) ?? '';
     body = { by: HUMAN_NAME };
     if (reason) body.reason = reason;
   } else {
@@ -1544,7 +2241,16 @@ async function bootstrap() {
     }
   }
   try {
+    // Initialize the default room.
+    ensureRoomState('general');
+    const savedRoom = localStorage.getItem('a2achannel_active_room') || 'general';
+    switchRoom(savedRoom);
     await loadRoster();
+    // Load rooms from hub.
+    try {
+      const rr = await authedFetch('/rooms');
+      if (rr.ok) applyRooms(await rr.json());
+    } catch {}
     await loadPendingHandoffs();
     connect();
   } catch (e) {
@@ -1651,10 +2357,12 @@ if (reloadBtn) {
       // session id and chatLog, so the old lastSeenId is stale.
       if (activeES) { try { activeES.close(); } catch {} activeES = null; }
       handoffCards.clear();
-      // Drop any rendered chat + handoff cards from the DOM; they'll replay
-      // (roster + presence + pending handoffs) from the fresh hub.
-      messagesEl.innerHTML = '';
-      lastFrom = null;
+      // Clear per-room state.
+      for (const [, rs] of roomState) {
+        rs.messagesEl.innerHTML = '';
+        rs.lastFrom = null;
+        rs.handoffCards.clear();
+      }
       lastSeenId = 0;
       localStorage.setItem('a2achannel_last_event_id', '0');
       // Reconnect SSE against the new URL, then re-render any handoffs

@@ -107,6 +107,7 @@ if (!LEDGER_DB) {
 }
 
 type Agent = { name: string; color: string };
+type Room = { id: string; name: string; members: string[] };
 type Entry = {
   id?: number;
   from?: string;
@@ -115,7 +116,9 @@ type Entry = {
   ts?: string;
   image?: string | null;
   type?: string;
+  room?: string;
   agents?: Agent[] | Record<string, boolean>;
+  rooms?: Room[];
 };
 
 // ── Bounded drop-oldest queue with async pull ─────────────────
@@ -168,6 +171,19 @@ const staleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const permanentAgents = new Set<string>();  // agents exempt from stale cleanup
 let entrySeq = 0;
 const SESSION_ID = randomId(8);
+
+// ── Rooms ─────────────────────────────────────────────────────
+const rooms = new Map<string, Room>();
+rooms.set("general", { id: "general", name: "General", members: [HUMAN_NAME] });
+
+function roomsSnapshot(): Entry {
+  return { type: "rooms", rooms: [...rooms.values()] };
+}
+
+function broadcastRooms(): void {
+  const snap = roomsSnapshot();
+  for (const q of uiSubscribers) q.push(snap);
+}
 
 // ── Ledger (SQLite) ────────────────────────────────────────────
 let ledgerDb: Database | null = null;
@@ -744,7 +760,7 @@ function enqueueTo(name: string, entry: Entry): void {
 // ── HTTP helpers ───────────────────────────────────────────────
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
@@ -886,29 +902,38 @@ async function handleSend(req: Request): Promise<Response> {
     image?: string | null;
     target?: string;
     targets?: string[];
+    room?: string;
   };
   const text = (body.text ?? "").trim();
   const image = body.image || null;
+  const room = (body.room ?? "general").trim();
   if (!text && !image) return json({ error: "empty" }, { status: 400 });
   if (image && !IMAGE_URL_RE.test(image)) {
     return json({ error: "invalid image url" }, { status: 400 });
   }
+  const roomObj = rooms.get(room);
+  if (!roomObj) return json({ error: `unknown room: ${room}` }, { status: 400 });
+  const roomMembers = new Set(roomObj.members);
 
   let targets: string[];
   let broadcast = false;
 
   if (Array.isArray(body.targets) && body.targets.length) {
-    // Validate every element first; only then expand "all".
     for (const t of body.targets) {
       if (t === "all") continue;
       if (!knownAgents.has(t)) {
         return json({ error: `unknown target: ${t}` }, { status: 400 });
       }
+      if (!roomMembers.has(t)) {
+        return json({ error: `${t} is not a member of room ${room}` }, { status: 400 });
+      }
     }
     const resolved: string[] = [];
     for (const t of body.targets) {
       if (t === "all") {
-        resolved.splice(0, resolved.length, ...knownAgents.keys());
+        for (const m of roomObj.members) {
+          if (knownAgents.has(m) && !permanentAgents.has(m)) resolved.push(m);
+        }
         broadcast = true;
         break;
       }
@@ -916,19 +941,20 @@ async function handleSend(req: Request): Promise<Response> {
     }
     targets = resolved;
   } else if (!body.target || body.target === "all") {
-    targets = [...knownAgents.keys()];
+    targets = roomObj.members.filter(m => knownAgents.has(m) && !permanentAgents.has(m));
     broadcast = true;
-  } else if (knownAgents.has(body.target)) {
+  } else if (knownAgents.has(body.target) && roomMembers.has(body.target)) {
     targets = [body.target];
+  } else if (!roomMembers.has(body.target)) {
+    return json(
+      { error: `${body.target} is not a member of room ${room}` },
+      { status: 400 },
+    );
   } else {
     return json(
       { error: `unknown target: ${body.target}` },
       { status: 400 },
     );
-  }
-
-  if (!targets.length && !broadcast) {
-    return json({ error: "no targets" }, { status: 400 });
   }
 
   const toLabel = broadcast
@@ -937,7 +963,7 @@ async function handleSend(req: Request): Promise<Response> {
       ? targets[0]
       : targets.join(",");
 
-  const entry: Entry = { from: "you", to: toLabel, text, image, ts: ts() };
+  const entry: Entry = { from: "you", to: toLabel, text, image, ts: ts(), room };
   broadcastUI(entry);
   const view = agentEntry(entry);
   for (const t of targets) enqueueTo(t, view);
@@ -952,32 +978,39 @@ async function handlePost(req: Request): Promise<Response> {
     from?: string;
     to?: string;
     text?: string;
+    room?: string;
   };
   const frm = body.from;
   const rawTo = body.to ?? "you";
   const reserved = rawTo.toLowerCase();
   const text = (body.text ?? "").trim();
+  const room = (body.room ?? "general").trim();
   if (!frm || !text) {
     return json({ error: "bad request" }, { status: 400 });
   }
-  // ensureAgent validates the name; no need to pre-validate.
   if (!ensureAgent(frm)) {
     return json({ error: `invalid from: ${frm}` }, { status: 400 });
+  }
+  const roomObj = rooms.get(room);
+  if (!roomObj) return json({ error: `unknown room: ${room}` }, { status: 400 });
+  if (!roomObj.members.includes(frm)) {
+    return json({ error: `${frm} is not a member of room ${room}` }, { status: 403 });
   }
 
   let targets: string[];
   if (reserved === "you") {
     targets = [];
   } else if (reserved === "all") {
-    targets = [...knownAgents.keys()].filter((a) => a !== frm);
-  } else if (knownAgents.has(rawTo)) {
-    // Case-sensitive match against original name.
+    targets = roomObj.members.filter((m) => m !== frm && knownAgents.has(m));
+  } else if (knownAgents.has(rawTo) && roomObj.members.includes(rawTo)) {
     targets = [rawTo];
+  } else if (!roomObj.members.includes(rawTo)) {
+    return json({ error: `${rawTo} is not a member of room ${room}` }, { status: 403 });
   } else {
     return json({ error: `unknown to: ${rawTo}` }, { status: 400 });
   }
 
-  const entry: Entry = { from: frm, to: rawTo, text, ts: ts() };
+  const entry: Entry = { from: frm, to: rawTo, text, ts: ts(), room };
   broadcastUI(entry);
   for (const t of targets) enqueueTo(t, entry);
   return json({ ok: true });
@@ -1076,6 +1109,7 @@ function handleStream(req: Request): Response {
       send({ type: "session", id: SESSION_ID });
       send(rosterSnapshot());
       send(presenceSnapshot());
+      send(roomsSnapshot());
       for (const m of chatLog) {
         if ((m.id ?? 0) > lastId) send(m, m.id);
       }
@@ -1428,6 +1462,113 @@ const server = Bun.serve({
       if (req.method === "GET" && pathname === "/handoffs") {
         const authFail = requireAuth(req);
         return authFail ?? handleListHandoffs(req);
+      }
+      // Room endpoints.
+      if (req.method === "GET" && pathname === "/rooms") {
+        const authFail = requireReadAuth(req, url);
+        return authFail ?? json([...rooms.values()]);
+      }
+      if (req.method === "POST" && pathname === "/rooms") {
+        const authFail = requireAuth(req);
+        if (authFail) return authFail;
+        const sizeCheck = requireJsonBody(req);
+        if (sizeCheck) return sizeCheck;
+        const body = (await req.json().catch(() => ({}))) as { name?: string; members?: string[] };
+        const name = (body.name ?? "").trim();
+        if (!name || name.length > 64) {
+          return json({ error: "name required (max 64 chars)" }, { status: 400 });
+        }
+        const members: string[] = [HUMAN_NAME];
+        if (Array.isArray(body.members)) {
+          for (const m of body.members) {
+            if (typeof m === "string" && knownAgents.has(m) && !members.includes(m)) {
+              members.push(m);
+            }
+          }
+        }
+        const id = randomId(8).toLowerCase();
+        const room: Room = { id, name, members };
+        rooms.set(id, room);
+        broadcastRooms();
+        return json(room, { status: 201 });
+      }
+      if (req.method === "DELETE" && pathname.startsWith("/rooms/")) {
+        const authFail = requireAuth(req);
+        if (authFail) return authFail;
+        // Member management: DELETE /rooms/:id/members/:agent
+        const memberMatch = pathname.match(/^\/rooms\/([^/]+)\/members\/([^/]+)$/);
+        if (memberMatch) {
+          const [, roomId, agent] = memberMatch;
+          const roomObj = rooms.get(roomId);
+          if (!roomObj) return json({ error: "room not found" }, { status: 404 });
+          if (agent === HUMAN_NAME) return json({ error: "cannot remove the human" }, { status: 400 });
+          const idx = roomObj.members.indexOf(decodeURIComponent(agent));
+          if (idx < 0) return json({ error: "not a member" }, { status: 404 });
+          roomObj.members.splice(idx, 1);
+          broadcastRooms();
+          return json(roomObj);
+        }
+        const id = pathname.slice("/rooms/".length);
+        if (id === "general") {
+          return json({ error: "cannot delete the default room" }, { status: 400 });
+        }
+        if (!rooms.has(id)) {
+          return json({ error: "not found" }, { status: 404 });
+        }
+        rooms.delete(id);
+        broadcastRooms();
+        return json({ ok: true });
+      }
+      if (req.method === "POST" && pathname.startsWith("/rooms/")) {
+        const authFail = requireAuth(req);
+        if (authFail) return authFail;
+        // Member management: POST /rooms/:id/members
+        const memberMatch = pathname.match(/^\/rooms\/([^/]+)\/members$/);
+        if (memberMatch) {
+          const sizeCheck = requireJsonBody(req);
+          if (sizeCheck) return sizeCheck;
+          const roomId = memberMatch[1];
+          const roomObj = rooms.get(roomId);
+          if (!roomObj) return json({ error: "room not found" }, { status: 404 });
+          const mbody = (await req.json().catch(() => ({}))) as { agent?: string };
+          const agent = (mbody.agent ?? "").trim();
+          if (!agent || !knownAgents.has(agent)) {
+            return json({ error: `unknown agent: ${agent}` }, { status: 400 });
+          }
+          if (!roomObj.members.includes(agent)) {
+            roomObj.members.push(agent);
+            broadcastRooms();
+          }
+          return json(roomObj);
+        }
+      }
+      if (req.method === "PUT" && pathname.startsWith("/rooms/")) {
+        const authFail = requireAuth(req);
+        if (authFail) return authFail;
+        const sizeCheck = requireJsonBody(req);
+        if (sizeCheck) return sizeCheck;
+        const id = pathname.slice("/rooms/".length);
+        const existing = rooms.get(id);
+        if (!existing) {
+          return json({ error: "not found" }, { status: 404 });
+        }
+        const body = (await req.json().catch(() => ({}))) as { name?: string; members?: string[] };
+        const name = (body.name ?? "").trim();
+        if (!name || name.length > 64) {
+          return json({ error: "name required (max 64 chars)" }, { status: 400 });
+        }
+        existing.name = name;
+        if (Array.isArray(body.members)) {
+          const newMembers = [HUMAN_NAME];
+          for (const m of body.members) {
+            if (typeof m === "string" && knownAgents.has(m) && !newMembers.includes(m)) {
+              newMembers.push(m);
+            }
+          }
+          existing.members = newMembers;
+        }
+        broadcastRooms();
+        return json(existing);
       }
       return json({ error: "not found", path: pathname }, { status: 404 });
     } catch (e) {

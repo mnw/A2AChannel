@@ -34,6 +34,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 const AGENT = process.env.CHATBRIDGE_AGENT ?? process.argv[2] ?? "";
+let lastRoom = "general";
 const HUB_ENV = (process.env.CHATBRIDGE_HUB ?? "").trim();
 const DISCOVERY_DIR = join(
   homedir(),
@@ -84,7 +85,9 @@ const mcp = new Server(
       `Inbound messages arrive as <channel source="chatbridge" from="..." to="..."> ` +
       `with to="${AGENT}" or to="all".\n\n` +
       `Use "post" for free-text conversation: set from="${AGENT}", ` +
-      `to="you" to address the human, to="<name>" for a peer, or to="all" to broadcast.\n\n` +
+      `to="you" to address the human, to="<name>" for a peer, or to="all" to broadcast. ` +
+      `Messages are scoped to rooms — you only receive messages from rooms you belong to. ` +
+      `The room is auto-tracked from inbound messages, but you can override it with the room parameter.\n\n` +
       `Use the structured-handoff tools when you're transferring bounded work ` +
       `to another participant:\n` +
       `- "send_handoff": hand a task to another participant. Returns a handoff_id.\n` +
@@ -118,6 +121,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             description:
               'Recipient: "you" (human), "<agent-name>" to address a specific ' +
               'peer, or "all" to broadcast.',
+          },
+          room: {
+            type: "string",
+            description:
+              'Room to post in. Defaults to "general". Use a room id from the hub.',
           },
         },
         required: ["text", "to"],
@@ -259,7 +267,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (req.params.name === "post") {
     const text = String(args.text ?? "");
     const to = String(args.to ?? "");
-    const resp = await authedPost("/post", { from: AGENT, to, text });
+    const room = args.room ? String(args.room) : lastRoom;
+    const body: Record<string, unknown> = { from: AGENT, to, text, room };
+    const resp = await authedPost("/post", body);
     if (resp.status < 200 || resp.status >= 300) toolError(resp, "post");
     return { content: [{ type: "text", text: "posted" }] };
   }
@@ -368,7 +378,7 @@ async function tailHub(): Promise<void> {
             to: string;
             text: string;
             ts: string;
-            // Structured-message fields (present for kind starting with "handoff.")
+            room?: string;
             kind?: string;
             handoff_id?: string;
             version?: number;
@@ -388,6 +398,10 @@ async function tailHub(): Promise<void> {
               to: evt.to,
               ts: evt.ts,
             };
+            if (evt.room) {
+              meta.room = evt.room;
+              lastRoom = evt.room;
+            }
             if (evt.kind) {
               // Forward structured events with their protocol metadata as channel attributes.
               meta.kind = evt.kind;
