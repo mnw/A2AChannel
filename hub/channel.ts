@@ -72,7 +72,7 @@ function resolveHub(): HubInfo | null {
 }
 
 const mcp = new Server(
-  { name: "chatbridge", version: "0.5.0" },
+  { name: "chatbridge", version: "0.6.0" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },
@@ -85,6 +85,10 @@ const mcp = new Server(
       `with to="${AGENT}" or to="all".\n\n` +
       `Use "post" for free-text conversation: set from="${AGENT}", ` +
       `to="you" to address the human, to="<name>" for a peer, or to="all" to broadcast.\n\n` +
+      `Use "post_file" to share a file from your filesystem: give an absolute path, ` +
+      `an optional caption, and a recipient. The hub enforces an extension allowlist ` +
+      `(default: jpg, jpeg, png, pdf, md) and an 8 MiB cap. On success, peers receive ` +
+      `the file as [attachment: <absolute path>] — same convention as human uploads.\n\n` +
       `Use the structured-handoff tools when you're transferring bounded work ` +
       `to another participant:\n` +
       `- "send_handoff": hand a task to another participant. Returns a handoff_id.\n` +
@@ -94,6 +98,14 @@ const mcp = new Server(
       `Handoff events arrive as <channel kind="handoff.new" ...> or <channel kind="handoff.update" ...> ` +
       `with the handoff snapshot in the body. The meta attribute replay="true" means the event is ` +
       `a reconnect catch-up, not new news.\n\n` +
+      `When you need to flag a peer's attention urgently (e.g. "stop and re-read this before continuing"), ` +
+      `use "send_interrupt". Interrupts arrive as <channel kind="interrupt.new" ...> and stay visible to the ` +
+      `recipient until acknowledged via "ack_interrupt". Reserve them for genuine "pause everything" moments ` +
+      `— regular discussion belongs in post.\n\n` +
+      `To propose an edit to the shared project summary (the "nutshell" that describes the current reference ` +
+      `point), use "send_handoff" targeting the human (see the briefing for their name), task starting with "[nutshell]", ` +
+      `and context={ "patch": "<new full text>" }. The human accepts or declines; accepted edits update the nutshell ` +
+      `atomically and broadcast to all participants.\n\n` +
       `Keep free-text messages concise; large artifacts belong in files. ` +
       `Attachments arrive as [attachment: <absolute-path>] — inspect the file's ` +
       `extension to choose your tool: Read for text/markdown/code/JSON, Read with pages= ` +
@@ -121,6 +133,32 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         },
         required: ["text", "to"],
+      },
+    },
+    {
+      name: "post_file",
+      description:
+        "Upload a file from your local filesystem and post it as a chat message. The file's extension must match the hub's allowlist (default: jpg, jpeg, png, pdf, md).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: {
+            type: "string",
+            description:
+              "Absolute path on your local filesystem to the file to upload.",
+          },
+          to: {
+            type: "string",
+            description:
+              'Recipient: "you" (human), "<agent-name>", or "all" (default).',
+          },
+          caption: {
+            type: "string",
+            maxLength: 1000,
+            description: "Optional text body to accompany the file.",
+          },
+        },
+        required: ["path"],
       },
     },
     {
@@ -202,6 +240,35 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["handoff_id"],
       },
     },
+    {
+      name: "send_interrupt",
+      description:
+        "Send a high-visibility attention flag to another participant. The recipient's channel surfaces it prominently; they acknowledge via ack_interrupt when they've read it. Use sparingly — reserve for 'wait, re-read this before continuing' moments, not for regular chat.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          to: { type: "string", description: "Recipient name." },
+          text: {
+            type: "string",
+            minLength: 1,
+            maxLength: 500,
+            description: "Short explanation of what the recipient should re-read or reconsider.",
+          },
+        },
+        required: ["to", "text"],
+      },
+    },
+    {
+      name: "ack_interrupt",
+      description: "Acknowledge a pending interrupt addressed to you.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          interrupt_id: { type: "string", pattern: "^i_[0-9a-f]{16}$" },
+        },
+        required: ["interrupt_id"],
+      },
+    },
   ],
 }));
 
@@ -242,6 +309,56 @@ async function authedPost(
   return { status: r.status, body: text, json: parsed };
 }
 
+// Auth'd multipart upload — used by post_file. Reads the whole file into
+// memory; the hub enforces size caps and will reject oversized payloads.
+async function authedUpload(
+  filePath: string,
+): Promise<{ status: number; body: string; json: unknown }> {
+  let hub = resolveHub();
+  if (!hub) {
+    throw new Error(
+      `hub not found (need ${URL_PATH} and ${TOKEN_PATH}, or CHATBRIDGE_HUB env)`,
+    );
+  }
+  // Bun's File API reads disk bytes; fall back to readFileSync for safety.
+  const { readFileSync, statSync } = await import("node:fs");
+  const { basename } = await import("node:path");
+  const filename = basename(filePath);
+  let bytes: Uint8Array;
+  try {
+    const stat = statSync(filePath);
+    if (!stat.isFile()) throw new Error(`${filePath} is not a regular file`);
+    bytes = new Uint8Array(readFileSync(filePath));
+  } catch (e) {
+    throw new Error(`could not read ${filePath}: ${(e as Error).message ?? e}`);
+  }
+  const send = async (h: HubInfo) => {
+    const form = new FormData();
+    // Cast past ArrayBuffer vs SharedArrayBuffer strictness in the type
+    // system; at runtime Blob accepts any typed-array view.
+    form.append("file", new Blob([bytes as unknown as BlobPart]), filename);
+    return fetch(`${h.url}/upload`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${h.token}` },
+      body: form,
+    });
+  };
+  let r = await send(hub);
+  if (r.status === 401) {
+    const refreshed = resolveHub();
+    if (refreshed && refreshed.token !== hub.token) {
+      hub = refreshed;
+      r = await send(hub);
+    }
+  }
+  const text = await r.text();
+  let parsed: unknown = null;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {}
+  return { status: r.status, body: text, json: parsed };
+}
+
 function toolError(resp: { status: number; body: string; json: unknown }, action: string): never {
   const msg =
     resp.json &&
@@ -262,6 +379,34 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     const resp = await authedPost("/post", { from: AGENT, to, text });
     if (resp.status < 200 || resp.status >= 300) toolError(resp, "post");
     return { content: [{ type: "text", text: "posted" }] };
+  }
+
+  if (req.params.name === "post_file") {
+    const path = String(args.path ?? "").trim();
+    if (!path) throw new Error("post_file: path is required");
+    const to = String(args.to ?? "all");
+    const caption = args.caption !== undefined ? String(args.caption) : "";
+
+    // 1. Upload bytes → hub returns { url, id }.
+    const up = await authedUpload(path);
+    if (up.status < 200 || up.status >= 300) toolError(up, "post_file upload");
+    const url =
+      up.json && typeof up.json === "object" && "url" in up.json
+        ? String((up.json as { url: string }).url)
+        : "";
+    if (!url) throw new Error("post_file: hub returned no url");
+
+    // 2. Post a chat entry with the returned URL as the attachment. Reuses
+    // /post so the message flows through the same broadcast + enqueue path
+    // as any other agent-originated chat entry.
+    const send = await authedPost("/post", {
+      from: AGENT,
+      to,
+      text: caption,
+      image: url,
+    });
+    if (send.status < 200 || send.status >= 300) toolError(send, "post_file send");
+    return { content: [{ type: "text", text: `posted ${url}` }] };
   }
 
   if (req.params.name === "send_handoff") {
@@ -305,6 +450,25 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     const resp = await authedPost(`/handoffs/${id}/cancel`, body);
     if (resp.status !== 200) toolError(resp, "cancel_handoff");
     return { content: [{ type: "text", text: "cancelled" }] };
+  }
+
+  if (req.params.name === "send_interrupt") {
+    const to = String(args.to ?? "");
+    const text = String(args.text ?? "");
+    const resp = await authedPost("/interrupts", { from: AGENT, to, text });
+    if (resp.status !== 201) toolError(resp, "send_interrupt");
+    const id =
+      resp.json && typeof resp.json === "object" && "id" in resp.json
+        ? String((resp.json as { id: string }).id)
+        : "";
+    return { content: [{ type: "text", text: `interrupt_id=${id}` }] };
+  }
+
+  if (req.params.name === "ack_interrupt") {
+    const id = String(args.interrupt_id ?? "");
+    const resp = await authedPost(`/interrupts/${id}/ack`, { by: AGENT });
+    if (resp.status !== 200) toolError(resp, "ack_interrupt");
+    return { content: [{ type: "text", text: "acknowledged" }] };
   }
 
   throw new Error(`unknown tool: ${req.params.name}`);
@@ -364,17 +528,25 @@ async function tailHub(): Promise<void> {
             .find((l) => l.startsWith("data: "));
           if (!dataLine) continue;
           let evt: {
-            from: string;
-            to: string;
-            text: string;
-            ts: string;
-            // Structured-message fields (present for kind starting with "handoff.")
+            type?: string;
+            from?: string;
+            to?: string;
+            text?: string;
+            ts?: string;
+            // Structured-message fields (present for kind starting with "handoff." or "interrupt.")
             kind?: string;
             handoff_id?: string;
+            interrupt_id?: string;
             version?: number;
             expires_at_ms?: number;
             status?: string;
             replay?: boolean;
+            // Briefing payload (type === "briefing")
+            tools?: string[];
+            peers?: Array<{ name: string; online: boolean }>;
+            attachments_dir?: string;
+            human_name?: string;
+            nutshell?: string | null;
           };
           try {
             evt = JSON.parse(dataLine.slice(6));
@@ -383,15 +555,69 @@ async function tailHub(): Promise<void> {
             continue;
           }
           try {
+            // Briefing: a one-off onboarding notification with tool inventory,
+            // peer list, attachments path, and current project nutshell.
+            // Delivered as a regular chat notification (no custom kind) because
+            // Claude Code's channel client appears to silently drop unknown
+            // kinds — we were losing briefings by tagging them kind=briefing.
+            // The prose is prefixed with a recognizable tag so the agent's
+            // model can still pattern-match on it in context.
+            if (evt.type === "briefing") {
+              const parts: string[] = [
+                `[A2AChannel briefing] You are "${AGENT}" in a shared room.`,
+              ];
+              if (evt.human_name) parts.push(`The human's name is "${evt.human_name}".`);
+              if (evt.peers?.length) {
+                const onlinePeers = evt.peers.filter((p) => p.online).map((p) => p.name);
+                const offlinePeers = evt.peers.filter((p) => !p.online).map((p) => p.name);
+                if (onlinePeers.length) parts.push(`Online peers: ${onlinePeers.join(", ")}.`);
+                if (offlinePeers.length) parts.push(`Known but offline peers: ${offlinePeers.join(", ")}.`);
+              }
+              if (evt.tools?.length) {
+                parts.push(`Available chatbridge tools: ${evt.tools.join(", ")}.`);
+              }
+              if (evt.attachments_dir) {
+                parts.push(
+                  `Attachments dir: ${evt.attachments_dir}. Incoming files arrive as [attachment: <path>] suffixes you can Read directly.`,
+                );
+              }
+              if (evt.nutshell && evt.nutshell.trim()) {
+                parts.push(`Current project summary (nutshell):\n${evt.nutshell.trim()}`);
+              }
+              const content = parts.join("\n\n");
+              await mcp.notification({
+                method: "notifications/claude/channel",
+                params: {
+                  content,
+                  meta: { from: "system", to: AGENT, ts: evt.ts ?? "" },
+                },
+              });
+              continue;
+            }
+            // Nutshell updates: ambient context refresh. Same rationale as
+            // briefings — ship as regular chat content so Claude Code's
+            // channel client accepts it.
+            if (evt.type === "nutshell.updated") {
+              const text = evt.text ?? "";
+              await mcp.notification({
+                method: "notifications/claude/channel",
+                params: {
+                  content: `[A2AChannel nutshell update]\n${text}`,
+                  meta: { from: "system", to: AGENT, ts: evt.ts ?? "" },
+                },
+              });
+              continue;
+            }
             const meta: Record<string, string> = {
-              from: evt.from,
-              to: evt.to,
-              ts: evt.ts,
+              from: evt.from ?? "",
+              to: evt.to ?? "",
+              ts: evt.ts ?? "",
             };
             if (evt.kind) {
               // Forward structured events with their protocol metadata as channel attributes.
               meta.kind = evt.kind;
               if (evt.handoff_id) meta.handoff_id = evt.handoff_id;
+              if (evt.interrupt_id) meta.interrupt_id = evt.interrupt_id;
               if (evt.version !== undefined) meta.version = String(evt.version);
               if (evt.expires_at_ms !== undefined) meta.expires_at_ms = String(evt.expires_at_ms);
               if (evt.status) meta.status = evt.status;
@@ -400,7 +626,7 @@ async function tailHub(): Promise<void> {
             await mcp.notification({
               method: "notifications/claude/channel",
               params: {
-                content: evt.text,
+                content: evt.text ?? "",
                 meta,
               },
             });

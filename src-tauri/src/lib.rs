@@ -515,6 +515,7 @@ fn get_mcp_template() -> Result<String, String> {
     serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())
 }
 
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())

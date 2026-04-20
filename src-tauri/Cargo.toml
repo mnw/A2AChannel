@@ -1,6 +1,6 @@
 [package]
 name = "a2achannel"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 
 [lib]
@@ -11,7 +11,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# devtools feature exposes "Inspect Element" in the webview + keyboard shortcut
+# Cmd+Opt+I. Shipped in release builds as well so end-user bug reports can
+# include console logs without requiring a dev build.
+tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

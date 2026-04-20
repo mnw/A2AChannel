@@ -6,11 +6,12 @@ state beyond the in-memory chat log. **Typed protocol messages** have a
 `kind`, a typed payload, a lifecycle, and persist in a SQLite ledger so
 in-flight work survives app restarts.
 
-The first and currently only implemented kind is `handoff`. The protocol is
-designed so additional kinds (`proposal`, `question`, `review_request`,
-`status`, `decision`, …) can be added without schema migration — every kind
-writes to the same `events` table and keeps its derived state in a
-kind-specific projection.
+v0.6 implements three structured kinds: **`handoff`** (typed work transfer
+with an explicit state machine), **`interrupt`** (high-visibility attention
+flag), and **`nutshell`** (single-row living project summary). Additional
+kinds (`proposal`, `question`, `review_request`, `status`, `decision`, …)
+can be added without schema migration — every kind writes to the same
+`events` table and keeps its derived state in a kind-specific projection.
 
 ---
 
@@ -136,6 +137,43 @@ handoff regardless of sender.
 
 The hub verifies `by == from_agent` OR `by == human_name`.
 
+### `post`
+
+Free-text chat. Not a structured kind — no ledger entry, no state machine,
+just a broadcast through the hub. Included here for completeness.
+
+| Parameter | Type | Required | Notes |
+|---|---|---|---|
+| `text` | `string` | yes | Message body. |
+| `to` | `string` | yes | `"you"` (human), an agent name, or `"all"`. |
+
+### `post_file`
+
+Upload a file from the agent's local filesystem and post it as an
+attachment. Symmetric with human-driven uploads — same on-disk path,
+same CSP, same allowlist.
+
+| Parameter | Type | Required | Notes |
+|---|---|---|---|
+| `path` | `string` | yes | Absolute path on the agent's filesystem. |
+| `to` | `string` | no | Recipient name. Defaults to `"all"`. |
+| `caption` | `string` | no | Optional text body. |
+
+Behavior: reads the file, multipart-POSTs to `/upload`, then calls `/post`
+with `image = <returned URL>`. Peers receive `[attachment: <abs path>]` in
+their channel notifications — same convention as human uploads.
+
+Constraints (enforced hub-side):
+- Filename extension must be in `config.json::attachment_extensions`
+  (default: `jpg`, `jpeg`, `png`, `pdf`, `md`).
+- Max 8 MiB per upload.
+- The hub does not trust the browser/agent-reported MIME; extension is the
+  only gate. CSP + `nosniff` on the serve route prevent execution.
+
+### `send_interrupt` / `ack_interrupt`
+
+See [the interrupt kind](#the-interrupt-kind) above for schema and lifecycle.
+
 ---
 
 ## HTTP endpoints
@@ -228,6 +266,141 @@ Clients MUST reconcile by `(handoff_id, max version seen)`:
 
 This makes replay-on-reconnect, out-of-order delivery, and SSE retry all
 idempotent without extra client-side bookkeeping.
+
+---
+
+## The `interrupt` kind
+
+High-visibility attention flag. Lifecycle: `pending → acknowledged`
+(terminal). No cancel, no expire — interrupts stay pending until the
+recipient acknowledges them.
+
+### Snapshot schema
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | `string` | Format `i_[0-9a-f]{16}`. |
+| `from_agent` | `string` | |
+| `to_agent` | `string` | |
+| `text` | `string` | 1–500 chars. |
+| `status` | `"pending" \| "acknowledged"` | |
+| `created_at_ms` | `number` | |
+| `acknowledged_at_ms` | `number \| null` | Set on ack. |
+| `acknowledged_by` | `string \| null` | The `by` of the ack (recipient or human). |
+| `version` | `number` | `MAX(events.seq)` for this interrupt's id. |
+
+### HTTP
+
+| Method | Path | Auth | Body cap | Purpose |
+|---|---|---|---|---|
+| POST | `/interrupts` | Bearer | 256 KiB | Create. Returns `201 {"id":"i_..."}`. |
+| POST | `/interrupts/{id}/ack` | Bearer | 256 KiB | Acknowledge. `{by: <recipient-or-human>}`. |
+| GET  | `/interrupts?status=&for=&limit=` | Bearer header OR `?token=` | — | List snapshots. |
+
+### MCP tools
+
+- `send_interrupt({to, text})` → returns `interrupt_id=i_...`.
+- `ack_interrupt({interrupt_id})` → idempotent if already acknowledged by you.
+
+### SSE events
+
+- `interrupt.new` — once, at creation.
+- `interrupt.ack` — once, at acknowledgement.
+
+Reconciliation follows the same `(id, version)` contract as handoffs.
+
+### Trust semantics
+
+The interrupt is **not** a kernel-level preemption; the hub can't force an
+LLM to pause mid-turn. The coordination value is:
+
+1. A distinct `<channel kind="interrupt.new">` notification the agent's
+   system prompt teaches it to react to (via the briefing).
+2. A persistent, sticky UI card the human cannot visually miss.
+3. An explicit ack protocol so senders know when the message was read.
+
+Cooperative agents honor it; uncooperative ones don't. Acceptable for a
+collaboration-oriented tool.
+
+---
+
+## The `nutshell` kind
+
+A single-row living document — the project's working reference point.
+Stored in a one-row `nutshell` table guarded by `CHECK(id = 0)`. Edits are
+proposed via the existing `handoff` primitive (no separate edit route) to
+keep the accept/decline UX consistent.
+
+### Snapshot schema
+
+| Field | Type | Notes |
+|---|---|---|
+| `text` | `string` | The current nutshell. Empty on first launch. |
+| `version` | `number` | Monotonic; 0 before the first accepted edit. |
+| `updated_at_ms` | `number` | |
+| `updated_by` | `string \| null` | The `from_agent` of the last accepted edit. |
+
+### Edit protocol
+
+Callers send a handoff:
+
+```json
+POST /handoffs
+{
+  "from":    "<proposer>",
+  "to":      "<human-name>",
+  "task":    "[nutshell] <short summary>",
+  "context": { "patch": "<full new nutshell text>" }
+}
+```
+
+On accept by the human, the hub atomically writes the patch, bumps
+`version`, sets `updated_by = <proposer>`, and broadcasts an
+`SSE event: type=nutshell.updated` to all UI subscribers. Agents receive
+the updated text on their next connection as part of the briefing. The
+handoff-accept path validates:
+
+- Task prefix is `[nutshell]` (case-sensitive).
+- Recipient is the configured human name.
+- `context.patch` is a string.
+
+If any check fails the handoff accepts normally but the nutshell is not
+modified — no partial state is possible.
+
+### HTTP
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET | `/nutshell` | Bearer header OR `?token=` | Current snapshot. |
+
+No direct POST/PUT; use the handoff flow above.
+
+---
+
+## The briefing (onboarding notification)
+
+When an agent's channel sidecar connects to `/agent-stream` for the first
+time during a given hub process lifetime, the hub pushes a single briefing
+event to that agent's queue **before** any chat or structured-message
+replay. The briefing shape:
+
+```json
+{
+  "type": "briefing",
+  "tools": ["post","post_file","send_handoff","accept_handoff",
+            "decline_handoff","cancel_handoff","send_interrupt","ack_interrupt"],
+  "peers": [{ "name": "alice", "online": true }, { "name": "human", "online": true }],
+  "attachments_dir": "/Users/<you>/a2a-attachments",
+  "human_name": "human",
+  "nutshell": "...current nutshell text, or null...",
+  "ts": "HH:MM:SS"
+}
+```
+
+The channel sidecar renders it into a prose paragraph and forwards as a
+`notifications/claude/channel` event with `meta.kind="briefing"`. Reconnects
+within the same hub process do **not** trigger a new briefing; hub restart
+does.
 
 ---
 

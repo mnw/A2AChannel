@@ -31,6 +31,23 @@ echo "==> stopping running A2AChannel (NOT channel-bin subprocesses of Claude se
 # to restart every Claude session. hub-bin dies via the Tauri cleanup
 # handler when the parent a2achannel process exits.
 pkill -x a2achannel 2>/dev/null || true
+sleep 0.5
+
+# Tauri's cleanup handler isn't 100% reliable on SIGTERM — orphan hub
+# sidecars (a2a-bin A2A_MODE=hub with parent reassigned to launchd) can
+# survive the parent's death and keep binding their dynamic port, leaving
+# the discovery file pointing at a live-but-wrong process on the next
+# relaunch. Detect and kill them. Orphan signature: a2a-bin with PPID=1
+# AND env A2A_MODE=hub. Channel-mode sidecars are spawned by claude
+# (PPID != 1) so they're skipped.
+for pid in $(pgrep -f "A2AChannel.app/Contents/MacOS/a2a-bin"); do
+  ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+  mode=$(ps -Eww -p "$pid" 2>/dev/null | tail -1 | tr ' ' '\n' | grep '^A2A_MODE=' | cut -d= -f2 | head -1)
+  if [ "$ppid" = "1" ] && [ "$mode" = "hub" ]; then
+    echo "   killing orphan hub sidecar (pid=$pid)"
+    kill "$pid" 2>/dev/null || true
+  fi
+done
 sleep 0.3
 
 echo "==> installing to /Applications"

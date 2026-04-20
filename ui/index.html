@@ -179,38 +179,84 @@ header h1 {
   display: flex;
   gap: 10px;
   align-items: flex-start;
-  padding: 7px 10px;
-  border-radius: 6px;
+  padding: 4px 10px;
   animation: fade-in 0.2s ease;
   max-width: 100%;
 }
-.msg:hover { background: rgba(255,255,255,0.03); }
 
 @keyframes fade-in {
   from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 
-.msg-meta {
+.msg-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 11px;
+  color: var(--ctp-crust);
+  background: var(--ctp-surface2);
+  letter-spacing: 0;
+  margin-top: 2px;
+  user-select: none;
+}
+
+.msg-content {
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
-  min-width: 90px;
-  flex-shrink: 0;
+  gap: 3px;
+  min-width: 0;
+  max-width: calc(100% - 38px);
+  flex: 1;
+}
+
+.msg-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
 }
 
 .msg-name { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; }
-.msg-ts { font-size: 10px; color: var(--ctp-surface2); margin-top: 2px; }
-.msg-arrow { font-size: 11px; color: var(--ctp-surface1); flex-shrink: 0; margin-top: 1px; }
+.msg-ts { font-size: 10px; color: var(--ctp-surface2); }
+.msg-to { font-size: 10px; color: var(--ctp-surface2); }
+.msg-arrow { display: none; }
+
 .msg-body {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
   font-size: 12.5px;
-  line-height: 1.6;
+  line-height: 1.55;
   color: var(--ctp-subtext1);
-  flex: 1;
+  padding: 7px 11px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 2px 10px 10px 10px;
   word-break: break-word;
   white-space: pre-wrap;
 }
-.msg-to { font-size: 10px; color: var(--ctp-surface2); margin-top: 1px; }
+
+/* Self (human) messages: avatar on the right, bubble right-aligned, tinted. */
+.msg.from-you { flex-direction: row-reverse; }
+.msg.from-you .msg-content { align-items: flex-end; }
+.msg.from-you .msg-header { justify-content: flex-end; }
+.msg.from-you .msg-body {
+  border-radius: 10px 2px 10px 10px;
+  background: rgba(137, 180, 250, 0.12);
+  border-color: rgba(137, 180, 250, 0.22);
+}
+
+/* System messages: subtle red-tinted bubble. */
+.msg.from-system .msg-body {
+  background: rgba(243, 139, 168, 0.08);
+  border-color: rgba(243, 139, 168, 0.2);
+  font-style: italic;
+}
 
 .msg-body img {
   display: block;
@@ -220,6 +266,76 @@ header h1 {
   border-radius: 6px;
   border: 1px solid rgba(255,255,255,0.08);
   cursor: zoom-in;
+}
+
+/* Links in bubble bodies — lighter color, one-click copy button. */
+.msg-body .msg-link {
+  color: var(--ctp-sky);
+  text-decoration: underline;
+  text-decoration-color: rgba(137, 220, 235, 0.35);
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+.msg-body .msg-link:hover { text-decoration-color: var(--ctp-sky); }
+
+/* Copy-link button: a 14×14 chain-link glyph rendered via CSS mask so
+   background-color drives the tint (default + hover + copied states).
+   Inline SVGs inside innerHTML can hit WKWebView quirks; masks avoid it. */
+.msg-body .msg-link-copy {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  background-color: var(--ctp-sky);
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><path d='M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'/><path d='M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'/></svg>");
+          mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><path d='M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'/><path d='M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'/></svg>");
+  -webkit-mask-repeat: no-repeat;
+          mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+          mask-size: contain;
+  -webkit-mask-position: center;
+          mask-position: center;
+  border: none;
+  padding: 0;
+  margin-left: 5px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background-color 0.15s, transform 0.15s;
+  vertical-align: -2px;
+}
+.msg:hover .msg-body .msg-link-copy { opacity: 0.75; }
+.msg-body .msg-link-copy:hover {
+  opacity: 1;
+  background-color: var(--ctp-blue);
+  transform: scale(1.08);
+}
+.msg-body .msg-link-copy.copied {
+  opacity: 1;
+  background-color: var(--ctp-green);
+}
+
+/* Top-center toast for one-off confirmations (currently: "Link copied"). */
+#copy-toast {
+  position: fixed;
+  top: 60px;
+  left: 50%;
+  transform: translate(-50%, -8px);
+  background: var(--ctp-green);
+  color: var(--ctp-crust);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 7px 16px;
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  z-index: 500;
+  white-space: nowrap;
+}
+#copy-toast.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
 }
 
 .attachment-link {
@@ -612,6 +728,185 @@ button.danger {
 button.danger:hover { background: var(--ctp-surface1); border-color: rgba(243, 139, 168, 0.6); }
 
 .hint { font-size: 10px; color: var(--ctp-surface1); margin-top: 6px; padding-left: 2px; }
+
+/* ── Nutshell (pinned project summary) ────────────────────── */
+.nutshell {
+  flex-shrink: 0;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  background: var(--ctp-mantle);
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+  padding: 8px 20px;
+  font-size: 11.5px;
+  color: var(--ctp-subtext1);
+  transition: background 0.35s;
+}
+.nutshell.flash { background: rgba(166, 227, 161, 0.12); }
+.nutshell-label {
+  flex-shrink: 0;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ctp-overlay0);
+  font-weight: 600;
+  padding-top: 1px;
+  min-width: 62px;
+}
+.nutshell-body {
+  flex: 1;
+  white-space: pre-wrap;
+  line-height: 1.5;
+  word-break: break-word;
+  cursor: text;
+}
+.nutshell-body.empty { color: var(--ctp-surface2); font-style: italic; }
+.nutshell-edit-btn {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.08);
+  color: var(--ctp-overlay0);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  align-self: flex-start;
+}
+.nutshell-edit-btn:hover { color: var(--ctp-text); border-color: rgba(255,255,255,0.2); }
+.nutshell-meta {
+  flex-shrink: 0;
+  font-size: 9.5px;
+  color: var(--ctp-overlay0);
+  align-self: flex-end;
+  white-space: nowrap;
+}
+
+.nutshell-editor {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 220;
+}
+.nutshell-editor.open { display: flex; }
+.nutshell-editor .box {
+  background: var(--ctp-mantle);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  padding: 18px 20px;
+  width: min(640px, 92vw);
+  box-shadow: 0 16px 48px rgba(0,0,0,0.6);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.nutshell-editor h2 {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ctp-subtext0);
+}
+.nutshell-editor p {
+  font-size: 11px;
+  color: var(--ctp-overlay0);
+  line-height: 1.5;
+}
+.nutshell-editor textarea {
+  min-height: 180px;
+  background: var(--ctp-surface0);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: var(--ctp-text);
+  font-size: 12px;
+  padding: 10px 12px;
+  border-radius: 5px;
+  resize: vertical;
+  outline: none;
+}
+.nutshell-editor textarea:focus { border-color: rgba(255,255,255,0.25); }
+.nutshell-editor .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ── Interrupt cards (high-visibility attention flags) ────── */
+.interrupt-card {
+  background: var(--ctp-mantle);
+  border: 1.5px solid var(--ctp-red);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 8px 10px;
+  font-size: 12.5px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 12px;
+  box-shadow: 0 0 0 3px rgba(243, 139, 168, 0.08);
+}
+.interrupt-card.status-acknowledged {
+  border-color: var(--ctp-overlay1);
+  opacity: 0.75;
+  box-shadow: none;
+}
+.interrupt-header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-weight: 700;
+  color: var(--ctp-red);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+.interrupt-card.status-acknowledged .interrupt-header { color: var(--ctp-overlay1); }
+.interrupt-header .route { color: inherit; }
+.interrupt-header .status-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: rgba(243, 139, 168, 0.18);
+  color: var(--ctp-red);
+  letter-spacing: 0.08em;
+}
+.interrupt-card.status-acknowledged .status-badge {
+  background: rgba(108, 112, 134, 0.2);
+  color: var(--ctp-overlay1);
+}
+.interrupt-text {
+  color: var(--ctp-text);
+  font-weight: 500;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  grid-column: 1 / -1;
+}
+.interrupt-meta {
+  color: var(--ctp-overlay0);
+  font-size: 10.5px;
+}
+.interrupt-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.interrupt-actions button {
+  font-size: 11px;
+  padding: 4px 12px;
+  color: var(--ctp-red);
+  border-color: rgba(243, 139, 168, 0.5);
+}
+.interrupt-replay-badge {
+  font-size: 10px;
+  color: var(--ctp-overlay0);
+  margin-left: 4px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+
 </style>
 </head>
 <body>
@@ -627,6 +922,28 @@ button.danger:hover { background: var(--ctp-surface1); border-color: rgba(243, 1
     <span id="status-text">connecting…</span>
   </div>
 </header>
+
+<div class="nutshell" id="nutshell" style="display:none;">
+  <div class="nutshell-label">Nutshell</div>
+  <div class="nutshell-body empty" id="nutshell-body">No project summary yet — agents or the human can propose one.</div>
+  <div class="nutshell-meta" id="nutshell-meta"></div>
+  <button type="button" class="nutshell-edit-btn" id="nutshell-edit-btn" title="Propose a nutshell edit">Edit</button>
+</div>
+
+<div class="nutshell-editor" id="nutshell-editor">
+  <div class="box">
+    <h2>Propose nutshell edit</h2>
+    <p>
+      Edits are proposed as a handoff to the human. On accept, the nutshell is
+      atomically updated and all participants see the new text.
+    </p>
+    <textarea id="nutshell-editor-textarea" spellcheck="false"></textarea>
+    <div class="actions">
+      <button type="button" id="nutshell-editor-cancel">Cancel</button>
+      <button type="button" id="nutshell-editor-submit">Send proposal</button>
+    </div>
+  </div>
+</div>
 
 <div id="messages"></div>
 
@@ -646,6 +963,20 @@ button.danger:hover { background: var(--ctp-surface1); border-color: rgba(243, 1
 </footer>
 
 <div id="drop-overlay">Drop file to attach</div>
+
+<div id="copy-toast" role="status" aria-live="polite">Link copied</div>
+
+<div class="modal-backdrop" id="reason-modal">
+  <div class="modal">
+    <h2 id="reason-modal-title">Reason</h2>
+    <p id="reason-modal-prompt" style="font-size:11px;color:var(--ctp-overlay0);"></p>
+    <textarea id="reason-modal-input" spellcheck="false" style="min-height:80px;"></textarea>
+    <div class="modal-actions">
+      <button type="button" id="reason-modal-cancel">Cancel</button>
+      <button type="button" id="reason-modal-ok">OK</button>
+    </div>
+  </div>
+</div>
 
 <div class="modal-backdrop" id="mcp-modal">
   <div class="modal">
@@ -675,6 +1006,51 @@ const MESSAGE_DOM_LIMIT = 2000;          // trim #messages to this many nodes
 // actually decides which extensions are accepted at upload time.)
 const ATTACHMENT_URL_RE = /^\/image\/[A-Za-z0-9_-]+\.[a-z0-9]{1,10}$/i;
 const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp)$/i;
+
+// Inline "ask for a reason" modal. Replaces window.prompt() which Tauri's
+// WebView silently returns null from. Resolves to the user's text on OK
+// (empty string if they OK'd without typing), or null on Cancel / Escape /
+// backdrop click. If `required` is true, an empty input keeps the dialog open.
+const reasonModal       = document.getElementById('reason-modal');
+const reasonModalTitle  = document.getElementById('reason-modal-title');
+const reasonModalPrompt = document.getElementById('reason-modal-prompt');
+const reasonModalInput  = document.getElementById('reason-modal-input');
+const reasonModalOk     = document.getElementById('reason-modal-ok');
+const reasonModalCancel = document.getElementById('reason-modal-cancel');
+let _reasonResolve = null;
+function askReason(title, promptText, { required = false, defaultValue = '' } = {}) {
+  return new Promise((resolve) => {
+    _reasonResolve = resolve;
+    reasonModalTitle.textContent = title;
+    reasonModalPrompt.textContent = promptText;
+    reasonModalInput.value = defaultValue;
+    reasonModalInput.dataset.required = required ? '1' : '0';
+    reasonModal.classList.add('open');
+    setTimeout(() => { reasonModalInput.focus(); reasonModalInput.select(); }, 0);
+  });
+}
+function _closeReasonModal(val) {
+  reasonModal.classList.remove('open');
+  const r = _reasonResolve;
+  _reasonResolve = null;
+  if (r) r(val);
+}
+reasonModalOk?.addEventListener('click', () => {
+  const v = reasonModalInput.value.trim();
+  if (reasonModalInput.dataset.required === '1' && !v) {
+    reasonModalInput.focus();
+    return;
+  }
+  _closeReasonModal(v);
+});
+reasonModalCancel?.addEventListener('click', () => _closeReasonModal(null));
+reasonModal?.addEventListener('click', (e) => {
+  if (e.target === reasonModal) _closeReasonModal(null);
+});
+reasonModalInput?.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { e.preventDefault(); _closeReasonModal(null); }
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); reasonModalOk.click(); }
+});
 
 // Wrapper that adds Authorization to mutating fetches.
 async function authedFetch(path, init = {}) {
@@ -743,34 +1119,32 @@ function shade(hex, pct) {
   return '#' + ((r << 16) | (g << 8) | b).toString(16).padStart(6, '0');
 }
 
-// Dynamic stylesheet for per-agent colors.
-const agentStyleEl = document.createElement('style');
-document.head.appendChild(agentStyleEl);
+// Per-agent body colors pre-shaded. Caller (addMessage / renderLegend)
+// reads COLORS[name] and BODY_COLORS[name] directly and applies via
+// element.style.* — no dynamic <style> tag (Tauri 2's nonce-CSP blocks
+// programmatically-inserted <style> elements even with 'unsafe-inline').
+const BODY_COLORS = {};
 
-// Sanitize agent name for CSS class use.
+// Sanitize agent name for CSS class use. Still needed for structural classes
+// (mention highlighting, per-agent hover selectors) but no longer carries
+// color — colors are inlined on the elements.
 function cssName(name) {
   return 'a-' + name.replace(/[^A-Za-z0-9_-]/g, '_');
 }
 
 function applyRoster(agents) {
   ROSTER = Array.isArray(agents) ? agents : [];
-  // Rebuild NAMES/COLORS from scratch so entries for departed agents don't linger.
   for (const k of Object.keys(NAMES)) {
     if (k !== 'you' && k !== 'system' && k !== 'all') delete NAMES[k];
   }
   for (const k of Object.keys(COLORS)) delete COLORS[k];
+  for (const k of Object.keys(BODY_COLORS)) delete BODY_COLORS[k];
 
-  let css = '';
   for (const a of ROSTER) {
     NAMES[a.name] = cap(a.name);
     COLORS[a.name] = a.color;
-    const body = shade(a.color, 0.25);
-    const cn = cssName(a.name);
-    css += `.from-${cn} .msg-name { color: ${a.color}; }\n`;
-    css += `.from-${cn} .msg-body { color: ${body}; }\n`;
-    css += `.leg-${cn} { background: ${a.color}; }\n`;
+    BODY_COLORS[a.name] = shade(a.color, 0.25);
   }
-  agentStyleEl.textContent = css;
 
   renderLegend();
   renderTargetDropdown();
@@ -807,7 +1181,6 @@ function renderLegend() {
   legendEl.innerHTML = '';
 
   for (const a of ROSTER) {
-    const cn = cssName(a.name);
     const isHuman = a.name === HUMAN_NAME;
     const legItem = document.createElement('div');
     legItem.className = 'legend-item offline';
@@ -816,8 +1189,10 @@ function renderLegend() {
     const removeBtn = isHuman
       ? ''
       : `<button type="button" class="legend-remove" title="Remove agent" aria-label="Remove ${a.name}">×</button>`;
+    // Dot color is applied inline — the dynamic stylesheet approach collided
+    // with Tauri 2's nonce-CSP even with style-src 'unsafe-inline'.
     legItem.innerHTML =
-      `<div class="legend-dot leg-${cn}"></div>` +
+      `<div class="legend-dot" style="background:${a.color}"></div>` +
       `<span class="legend-label">${a.name}</span>` +
       `<span class="presence-dot" title="offline"></span>` +
       `<span class="legend-state">off</span>` +
@@ -852,6 +1227,19 @@ function renderTargetDropdown() {
     optAll.value = 'all';
     optAll.textContent = '→ All';
     targetEl.appendChild(optAll);
+  }
+  // Interrupt composer mode — special option that routes the text through
+  // POST /interrupts instead of /send. See the send() function for dispatch.
+  const sep = document.createElement('option');
+  sep.disabled = true;
+  sep.textContent = '──────────';
+  targetEl.appendChild(sep);
+  for (const a of ROSTER) {
+    if (a.name === HUMAN_NAME) continue;
+    const opt = document.createElement('option');
+    opt.value = `!${a.name}`;
+    opt.textContent = `⚠ Interrupt ${cap(a.name)}`;
+    targetEl.appendChild(opt);
   }
   const match = [...targetEl.options].some((o) => o.value === prev);
   targetEl.value = match ? prev : 'auto';
@@ -890,6 +1278,37 @@ async function loadPendingHandoffs() {
   }
 }
 
+async function loadPendingInterrupts() {
+  try {
+    const r = await authedFetch('/interrupts?status=pending&limit=500');
+    if (!r.ok) return;
+    const snapshots = await r.json();
+    if (!Array.isArray(snapshots)) return;
+    for (const snapshot of snapshots) {
+      if (!snapshot || !snapshot.id) continue;
+      renderInterruptCard({
+        interrupt_id: snapshot.id,
+        version: snapshot.version,
+        snapshot,
+        replay: true,
+      });
+    }
+  } catch (e) {
+    console.warn('[interrupts] initial load failed:', e);
+  }
+}
+
+async function loadNutshell() {
+  try {
+    const r = await authedFetch('/nutshell');
+    if (!r.ok) return;
+    const snapshot = await r.json();
+    applyNutshell(snapshot);
+  } catch (e) {
+    console.warn('[nutshell] initial load failed:', e);
+  }
+}
+
 // Append ?token= to URLs that the browser can't authenticate via header
 // (EventSource, <img src>). Idempotent: skips if token is empty or already present.
 function withToken(path) {
@@ -911,20 +1330,61 @@ function addMessage(data) {
   const div = document.createElement('div');
   const cls = from === 'you' || from === 'system' ? `from-${from}` : `from-${cssName(from)}`;
   div.className = `msg ${cls}`;
-  // Render attachment: inline <img> for image extensions, otherwise a
-  // download link/chip with the filename. Both go through the
-  // safety check (URL must be a local /image/<id> or http(s)).
+
+  // Avatar — circle with the sender's initial. Color: agent's hash-derived
+  // palette entry, or a fixed accent for you/system.
+  const displayName = NAMES[from] || from;
+  const avatar = document.createElement('div');
+  avatar.className = 'msg-avatar';
+  avatar.textContent = (displayName[0] || '?').toUpperCase();
+  if (from === 'you') avatar.style.background = 'var(--ctp-blue)';
+  else if (from === 'system') avatar.style.background = 'var(--ctp-red)';
+  else if (COLORS[from]) avatar.style.background = COLORS[from];
+  div.appendChild(avatar);
+
+  // Content column — header (name/ts/to) stacked above the bubble.
+  const content = document.createElement('div');
+  content.className = 'msg-content';
+
+  const header = document.createElement('div');
+  header.className = 'msg-header';
+  const nameSpan = document.createElement('span');
+  nameSpan.className = 'msg-name';
+  nameSpan.textContent = displayName;
+  // Per-agent colour applied inline (dynamic <style> blocked by CSP nonce).
+  // from-you / from-system get their colours from the static inline-<style>
+  // block in <head>, which CSP accepts as part of the initial document.
+  if (from !== 'you' && from !== 'system' && COLORS[from]) {
+    nameSpan.style.color = COLORS[from];
+  }
+  header.appendChild(nameSpan);
+  const tsSpan = document.createElement('span');
+  tsSpan.className = 'msg-ts';
+  tsSpan.textContent = data.ts || '';
+  header.appendChild(tsSpan);
+  // Only show the "→ to" suffix when the message is directed at a single
+  // non-broadcast target. Avoids visual noise on every broadcast line.
+  if (data.to && data.to !== 'all' && data.to !== from) {
+    const toSpan = document.createElement('span');
+    toSpan.className = 'msg-to';
+    toSpan.textContent = '→ ' + (NAMES[data.to] || data.to);
+    header.appendChild(toSpan);
+  }
+  content.appendChild(header);
+
+  // Body bubble — innerHTML is fine here because every user-controlled
+  // string goes through escHtml before linkify/highlightMentions augment it.
   const safeAttachment = data.image && isSafeAttachmentSrc(data.image) ? data.image : null;
   const attachmentHtml = safeAttachment ? renderAttachmentHtml(safeAttachment) : '';
-  div.innerHTML = `
-    <div class="msg-meta">
-      <span class="msg-name">${NAMES[from] || from}</span>
-      <span class="msg-ts">${data.ts || ''}</span>
-      <span class="msg-to">→ ${NAMES[data.to] || data.to || ''}</span>
-    </div>
-    <span class="msg-arrow">╌</span>
-    <div class="msg-body">${highlightMentions(linkify(escHtml(data.text || '')))}${attachmentHtml}</div>
-  `;
+  const body = document.createElement('div');
+  body.className = 'msg-body';
+  if (from !== 'you' && from !== 'system' && BODY_COLORS[from]) {
+    body.style.color = BODY_COLORS[from];
+  }
+  body.innerHTML = highlightMentions(linkify(escHtml(data.text || ''))) + attachmentHtml;
+  content.appendChild(body);
+
+  div.appendChild(content);
   messagesEl.appendChild(div);
   // Bound DOM growth on long sessions.
   while (messagesEl.childElementCount > MESSAGE_DOM_LIMIT) {
@@ -973,14 +1433,71 @@ messagesEl.addEventListener('click', (e) => {
   window.open(src, '_blank', 'noopener');
 });
 
+// Top-center "Link copied" toast. Single DOM element shared across all copy
+// buttons; debounced so rapid clicks extend the visible window instead of
+// stacking multiple toasts.
+const copyToastEl = document.getElementById('copy-toast');
+let _copyToastTimer = 0;
+function showCopyToast(msg) {
+  if (!copyToastEl) return;
+  if (msg) copyToastEl.textContent = msg;
+  copyToastEl.classList.add('visible');
+  clearTimeout(_copyToastTimer);
+  _copyToastTimer = setTimeout(() => copyToastEl.classList.remove('visible'), 1400);
+}
+
+// Delegated one-click copy for links inside message bodies. Reads the
+// decoded href from dataset so the clipboard gets the unescaped URL.
+messagesEl.addEventListener('click', (e) => {
+  const btn = e.target.closest?.('.msg-link-copy');
+  if (!btn) return;
+  e.preventDefault();
+  const href = btn.dataset.href;
+  if (!href) return;
+  const flashCopied = () => {
+    btn.classList.add('copied');
+    setTimeout(() => btn.classList.remove('copied'), 1000);
+    showCopyToast('Link copied');
+  };
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(href).then(flashCopied).catch(() => {
+      // Fallback via hidden textarea for older WebViews.
+      const ta = document.createElement('textarea');
+      ta.value = href;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch {}
+      document.body.removeChild(ta);
+      flashCopied();
+    });
+  } else {
+    const ta = document.createElement('textarea');
+    ta.value = href;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch {}
+    document.body.removeChild(ta);
+    flashCopied();
+  }
+});
+
 function escAttr(s) {
   return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
                   .replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 function linkify(s) {
+  // Input is already escaped by escHtml, so $1 is safe to embed in href/attributes.
+  // Each URL gets an adjacent one-click copy button. The button is styled via
+  // CSS mask-image (see .msg-link-copy in the stylesheet) — keeping its content
+  // empty avoids any inline-SVG parsing quirks in WKWebView.
   return s.replace(/(https?:\/\/[^\s<]+)/g,
-    '<a href="$1" target="_blank" rel="noopener" style="color:var(--ctp-blue)">$1</a>');
+    '<a class="msg-link" href="$1" target="_blank" rel="noopener">$1</a>' +
+    '<button type="button" class="msg-link-copy" data-href="$1" aria-label="Copy link" title="Copy link"></button>');
 }
 
 function highlightMentions(html) {
@@ -1048,6 +1565,7 @@ function handleEvent(data) {
   }
   if (data.type === 'roster')   { applyRoster(data.agents || []); return; }
   if (data.type === 'presence') { applyPresence(data.agents || {}); return; }
+  if (data.type === 'nutshell.updated') { applyNutshell(data.snapshot || null); return; }
   // Dedup chat entries by their server-assigned id.
   if (typeof data.id === 'number') {
     if (data.id <= lastSeenId) return;
@@ -1057,6 +1575,12 @@ function handleEvent(data) {
   // Structured handoff events render as cards, not chat rows.
   if (typeof data.kind === 'string' && data.kind.startsWith('handoff.')) {
     renderHandoffCard(data);
+    return;
+  }
+  // Structured interrupt events — high-visibility cards sticky to the top of
+  // the message area while pending.
+  if (typeof data.kind === 'string' && data.kind.startsWith('interrupt.')) {
+    renderInterruptCard(data);
     return;
   }
   addMessage(data);
@@ -1090,6 +1614,47 @@ async function send() {
   if (!text && !image) return;
 
   const mode = targetEl.value || 'auto';
+
+  // Interrupt composer mode — target values like "!bob" route through
+  // POST /interrupts instead of /send. No attachment support on interrupts;
+  // surface a warning if the user had one queued.
+  if (mode.startsWith('!')) {
+    const toAgent = mode.slice(1);
+    if (!text) {
+      addMessage({ from: 'system', to: HUMAN_NAME, text: 'Interrupt text required.', ts: '' });
+      return;
+    }
+    if (text.length > 500) {
+      addMessage({ from: 'system', to: HUMAN_NAME, text: 'Interrupt text must be 500 chars or fewer.', ts: '' });
+      return;
+    }
+    if (image) {
+      addMessage({ from: 'system', to: HUMAN_NAME, text: 'Attachments not supported on interrupts (dropped).', ts: '' });
+    }
+    sendBtn.disabled = true;
+    input.value = '';
+    autoGrow();
+    clearAttachment();
+    hideMentionPopover();
+    try {
+      const r = await authedFetch('/interrupts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: HUMAN_NAME, to: toAgent, text }),
+      });
+      if (!r.ok) {
+        const err = await parseErrorBody(r);
+        addMessage({ from: 'system', to: HUMAN_NAME, text: `Interrupt failed: ${err}`, ts: '' });
+      }
+    } catch (e) {
+      addMessage({ from: 'system', to: HUMAN_NAME, text: `Interrupt error: ${e?.message ?? e}`, ts: '' });
+    } finally {
+      sendBtn.disabled = false;
+      input.focus();
+    }
+    return;
+  }
+
   const mentions = parseMentions(text);
   let body = { text, image };
   if (mode === 'auto') {
@@ -1340,10 +1905,17 @@ function renderHandoffCard(event) {
   })();
   if (!snapshot || !event.handoff_id) return;
 
-  // Version reconciliation: ignore stale broadcasts.
+  // Version reconciliation: ignore stale broadcasts. Log every transition
+  // so we can diagnose "card stuck at pending" bug reports without devtools.
   const existing = handoffCards.get(event.handoff_id);
   const incomingVersion = Number(event.version ?? snapshot.version ?? 0);
-  if (existing && existing.version >= incomingVersion) return;
+  console.debug('[handoff]', event.kind, event.handoff_id,
+    'v=', incomingVersion, 'status=', snapshot.status,
+    existing ? `(existing v${existing.version} ${existing.status})` : '(new)');
+  if (existing && existing.version >= incomingVersion) {
+    console.debug('[handoff] dropping stale version', incomingVersion, '<=', existing.version);
+    return;
+  }
 
   if (existing) {
     updateHandoffCardDom(existing.element, snapshot, event);
@@ -1448,11 +2020,15 @@ async function handleHandoffAction(id, action) {
   if (action === 'accept') {
     body = { by: HUMAN_NAME };
   } else if (action === 'decline') {
-    const reason = prompt('Decline reason?');
+    // Tauri's WebView silently returns null from window.prompt for security
+    // reasons — we need a custom dialog. askReason() below opens a minimal
+    // inline modal and resolves to the typed reason (or null on cancel).
+    const reason = await askReason('Decline handoff', 'Why are you declining?', { required: true });
     if (!reason) return;
     body = { by: HUMAN_NAME, reason };
   } else if (action === 'cancel') {
-    const reason = prompt('Cancel reason? (optional)') ?? '';
+    const reason = await askReason('Cancel handoff', 'Optional reason:', { required: false });
+    if (reason === null) return; // user clicked Cancel in the dialog
     body = { by: HUMAN_NAME };
     if (reason) body.reason = reason;
   } else {
@@ -1473,6 +2049,207 @@ async function handleHandoffAction(id, action) {
     addMessage({ from: 'system', to: HUMAN_NAME, text: `Handoff ${action} error: ${e?.message ?? e}`, ts: '' });
   }
 }
+
+/* ── Interrupt cards ─────────────────────────────────────── */
+const interruptCards = new Map(); // interrupt_id → { element, version, status }
+
+function renderInterruptCard(event) {
+  const snapshot = event.snapshot || (() => {
+    try { return JSON.parse(event.text || '{}'); } catch { return null; }
+  })();
+  if (!snapshot || !event.interrupt_id) return;
+
+  const existing = interruptCards.get(event.interrupt_id);
+  const incomingVersion = Number(event.version ?? snapshot.version ?? 0);
+  if (existing && existing.version >= incomingVersion) return;
+
+  if (existing) {
+    updateInterruptCardDom(existing.element, snapshot, event);
+    existing.version = incomingVersion;
+    existing.status = snapshot.status;
+  } else {
+    const el = buildInterruptCardDom(snapshot, event);
+    // Sticky: pending interrupts go to the TOP of the message area so they can't
+    // be missed; acknowledged ones render in line with chat history.
+    if (snapshot.status === 'pending') {
+      messagesEl.insertBefore(el, messagesEl.firstChild);
+    } else {
+      messagesEl.appendChild(el);
+    }
+    interruptCards.set(event.interrupt_id, {
+      element: el, version: incomingVersion, status: snapshot.status,
+    });
+    while (messagesEl.childElementCount > MESSAGE_DOM_LIMIT) {
+      const first = messagesEl.firstChild;
+      if (first && first._interruptId) interruptCards.delete(first._interruptId);
+      if (first && first._handoffId) handoffCards.delete(first._handoffId);
+      messagesEl.removeChild(first);
+    }
+    if (snapshot.status !== 'pending') messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+}
+
+function buildInterruptCardDom(snapshot, event) {
+  const el = document.createElement('div');
+  el.className = 'interrupt-card';
+  el._interruptId = snapshot.id;
+  updateInterruptCardDom(el, snapshot, event);
+  return el;
+}
+
+function updateInterruptCardDom(el, snapshot, event) {
+  el.className = 'interrupt-card';
+  el.classList.add(`status-${snapshot.status}`);
+  const replayBadge = event.replay === true || event.replay === 'true'
+    ? `<span class="interrupt-replay-badge">(replay)</span>` : '';
+  const actionsHtml = snapshot.status === 'pending' && snapshot.to_agent === HUMAN_NAME
+    ? `<div class="interrupt-actions">
+         <button type="button" data-action="ack">Acknowledge</button>
+       </div>`
+    : '';
+  el.innerHTML = `
+    <div class="interrupt-header">
+      <span class="route">⚠ Interrupt — ${escHtml(snapshot.from_agent)} → ${escHtml(snapshot.to_agent)}</span>
+      <span class="status-badge">${escHtml(snapshot.status)}</span>
+      ${replayBadge}
+    </div>
+    <div class="interrupt-text">${escHtml(snapshot.text)}</div>
+    <div class="interrupt-meta">${escHtml(snapshot.id)}${snapshot.acknowledged_by ? ` · ack by ${escHtml(snapshot.acknowledged_by)}` : ''}</div>
+    ${actionsHtml}
+  `;
+  el.querySelectorAll('.interrupt-actions button').forEach((btn) => {
+    btn.addEventListener('click', () => handleInterruptAction(snapshot.id));
+  });
+}
+
+async function handleInterruptAction(id) {
+  try {
+    const r = await authedFetch(`/interrupts/${encodeURIComponent(id)}/ack`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ by: HUMAN_NAME }),
+    });
+    if (!r.ok) {
+      const err = await parseErrorBody(r);
+      addMessage({ from: 'system', to: HUMAN_NAME, text: `Interrupt ack failed: ${err}`, ts: '' });
+    }
+  } catch (e) {
+    addMessage({ from: 'system', to: HUMAN_NAME, text: `Interrupt ack error: ${e?.message ?? e}`, ts: '' });
+  }
+}
+
+/* ── Nutshell state + editor ─────────────────────────────── */
+const nutshellEl        = document.getElementById('nutshell');
+const nutshellBodyEl    = document.getElementById('nutshell-body');
+const nutshellMetaEl    = document.getElementById('nutshell-meta');
+const nutshellEditBtn   = document.getElementById('nutshell-edit-btn');
+const nutshellEditor    = document.getElementById('nutshell-editor');
+const nutshellTextarea  = document.getElementById('nutshell-editor-textarea');
+const nutshellSubmit    = document.getElementById('nutshell-editor-submit');
+const nutshellCancel    = document.getElementById('nutshell-editor-cancel');
+let nutshellCurrent = { text: '', version: 0, updated_at_ms: 0, updated_by: null };
+
+function applyNutshell(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return;
+  nutshellCurrent = {
+    text: snapshot.text ?? '',
+    version: snapshot.version ?? 0,
+    updated_at_ms: snapshot.updated_at_ms ?? 0,
+    updated_by: snapshot.updated_by ?? null,
+  };
+  renderNutshell();
+  // Brief highlight so the human notices the change.
+  nutshellEl.classList.add('flash');
+  setTimeout(() => nutshellEl.classList.remove('flash'), 1400);
+}
+
+function renderNutshell() {
+  nutshellEl.style.display = 'flex';
+  const txt = nutshellCurrent.text.trim();
+  if (!txt) {
+    nutshellBodyEl.textContent = 'No project summary yet — agents or the human can propose one.';
+    nutshellBodyEl.classList.add('empty');
+  } else {
+    nutshellBodyEl.textContent = txt;
+    nutshellBodyEl.classList.remove('empty');
+  }
+  if (nutshellCurrent.version > 0) {
+    const who = nutshellCurrent.updated_by || 'system';
+    nutshellMetaEl.textContent = `v${nutshellCurrent.version} · by ${who}`;
+  } else {
+    nutshellMetaEl.textContent = '';
+  }
+}
+
+function openNutshellEditor() {
+  nutshellTextarea.value = nutshellCurrent.text || '';
+  nutshellEditor.classList.add('open');
+  nutshellTextarea.focus();
+  nutshellTextarea.select();
+}
+
+function closeNutshellEditor() {
+  nutshellEditor.classList.remove('open');
+}
+
+async function submitNutshellProposal() {
+  const patch = nutshellTextarea.value.trim();
+  if (patch === (nutshellCurrent.text || '').trim()) {
+    closeNutshellEditor();
+    return;
+  }
+  nutshellSubmit.disabled = true;
+  try {
+    // Send as a handoff proposal to the human. The hub's handoff-accept path
+    // detects the "[nutshell]" task prefix and applies the patch atomically.
+    const r = await authedFetch('/handoffs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: HUMAN_NAME,
+        to: HUMAN_NAME,
+        task: '[nutshell] human edit',
+        context: { patch },
+        ttl_seconds: 3600,
+      }),
+    });
+    if (!r.ok) {
+      const err = await parseErrorBody(r);
+      addMessage({ from: 'system', to: HUMAN_NAME, text: `Nutshell proposal failed: ${err}`, ts: '' });
+    } else {
+      // The human is the sender AND recipient here — auto-accept by firing the
+      // accept endpoint immediately. Agents proposing edits follow the normal
+      // accept-by-human flow; the human editing their own nutshell shortcircuits.
+      const body = await r.json();
+      if (body?.id) {
+        await authedFetch(`/handoffs/${encodeURIComponent(body.id)}/accept`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ by: HUMAN_NAME, comment: 'human self-edit' }),
+        });
+      }
+    }
+    closeNutshellEditor();
+  } catch (e) {
+    addMessage({ from: 'system', to: HUMAN_NAME, text: `Nutshell proposal error: ${e?.message ?? e}`, ts: '' });
+  } finally {
+    nutshellSubmit.disabled = false;
+  }
+}
+
+nutshellEditBtn?.addEventListener('click', openNutshellEditor);
+nutshellSubmit?.addEventListener('click', submitNutshellProposal);
+nutshellCancel?.addEventListener('click', closeNutshellEditor);
+nutshellEditor?.addEventListener('click', (e) => {
+  if (e.target === nutshellEditor) closeNutshellEditor();
+});
+nutshellTextarea?.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { e.preventDefault(); closeNutshellEditor(); }
+  if ((e.key === 'Enter') && (e.metaKey || e.ctrlKey)) {
+    e.preventDefault();
+    submitNutshellProposal();
+  }
+});
 
 /* Countdown ticker: updates "N left" labels on pending handoff cards. */
 function updateCountdownLabel(cardEl) {
@@ -1545,7 +2322,9 @@ async function bootstrap() {
   }
   try {
     await loadRoster();
+    await loadNutshell();
     await loadPendingHandoffs();
+    await loadPendingInterrupts();
     connect();
   } catch (e) {
     statusText.textContent = `roster load failed: ${e}`;
@@ -1563,13 +2342,13 @@ const mcpCopyBtn = document.getElementById('mcp-copy-btn');
 const mcpCloseBtn = document.getElementById('mcp-close-btn');
 const mcpCopiedStatus = document.getElementById('mcp-copied-status');
 
-function tauriInvoke(cmd) {
+function tauriInvoke(cmd, args) {
   const invoke =
     window.__TAURI_INTERNALS__?.invoke ||
     window.__TAURI__?.core?.invoke ||
     window.__TAURI__?.invoke;
   if (!invoke) return Promise.reject(new Error('Tauri IPC unavailable'));
-  return invoke(cmd);
+  return args !== undefined ? invoke(cmd, args) : invoke(cmd);
 }
 
 function fallbackTemplate() {
@@ -1657,11 +2436,15 @@ if (reloadBtn) {
       lastFrom = null;
       lastSeenId = 0;
       localStorage.setItem('a2achannel_last_event_id', '0');
-      // Reconnect SSE against the new URL, then re-render any handoffs
-      // already in the (fresh) hub's ledger — the hub keeps them across
-      // restarts; the UI just lost them when we cleared #messages.
+      // Reconnect SSE against the new URL, then re-render any handoffs,
+      // interrupts, and the nutshell already in the (fresh) hub's ledger —
+      // the hub keeps them across restarts; the UI just lost them when we
+      // cleared #messages.
+      interruptCards.clear();
       connect();
+      await loadNutshell();
       await loadPendingHandoffs();
+      await loadPendingInterrupts();
       addMessage({
         from: 'system',
         to: HUMAN_NAME,

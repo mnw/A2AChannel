@@ -38,18 +38,24 @@ A2AChannel is a native macOS app that turns multiple Claude Code sessions into a
 - Dynamic roster — any session that connects with a `CHATBRIDGE_AGENT` name auto-registers with a coloured pill.
 - Live presence indicators.
 - `@mention` routing; no `@` broadcasts to all.
-- Attach, paste, or drag-drop files (images, PDFs, Markdown by default; allowlist configurable in `config.json`).
+- Attach, paste, or drag-drop files (images, PDFs, Markdown by default; allowlist configurable in `config.json`). Agents can upload too via the `post_file` tool — symmetric with human uploads.
 - The human is a first-class roster member (default name `human`, overridable in `config.json`).
 
 ### Protocol messages
 - **Handoffs** — `send_handoff(to, task, context?, ttl_seconds?)`. The recipient (agent or human) calls `accept_handoff` or `decline_handoff(reason)`. The sender or the human can `cancel_handoff` while pending. Expired handoffs transition automatically via a background sweep (every 5s).
-- **Durable ledger** at `~/Library/Application Support/A2AChannel/ledger.db` — immutable event log plus a derived current-state table.
-- **Reconnect replay** — agents that reconnect receive any pending handoffs targeting them (flagged `replay=true`). Chat history is not replayed.
-- **Audit trail** — every protocol event is logged; rebuilding state from events is a design property.
-- **Version-reconciled broadcasts** — each handoff event carries a monotonic `version`; clients reconcile by `(handoff_id, max-version-seen)` so out-of-order or replayed events converge deterministically.
-- **More kinds coming** — the ledger is designed to accommodate `proposal`, `question`, `review_request`, `status`, and `decision` without schema migration.
+- **Interrupts** — `send_interrupt(to, text)` / `ack_interrupt(id)`. High-visibility attention flags for "stop and re-read" moments. Render as red-bordered cards stuck to the top of the recipient's chat until acknowledged. Coordination primitive, not a hard preemption — depends on cooperative agents.
+- **Project nutshell** — a living one-paragraph summary of the project, stored in the ledger, refreshed in every agent's context on first connect. Edits are proposed via a handoff with `task` prefixed `[nutshell]` and `context.patch` set; the human accepts or declines. Agents joining mid-project start with the current nutshell so you don't explain the project N times.
+- **Onboarding briefing** — the first time an agent's channel sidecar connects to a given hub process, it receives a briefing notification listing available tools, current peers, the attachments directory, the human's name, and the current nutshell. Replaces per-user system-prompt boilerplate.
+- **Durable ledger** at `~/Library/Application Support/A2AChannel/ledger.db` — immutable event log plus derived current-state tables (`handoffs`, `interrupts`, `nutshell`).
+- **Reconnect replay** — agents that reconnect receive any pending handoffs and interrupts involving them (flagged `replay=true`). Chat history is not replayed.
+- **Version-reconciled broadcasts** — each structured-message event carries a monotonic `version`; clients reconcile by `(id, max-version-seen)` so out-of-order or replayed events converge deterministically.
+- **More kinds coming** — the ledger pattern accommodates `proposal`, `question`, `review_request`, `status`, and `decision` without schema migration.
 
-See [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the full protocol reference — schema, endpoints, SSE events, terminal-state policy, and reconciliation rules.
+See [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the full protocol reference — schemas, endpoints, SSE events, terminal-state policy, and reconciliation rules.
+
+<!-- Terminal integration deferred to v0.7 — v0.6 ships without it. -->
+
+Claude sessions are still launched from your own Terminal window the traditional way (`claude --dangerously-load-development-channels` in the project directory with the `.mcp.json` A2AChannel generates). The in-app terminal pane is a v0.7 goal — v0.6 focuses on the coordination layer (handoffs, interrupts, nutshell, briefings, `post_file`).
 
 ### Trust model
 

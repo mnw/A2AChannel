@@ -42,7 +42,7 @@ const HANDOFF_CONTEXT_MAX_BYTES = 1_048_576;
 const HANDOFF_TASK_MAX_CHARS = 500;
 const HANDOFF_REASON_MAX_CHARS = 500;
 const HANDOFF_ID_RE = /^h_[0-9a-f]{16}$/;
-const LEDGER_SCHEMA_VERSION = 1;
+const LEDGER_SCHEMA_VERSION = 2;
 type HandoffStatus = "pending" | "accepted" | "declined" | "cancelled" | "expired";
 // User-configurable file-extension allowlist. Defaults match the Rust
 // shell's default_attachment_extensions(); the env always wins when set.
@@ -265,17 +265,54 @@ function migrateLedger(db: Database): void {
         CREATE INDEX idx_handoffs_from    ON handoffs(from_agent, status);
         CREATE INDEX idx_handoffs_created ON handoffs(created_at_ms);
       `);
-      db.run("INSERT INTO meta (key, value) VALUES ('schema_version', ?)", [
-        String(LEDGER_SCHEMA_VERSION),
-      ]);
-      db.run("INSERT INTO meta (key, value) VALUES ('ledger_id', ?)", [
+      db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '1')");
+      db.run("INSERT OR IGNORE INTO meta (key, value) VALUES ('ledger_id', ?)", [
         randomId(16),
       ]);
-      db.run("INSERT INTO meta (key, value) VALUES ('created_at_ms', ?)", [
+      db.run("INSERT OR IGNORE INTO meta (key, value) VALUES ('created_at_ms', ?)", [
         String(Date.now()),
       ]);
     })();
     console.log(`[ledger] applied migration v1`);
+  }
+  if (current < 2) {
+    // v2 — structured messages beyond handoffs. Adds two tables:
+    //   interrupts: high-visibility attention messages, pending → acknowledged.
+    //   nutshell:   one-row living project summary, edited via handoff proposals.
+    // The `events` table is reused for all kinds; `handoff_id` column was a
+    // misnomer from the v1 scope, now retained and used for any message id.
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE interrupts (
+          id                TEXT PRIMARY KEY,
+          from_agent        TEXT    NOT NULL,
+          to_agent          TEXT    NOT NULL,
+          text              TEXT    NOT NULL,
+          status            TEXT    NOT NULL
+                              CHECK(status IN ('pending','acknowledged')),
+          created_at_ms     INTEGER NOT NULL,
+          acknowledged_at_ms INTEGER,
+          acknowledged_by   TEXT
+        );
+        CREATE INDEX idx_interrupts_status ON interrupts(status, created_at_ms);
+        CREATE INDEX idx_interrupts_to     ON interrupts(to_agent, status);
+        CREATE INDEX idx_interrupts_from   ON interrupts(from_agent, status);
+
+        CREATE TABLE nutshell (
+          id             INTEGER PRIMARY KEY CHECK(id = 0),
+          text           TEXT    NOT NULL DEFAULT '',
+          version        INTEGER NOT NULL DEFAULT 0,
+          updated_at_ms  INTEGER NOT NULL,
+          updated_by     TEXT
+        );
+      `);
+      db.run(
+        "INSERT OR IGNORE INTO nutshell (id, text, version, updated_at_ms, updated_by) VALUES (0, '', 0, ?, NULL)",
+        [Date.now()],
+      );
+      db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '2')");
+    })();
+    console.log(`[ledger] applied migration v2`);
   }
 }
 
@@ -447,14 +484,43 @@ function acceptHandoff(id: string, by: string, comment?: string): HandoffOutcome
   }
   const now = Date.now();
   const db = ledgerDb;
+  // If this handoff is a nutshell proposal (task prefix "[nutshell]" and
+  // context is an object with a `patch` string), apply the patch in the
+  // same transaction as the accept event. Keeps the ledger consistent —
+  // nutshell updates are versioned by the same `events.seq` sequence.
+  let nutshellSnapshot: NutshellSnapshot | null = null;
+  const isNutshellEdit =
+    loaded.row.task.startsWith("[nutshell]") &&
+    loaded.row.to_agent === HUMAN_NAME &&
+    loaded.row.context_json !== null;
+  let nutshellPatch: string | null = null;
+  if (isNutshellEdit) {
+    try {
+      const ctx = JSON.parse(loaded.row.context_json!);
+      if (ctx && typeof ctx === "object" && typeof ctx.patch === "string") {
+        nutshellPatch = ctx.patch;
+      }
+    } catch {
+      // Malformed context — accept the handoff but don't touch the nutshell.
+    }
+  }
   db.transaction(() => {
     insertEvent(db, id, "handoff.accepted", by, { comment: comment ?? null }, now);
     db.run(
       "UPDATE handoffs SET status='accepted', comment=?, resolved_at_ms=? WHERE id=?",
       [comment ?? null, now, id],
     );
+    if (nutshellPatch !== null) {
+      nutshellSnapshot = writeNutshellInTx(db, nutshellPatch, loaded.row.from_agent);
+    }
   })();
-  return { kind: "transition", snapshot: snapshotHandoff(id)! };
+  const outcome: HandoffOutcome = { kind: "transition", snapshot: snapshotHandoff(id)! };
+  // Broadcast the nutshell update — outside the transaction, but safe
+  // because the projection is already committed.
+  if (nutshellSnapshot) {
+    broadcastNutshell(nutshellSnapshot);
+  }
+  return outcome;
 }
 
 function declineHandoff(id: string, by: string, reason: string): HandoffOutcome {
@@ -586,6 +652,231 @@ function pendingFor(agent: string): HandoffSnapshot[] {
   return listHandoffs({ status: "pending", for: agent, limit: 1000 });
 }
 
+// ── Nutshell state ─────────────────────────────────────────────
+type NutshellSnapshot = {
+  text: string;
+  version: number;
+  updated_at_ms: number;
+  updated_by: string | null;
+};
+
+type NutshellRow = {
+  text: string;
+  version: number;
+  updated_at_ms: number;
+  updated_by: string | null;
+};
+
+function readNutshell(): NutshellSnapshot {
+  if (!ledgerDb) {
+    return { text: "", version: 0, updated_at_ms: Date.now(), updated_by: null };
+  }
+  const row = ledgerDb
+    .query<NutshellRow, []>("SELECT text, version, updated_at_ms, updated_by FROM nutshell WHERE id = 0")
+    .get();
+  if (!row) {
+    // Should never happen — v2 migration seeds a row. Fail open.
+    return { text: "", version: 0, updated_at_ms: Date.now(), updated_by: null };
+  }
+  return {
+    text: row.text,
+    version: row.version,
+    updated_at_ms: row.updated_at_ms,
+    updated_by: row.updated_by,
+  };
+}
+
+// Write a new nutshell text. Caller is responsible for wrapping this in
+// a transaction alongside the triggering event (currently the handoff
+// accept). Returns the updated snapshot.
+function writeNutshellInTx(
+  db: Database,
+  newText: string,
+  updatedBy: string,
+): NutshellSnapshot {
+  const now = Date.now();
+  db.run(
+    "UPDATE nutshell SET text = ?, version = version + 1, updated_at_ms = ?, updated_by = ? WHERE id = 0",
+    [newText, now, updatedBy],
+  );
+  // Re-read inside the transaction to get the incremented version.
+  const row = db
+    .query<NutshellRow, []>("SELECT text, version, updated_at_ms, updated_by FROM nutshell WHERE id = 0")
+    .get();
+  return {
+    text: row?.text ?? newText,
+    version: row?.version ?? 0,
+    updated_at_ms: row?.updated_at_ms ?? now,
+    updated_by: row?.updated_by ?? updatedBy,
+  };
+}
+
+// ── Interrupt state machine ────────────────────────────────────
+type InterruptStatus = "pending" | "acknowledged";
+
+type InterruptSnapshot = {
+  id: string;
+  from_agent: string;
+  to_agent: string;
+  text: string;
+  status: InterruptStatus;
+  created_at_ms: number;
+  acknowledged_at_ms: number | null;
+  acknowledged_by: string | null;
+  version: number;
+};
+
+type InterruptRow = {
+  id: string;
+  from_agent: string;
+  to_agent: string;
+  text: string;
+  status: InterruptStatus;
+  created_at_ms: number;
+  acknowledged_at_ms: number | null;
+  acknowledged_by: string | null;
+};
+
+const INTERRUPT_ID_RE = /^i_[0-9a-f]{16}$/;
+
+function mintInterruptId(): string {
+  const buf = new Uint8Array(8);
+  crypto.getRandomValues(buf);
+  let out = "i_";
+  for (const b of buf) out += b.toString(16).padStart(2, "0");
+  return out;
+}
+
+function interruptRowToSnapshot(row: InterruptRow, version: number): InterruptSnapshot {
+  return {
+    id: row.id,
+    from_agent: row.from_agent,
+    to_agent: row.to_agent,
+    text: row.text,
+    status: row.status,
+    created_at_ms: row.created_at_ms,
+    acknowledged_at_ms: row.acknowledged_at_ms,
+    acknowledged_by: row.acknowledged_by,
+    version,
+  };
+}
+
+function loadInterrupt(id: string): { row: InterruptRow; version: number } | null {
+  if (!ledgerDb) return null;
+  const row = ledgerDb
+    .query<InterruptRow, [string]>("SELECT * FROM interrupts WHERE id = ?")
+    .get(id);
+  if (!row) return null;
+  const verRow = ledgerDb
+    .query<{ max_seq: number | null }, [string]>(
+      "SELECT MAX(seq) AS max_seq FROM events WHERE handoff_id = ?",
+    )
+    .get(id);
+  return { row, version: verRow?.max_seq ?? 0 };
+}
+
+function snapshotInterrupt(id: string): InterruptSnapshot | null {
+  const loaded = loadInterrupt(id);
+  return loaded ? interruptRowToSnapshot(loaded.row, loaded.version) : null;
+}
+
+type CreateInterruptInput = { from: string; to: string; text: string };
+
+function createInterrupt(input: CreateInterruptInput): InterruptSnapshot {
+  if (!ledgerDb) throw new Error("ledger disabled");
+  const id = mintInterruptId();
+  const now = Date.now();
+  const db = ledgerDb;
+  db.transaction(() => {
+    insertEvent(db, id, "interrupt.new", input.from, { to: input.to, text: input.text }, now);
+    db.run(
+      `INSERT INTO interrupts (id, from_agent, to_agent, text, status, created_at_ms)
+       VALUES (?, ?, ?, ?, 'pending', ?)`,
+      [id, input.from, input.to, input.text, now],
+    );
+  })();
+  return snapshotInterrupt(id)!;
+}
+
+type InterruptOutcome =
+  | { kind: "transition"; snapshot: InterruptSnapshot }
+  | { kind: "idempotent"; snapshot: InterruptSnapshot }
+  | { kind: "conflict"; current_status: InterruptStatus; snapshot: InterruptSnapshot }
+  | { kind: "not_found" }
+  | { kind: "forbidden"; reason: string };
+
+function ackInterrupt(id: string, by: string): InterruptOutcome {
+  if (!ledgerDb) throw new Error("ledger disabled");
+  const loaded = loadInterrupt(id);
+  if (!loaded) return { kind: "not_found" };
+  // The recipient is the expected ack'er. The human name is ALSO allowed so
+  // a user can ack on behalf of a late-responding agent if needed.
+  if (loaded.row.to_agent !== by && by !== HUMAN_NAME) {
+    return { kind: "forbidden", reason: "not the recipient" };
+  }
+  if (loaded.row.status === "acknowledged") {
+    return { kind: "idempotent", snapshot: interruptRowToSnapshot(loaded.row, loaded.version) };
+  }
+  if (loaded.row.status !== "pending") {
+    return {
+      kind: "conflict",
+      current_status: loaded.row.status,
+      snapshot: interruptRowToSnapshot(loaded.row, loaded.version),
+    };
+  }
+  const now = Date.now();
+  const db = ledgerDb;
+  db.transaction(() => {
+    insertEvent(db, id, "interrupt.ack", by, {}, now);
+    db.run(
+      "UPDATE interrupts SET status = 'acknowledged', acknowledged_at_ms = ?, acknowledged_by = ? WHERE id = ?",
+      [now, by, id],
+    );
+  })();
+  return { kind: "transition", snapshot: snapshotInterrupt(id)! };
+}
+
+type ListInterruptsFilter = {
+  status?: InterruptStatus | "all";
+  for?: string;
+  limit?: number;
+};
+
+function listInterrupts(filter: ListInterruptsFilter = {}): InterruptSnapshot[] {
+  if (!ledgerDb) return [];
+  const status = filter.status ?? "pending";
+  const limit = Math.max(1, Math.min(1000, filter.limit ?? 100));
+  const clauses: string[] = [];
+  const params: (string | number)[] = [];
+  if (status !== "all") {
+    clauses.push("status = ?");
+    params.push(status);
+  }
+  if (filter.for) {
+    clauses.push("(to_agent = ? OR from_agent = ?)");
+    params.push(filter.for, filter.for);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  params.push(limit);
+  const rows = ledgerDb
+    .query<InterruptRow, typeof params>(
+      `SELECT * FROM interrupts ${where} ORDER BY created_at_ms DESC LIMIT ?`,
+    )
+    .all(...params);
+  return rows.map((row) => {
+    const ver = ledgerDb!
+      .query<{ max_seq: number | null }, [string]>(
+        "SELECT MAX(seq) AS max_seq FROM events WHERE handoff_id = ?",
+      )
+      .get(row.id);
+    return interruptRowToSnapshot(row, ver?.max_seq ?? 0);
+  });
+}
+
+function pendingInterruptsFor(agent: string): InterruptSnapshot[] {
+  return listInterrupts({ status: "pending", for: agent, limit: 1000 });
+}
+
 // ── Utilities ──────────────────────────────────────────────────
 function ts(): string {
   return new Date().toTimeString().slice(0, 8);
@@ -690,6 +981,63 @@ function rosterSnapshot(): Entry {
 function broadcastRoster(): void {
   const snap = rosterSnapshot();
   for (const q of uiSubscribers) q.push(snap);
+  // Also fan out a refreshed briefing to each currently-connected agent.
+  // Without this, an agent that connected BEFORE a later-joining peer holds
+  // a stale peer list forever (until its own next reconnect) — that was the
+  // "Django never sees Drupal" symptom observed during the v0.6 shakedown.
+  broadcastBriefingsToConnectedAgents();
+}
+
+// Build the briefing event for a specific agent (peer list excludes self).
+// Extracted so both /agent-stream connect AND broadcastRoster can emit
+// identically-shaped briefings. Keep the tool list in sync with channel.ts.
+function buildBriefing(agent: string): Entry & {
+  type: string;
+  tools: string[];
+  peers: Array<{ name: string; online: boolean }>;
+  attachments_dir: string;
+  human_name: string;
+  nutshell: string | null;
+} {
+  const peers: Array<{ name: string; online: boolean }> = [];
+  for (const name of knownAgents.keys()) {
+    if (name === agent) continue;
+    peers.push({
+      name,
+      online: permanentAgents.has(name)
+        ? true
+        : (agentConnections.get(name) ?? 0) > 0,
+    });
+  }
+  const nutshell = ledgerEnabled ? readNutshell().text : "";
+  return {
+    type: "briefing",
+    tools: [
+      "post",
+      "post_file",
+      "send_handoff",
+      "accept_handoff",
+      "decline_handoff",
+      "cancel_handoff",
+      "send_interrupt",
+      "ack_interrupt",
+    ],
+    peers,
+    attachments_dir: ATTACHMENTS_DIR,
+    human_name: HUMAN_NAME,
+    nutshell: nutshell || null,
+    ts: ts(),
+  };
+}
+
+function broadcastBriefingsToConnectedAgents(): void {
+  for (const name of knownAgents.keys()) {
+    if (permanentAgents.has(name)) continue;
+    if ((agentConnections.get(name) ?? 0) <= 0) continue;
+    const q = agentQueues.get(name);
+    if (!q) continue;
+    q.push(buildBriefing(name));
+  }
 }
 
 function presenceSnapshot(): Entry {
@@ -709,6 +1057,10 @@ function presenceSnapshot(): Entry {
 function broadcastPresence(): void {
   const snap = presenceSnapshot();
   for (const q of uiSubscribers) q.push(snap);
+  // Deliberately NOT re-broadcasting briefings here. broadcastRoster already
+  // fans briefings out on membership changes; firing them on every
+  // connection-count flip would duplicate the per-connect briefing an agent
+  // already receives and create a tight feedback loop during churn.
 }
 
 // Rewrite /image/<id>.<ext> URLs to absolute disk paths so agents can read
@@ -952,13 +1304,18 @@ async function handlePost(req: Request): Promise<Response> {
     from?: string;
     to?: string;
     text?: string;
+    image?: string | null;
   };
   const frm = body.from;
   const rawTo = body.to ?? "you";
   const reserved = rawTo.toLowerCase();
   const text = (body.text ?? "").trim();
-  if (!frm || !text) {
+  const image = body.image || null;
+  if (!frm || (!text && !image)) {
     return json({ error: "bad request" }, { status: 400 });
+  }
+  if (image && !IMAGE_URL_RE.test(image)) {
+    return json({ error: "invalid image url" }, { status: 400 });
   }
   // ensureAgent validates the name; no need to pre-validate.
   if (!ensureAgent(frm)) {
@@ -977,9 +1334,13 @@ async function handlePost(req: Request): Promise<Response> {
     return json({ error: `unknown to: ${rawTo}` }, { status: 400 });
   }
 
-  const entry: Entry = { from: frm, to: rawTo, text, ts: ts() };
+  const entry: Entry = { from: frm, to: rawTo, text, image, ts: ts() };
   broadcastUI(entry);
-  for (const t of targets) enqueueTo(t, entry);
+  // Peers receive the attachment as an absolute path (via agentEntry) rather
+  // than a URL so they can Read it directly. UI subscribers get the URL form
+  // via the broadcastUI call above.
+  const view = agentEntry(entry);
+  for (const t of targets) enqueueTo(t, view);
   return json({ ok: true });
 }
 
@@ -1103,12 +1464,29 @@ function handleAgentStream(agent: string): Response {
     agentConnections.set(agent, (agentConnections.get(agent) ?? 0) + 1);
     broadcastPresence();
 
-    // Reconnect replay: deliver any pending handoffs (as recipient OR originator)
-    // so the agent can resume its open-work queue. Chat messages are NOT replayed.
+    // Briefing: tool inventory, peers, attachments path, human name, current
+    // nutshell. Sent BEFORE any replay so it lands first in the agent's
+    // context. Re-sent on every /agent-stream connect AND whenever the roster
+    // changes (via broadcastRoster → broadcastBriefingsToConnectedAgents) so
+    // late-joining peers propagate to everyone already connected.
+    if (!permanentAgents.has(agent)) {
+      try {
+        send(buildBriefing(agent));
+      } catch (e) {
+        console.error("[briefing]", e);
+      }
+    }
+
+    // Reconnect replay: deliver any pending handoffs + interrupts (as
+    // recipient OR originator) so the agent can resume its open-work queue.
+    // Chat messages are NOT replayed.
     if (ledgerEnabled) {
       try {
         for (const snapshot of pendingFor(agent)) {
           send(handoffEntry(snapshot, "handoff.new", /* replay */ true));
+        }
+        for (const snapshot of pendingInterruptsFor(agent)) {
+          send(interruptEntry(snapshot, "interrupt.new", /* replay */ true));
         }
       } catch (e) {
         console.error("[replay]", e);
@@ -1197,6 +1575,71 @@ function broadcastHandoff(
   }
 }
 
+// ── Interrupt broadcasts ───────────────────────────────────────
+function interruptEntry(
+  snapshot: InterruptSnapshot,
+  eventKind: "interrupt.new" | "interrupt.ack",
+  replay = false,
+): Entry & {
+  kind: string;
+  interrupt_id: string;
+  version: number;
+  replay: boolean;
+  snapshot: InterruptSnapshot;
+} {
+  return {
+    from: snapshot.from_agent,
+    to: snapshot.to_agent,
+    text: JSON.stringify(snapshot),
+    ts: ts(),
+    image: null,
+    kind: eventKind,
+    interrupt_id: snapshot.id,
+    version: snapshot.version,
+    replay,
+    snapshot,
+  };
+}
+
+function broadcastInterrupt(
+  snapshot: InterruptSnapshot,
+  eventKind: "interrupt.new" | "interrupt.ack",
+): void {
+  const entry = interruptEntry(snapshot, eventKind);
+  broadcastUI(entry);
+  const recipients: string[] =
+    eventKind === "interrupt.new"
+      ? [snapshot.to_agent]
+      : [snapshot.from_agent, snapshot.to_agent];
+  for (const name of new Set(recipients)) {
+    if (permanentAgents.has(name)) continue;
+    const q = agentQueues.get(name);
+    if (!q) continue;
+    q.push(interruptEntry(snapshot, eventKind));
+  }
+}
+
+// ── Nutshell broadcasts ────────────────────────────────────────
+function nutshellEntry(snapshot: NutshellSnapshot): Entry & {
+  type: string;
+  snapshot: NutshellSnapshot;
+} {
+  return {
+    type: "nutshell.updated",
+    text: snapshot.text,
+    ts: ts(),
+    snapshot,
+  } as Entry & { type: string; snapshot: NutshellSnapshot };
+}
+
+function broadcastNutshell(snapshot: NutshellSnapshot): void {
+  // Nutshell updates go to the UI (and are re-served to agents via the
+  // briefing on reconnect). No per-agent push — the nutshell is ambient
+  // context, not an actionable notification.
+  const entry = nutshellEntry(snapshot);
+  for (const q of uiSubscribers) q.push(entry);
+}
+
 // ── Handoff HTTP routes ────────────────────────────────────────
 function ledgerGuard(): Response | null {
   if (!ledgerEnabled) {
@@ -1246,8 +1689,18 @@ async function handleCreateHandoff(req: Request): Promise<Response> {
     );
   }
 
+  // The sender is auto-registered — by definition of sending, they're
+  // present. The recipient is NOT auto-registered: a handoff to a name
+  // that isn't in the current roster would silently pend and expire,
+  // indistinguishable from a legitimate offline peer. Reject the typo at
+  // send time instead. The human is always a permanent roster member.
   ensureAgent(from);
-  ensureAgent(to);
+  if (!knownAgents.has(to)) {
+    return json(
+      { error: `unknown recipient: ${to} (must be a currently-registered agent or "${HUMAN_NAME}")` },
+      { status: 400 },
+    );
+  }
 
   const snapshot = createHandoff({ from, to, task, context: body.context, ttl_seconds: ttl });
   broadcastHandoff(snapshot, "handoff.new");
@@ -1353,6 +1806,106 @@ function handleListHandoffs(req: Request): Response {
   return json(listHandoffs({ status: statusParam as HandoffStatus | "all", for: forParam, limit }));
 }
 
+// ── Interrupt HTTP routes ──────────────────────────────────────
+const INTERRUPT_TEXT_MAX_CHARS = 500;
+
+function interruptOutcomeResponse(outcome: InterruptOutcome): Response {
+  switch (outcome.kind) {
+    case "not_found":
+      return json({ error: "not found" }, { status: 404 });
+    case "forbidden":
+      return json({ error: outcome.reason }, { status: 403 });
+    case "conflict":
+      return json(
+        { error: `interrupt already ${outcome.current_status}`, snapshot: outcome.snapshot },
+        { status: 409 },
+      );
+    case "idempotent":
+      return json({ snapshot: outcome.snapshot, idempotent: true }, { status: 200 });
+    case "transition":
+      broadcastInterrupt(outcome.snapshot, "interrupt.ack");
+      return json({ snapshot: outcome.snapshot }, { status: 200 });
+  }
+}
+
+async function handleCreateInterrupt(req: Request): Promise<Response> {
+  const guard = ledgerGuard();
+  if (guard) return guard;
+  const sizeCheck = requireJsonBody(req);
+  if (sizeCheck) return sizeCheck;
+
+  const body = (await req.json().catch(() => ({}))) as {
+    from?: string;
+    to?: string;
+    text?: string;
+  };
+  const from = (body.from ?? "").trim();
+  const to = (body.to ?? "").trim();
+  const text = (body.text ?? "").trim();
+  if (!validName(from)) return json({ error: "invalid from" }, { status: 400 });
+  if (!validName(to)) return json({ error: "invalid to" }, { status: 400 });
+  if (!text) return json({ error: "text required" }, { status: 400 });
+  if (text.length > INTERRUPT_TEXT_MAX_CHARS) {
+    return json({ error: `text too long (max ${INTERRUPT_TEXT_MAX_CHARS})` }, { status: 400 });
+  }
+  // Same phantom-prevention rule as handoffs: sender is auto-registered,
+  // recipient must already be in the roster.
+  ensureAgent(from);
+  if (!knownAgents.has(to)) {
+    return json(
+      { error: `unknown recipient: ${to} (must be a currently-registered agent or "${HUMAN_NAME}")` },
+      { status: 400 },
+    );
+  }
+  const snapshot = createInterrupt({ from, to, text });
+  broadcastInterrupt(snapshot, "interrupt.new");
+  return json({ id: snapshot.id }, { status: 201 });
+}
+
+async function handleAckInterrupt(id: string, req: Request): Promise<Response> {
+  const guard = ledgerGuard();
+  if (guard) return guard;
+  if (!INTERRUPT_ID_RE.test(id)) {
+    return json({ error: "invalid interrupt id" }, { status: 400 });
+  }
+  const sizeCheck = requireJsonBody(req);
+  if (sizeCheck) return sizeCheck;
+
+  const body = (await req.json().catch(() => ({}))) as { by?: string };
+  const by = (body.by ?? "").trim();
+  if (!validName(by)) return json({ error: "invalid by" }, { status: 400 });
+  return interruptOutcomeResponse(ackInterrupt(id, by));
+}
+
+function handleListInterrupts(req: Request): Response {
+  const guard = ledgerGuard();
+  if (guard) return guard;
+  const url = new URL(req.url);
+  const statusParam = url.searchParams.get("status") ?? "pending";
+  const forParam = url.searchParams.get("for") ?? undefined;
+  const limitRaw = url.searchParams.get("limit");
+  const limit = limitRaw ? Number(limitRaw) : 100;
+
+  const validStatus = new Set(["pending", "acknowledged", "all"]);
+  if (!validStatus.has(statusParam)) {
+    return json({ error: `invalid status: ${statusParam}` }, { status: 400 });
+  }
+  if (forParam !== undefined && !validName(forParam)) {
+    return json({ error: `invalid for: ${forParam}` }, { status: 400 });
+  }
+  if (!Number.isFinite(limit) || limit < 1 || limit > 1000) {
+    return json({ error: "invalid limit" }, { status: 400 });
+  }
+  return json(
+    listInterrupts({ status: statusParam as InterruptStatus | "all", for: forParam, limit }),
+  );
+}
+
+// ── Nutshell HTTP route ────────────────────────────────────────
+function handleGetNutshell(): Response {
+  return json(readNutshell());
+}
+
 // ── Server ─────────────────────────────────────────────────────
 const server = Bun.serve({
   hostname: "127.0.0.1",
@@ -1428,6 +1981,28 @@ const server = Bun.serve({
       if (req.method === "GET" && pathname === "/handoffs") {
         const authFail = requireAuth(req);
         return authFail ?? handleListHandoffs(req);
+      }
+      // Interrupt endpoints.
+      if (req.method === "POST" && pathname === "/interrupts") {
+        const authFail = requireAuth(req);
+        return authFail ?? (await handleCreateInterrupt(req));
+      }
+      if (req.method === "POST" && pathname.startsWith("/interrupts/")) {
+        const match = pathname.match(/^\/interrupts\/([^/]+)\/ack$/);
+        if (match) {
+          const authFail = requireAuth(req);
+          if (authFail) return authFail;
+          return await handleAckInterrupt(match[1], req);
+        }
+      }
+      if (req.method === "GET" && pathname === "/interrupts") {
+        const authFail = requireReadAuth(req, url);
+        return authFail ?? handleListInterrupts(req);
+      }
+      // Nutshell read (write path is via /handoffs with task prefix "[nutshell]").
+      if (req.method === "GET" && pathname === "/nutshell") {
+        const authFail = requireReadAuth(req, url);
+        return authFail ?? handleGetNutshell();
       }
       return json({ error: "not found", path: pathname }, { status: 404 });
     } catch (e) {
