@@ -12,6 +12,14 @@ fi
 echo "==> building sidecars"
 ./scripts/build-sidecars.sh
 
+# Build bundled tmux only if missing — the static build takes ~2 min and
+# doesn't change across installs. `build-tmux.sh` ad-hoc signs the binary
+# inline, so the nested signature survives the outer `codesign --deep` pass.
+if [ ! -x "src-tauri/resources/tmux" ]; then
+  echo "==> building bundled tmux (first-time setup)"
+  ./scripts/build-tmux.sh
+fi
+
 echo "==> tauri build"
 bun x tauri build
 

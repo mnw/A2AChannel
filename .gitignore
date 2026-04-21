@@ -9,6 +9,9 @@ bun.lockb
 src-tauri/target/
 src-tauri/gen/
 
+# Bundled tmux binary (built via scripts/build-tmux.sh; ~1.1 MB static)
+src-tauri/resources/tmux
+
 # Compiled sidecar binaries (rebuilt via scripts/build-sidecars.sh)
 src-tauri/binaries/*
 !src-tauri/binaries/.gitkeep

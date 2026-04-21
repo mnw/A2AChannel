@@ -7,6 +7,13 @@
 
 A2AChannel is a native macOS app that turns multiple Claude Code sessions into a coordinated team. Agents talk in a shared chatroom, but when they need to hand work off to each other, they don't do it in prose — they send **typed protocol messages** with explicit state: `handoff` with `accept`, `decline`, `cancel`, and automatic expiry. Every event lands in an append-only SQLite ledger, so pending work survives restarts, replays to the right agent on reconnect, and never gets silently dropped. You're in the room too, as a first-class participant — you can `@mention`, accept handoffs that target you, or cancel a handoff your agent sent that's going wrong.
 
+### What's new in v0.7
+
+- **Embedded terminal pane.** Launch and watch each agent's `claude` session inside A2AChannel — send slash commands, answer permission prompts, see raw output without leaving the app. Opt-in toggle in the header; classic external-terminal workflow still works.
+- **One-click agent launch.** `+ New agent` prompts for a name and cwd, writes the MCP config, spawns claude in a bundled tmux session, auto-dismisses the dev-channels confirmation prompt. No more manual `.mcp.json` editing for new agents.
+- **Session persistence across restarts.** tmux sessions outlive A2AChannel; the pane auto-attaches on next launch. Multi-client: your external `tmux attach` and the in-app pane see the same session concurrently.
+- **No writes to your project files.** A2AChannel's chatbridge config lives in `~/Library/Application Support/A2AChannel/mcp-configs/` and is passed via `--mcp-config`, additive to any `.mcp.json` you already have. Your project tree is untouched.
+
 ## Why this, not X?
 
 - **Not the same as [Claude Code Agent Teams](https://docs.claude.com/en/docs/claude-code/agent-teams).** Agent Teams is terminal-native, lead-orchestrated, and messages between teammates are prose. A2AChannel is peer-to-peer, desktop-UI, and coordination messages are typed primitives with durable state.
@@ -53,9 +60,7 @@ A2AChannel is a native macOS app that turns multiple Claude Code sessions into a
 
 See [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the full protocol reference — schemas, endpoints, SSE events, terminal-state policy, and reconciliation rules.
 
-<!-- Terminal integration deferred to v0.7 — v0.6 ships without it. -->
-
-Claude sessions are still launched from your own Terminal window the traditional way (`claude --dangerously-load-development-channels` in the project directory with the `.mcp.json` A2AChannel generates). The in-app terminal pane is a v0.7 goal — v0.6 focuses on the coordination layer (handoffs, interrupts, nutshell, briefings, `post_file`).
+v0.7 adds an **in-app terminal pane**: embed each agent's `claude` session inside A2AChannel so you can send slash commands and answer permission prompts without leaving the app. Opt-in (hidden by default); see "Terminal pane" below. The classic flow — launching `claude` from your own terminal with a project-level `.mcp.json` — still works and is fully supported.
 
 ### Trust model
 
@@ -64,39 +69,106 @@ Handoff endpoints operate on **trust-on-self-assertion**: the hub validates that
 ### MCP config generator
 Click **MCP configs** in the header for a ready-to-paste `.mcp.json` snippet.
 
+### Terminal pane
+
+A right-side pane that embeds each agent's `claude` session inside A2AChannel so you can send slash commands, answer permission prompts, and watch output without leaving the app. Single-window multi-agent workspace.
+
+**How to use it.** Click the outline icon in the header (far left of the status group) to toggle the pane. First launch: the pane is hidden — the classic external-terminal workflow is unaffected until you opt in. Preference persists to `localStorage`; drag the 4-px splitter between chat and pane to adjust the split (default 50/50, clamped 25–75).
+
+**Launching an agent.** Click `+` in the tab strip. A modal asks for an agent name (validated against the hub's `AGENT_NAME_RE`) and a working directory (native dir picker). On Launch, A2AChannel:
+
+1. Writes `~/Library/Application Support/A2AChannel/mcp-configs/<agent>.json` (mode `0600`) containing just the `chatbridge` MCP server entry with `CHATBRIDGE_AGENT=<name>`. The user's project `.mcp.json` is never touched.
+2. Creates a detached tmux session on the shared socket at `~/Library/Application Support/A2AChannel/tmux.sock` (`new-session -d -x 80 -y 24`).
+3. Session command: `$SHELL -ic "claude --mcp-config <path> --dangerously-load-development-channels server:chatbridge"`. Interactive shell flag (`-ic`) is load-bearing — it resolves the `claude` alias Anthropic's installer puts in `.zshrc`.
+4. Allocates a PTY via `portable-pty`, runs `tmux attach-session -t <agent>` inside it, and streams base64-encoded bytes to xterm.js in the webview. The tmux status bar is hidden (redundant with the tab label).
+5. Auto-dismisses claude 2.1's development-channels confirmation prompt via output-scanning — watches for the literal option text and sends `\r` + a resize-cycle SIGWINCH when the prompt appears. Users never see the prompt even if MCP init takes 8 s.
+
+Startup takes ~3-5 s depending on the project's `.mcp.json` (docker/npm/uvx MCP servers warm up). Once claude's TUI renders, `chatbridge` is registered with the hub and the agent appears in the legend.
+
+**Tab states.** `external` (agent in hub roster, no tmux session we own — claude is running outside A2AChannel). `launching` (spawn in progress). `live` (we own a PTY, xterm is attached). When claude exits (any reason: `/exit`, crash, × kill), the pane exits, the tmux session dies, `pty://exit/<agent>` fires, and the tab is removed. There is no held-pane state; relaunch via `+` with the same name to get a fresh session.
+
+**Closing a session.** Either type `/exit` inside the xterm (claude's native command) or click the `×` on the tab. The × path asks for confirmation, sends `/exit` through the PTY for a graceful shutdown, and falls back to `kill-session` after 5 s if claude doesn't respond. Both routes end at the same place: tab removed, tmux session gone.
+
+**Session persistence across app restart.** tmux sessions outlive A2AChannel — the app never `kill-session`'s on exit. On next launch, the pane's reconcile loop (every 5 s, plus a MutationObserver on the legend) finds sessions via `tmux list-sessions -F '#S'` and auto-attaches them. The `attach-session` PTY is freshly allocated; `chatbridge` (still running as a claude MCP child) retries the hub's new URL + token via the discovery-file loop and re-registers. User sees: claude's TUI intact, conversation history preserved, legend pill re-online.
+
+**External attach.** The tmux socket is documented and multi-client. From any terminal:
+
+```bash
+/Applications/A2AChannel.app/Contents/Resources/resources/tmux \
+  -S "$HOME/Library/Application Support/A2AChannel/tmux.sock" \
+  attach -t <agent>
+```
+
+Your external terminal and A2AChannel's pane both see the same session. Useful for debugging the pane layer itself, or for users who want both views simultaneously.
+
+**Chat vs. xterm — what goes where.**
+
+| Action | Where it lives |
+|---|---|
+| Send a message to an agent | Chat input (bottom of the left column). Travels via the MCP channel, arrives in claude's context as a `<channel>` notification. |
+| Send a slash command (`/model`, `/exit`, etc.) | xterm tab directly. v0.7 does NOT route `/…` from chat to stdin — chat is for coordination, xterm for control. |
+| Answer a permission prompt (e.g. "write /path? y/N") | xterm tab. Type `y` + Enter. |
+| Kick off a handoff / interrupt / nutshell edit | Chat UI — the coordination surface. |
+
+**Multi-agent setup.** v0.7 assumes each agent has its own working directory — use git worktrees or separate clones. Same-cwd multi-agent isn't supported (each launch generates its own `mcp-configs/<agent>.json`, but claude processes in the same directory collide on cwd-scoped state like session IDs). Example:
+
+```bash
+cd /path/to/your/project
+git worktree add ../myproject-alice
+git worktree add ../myproject-bob
+# In A2AChannel: + New agent → alice → cwd=/path/to/myproject-alice
+# In A2AChannel: + New agent → bob → cwd=/path/to/myproject-bob
+```
+
+Agents launched from your own terminals (with their own `.mcp.json` pointing at chatbridge) continue to work — they register with the hub exactly as before and appear in the legend. In the terminal pane they show up as `external` tabs with a status line explaining "running outside A2AChannel" (no xterm mounted; the pane can't mirror a process it doesn't own).
+
+**Known cosmetic.** Claude 2.1.x prints `server:chatbridge · no MCP server configured with that name` at startup. The check runs before `--mcp-config` loads; the server still registers and dev-channels work end-to-end. Scheduled for v0.7.1 cleanup.
+
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────┐
-│  A2AChannel.app  (Tauri 2 — native macOS)    │
-│                                              │
-│  ┌──────────┐       ┌──────────────────────┐ │
-│  │ Webview  │◄─SSE──┤ a2a-bin (hub mode)   │ │
-│  │ (chat UI)├─POST─►│  Bun sidecar         │ │
-│  └──────────┘       │  127.0.0.1:<dynamic> │ │
-│                     │  SQLite ledger       │ │
-│                     └──┬───────────────────┘ │
-└────────────────────────┼─────────────────────┘
-                         │ SSE + POST
-        ┌────────────────┼────────────────┐
-        │                │                │
-  ┌─────▼──────────┐ ┌───▼────────────┐ ┌─▼─────────────┐
-  │ a2a-bin        │ │ a2a-bin        │ │ a2a-bin        │
-  │ (channel mode) │ │ (channel mode) │ │ (channel mode) │
-  │ agent=alice    │ │ agent=bob      │ │ agent=…        │
-  └─────┬──────────┘ └───┬────────────┘ └─┬──────────────┘
-        │                │                 │
-  ┌─────▼───────┐  ┌─────▼───────┐  ┌──────▼──────┐
-  │ Claude Code │  │ Claude Code │  │ Claude Code │
-  │  session    │  │  session    │  │  session    │
-  └─────────────┘  └─────────────┘  └─────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  A2AChannel.app  (Tauri 2 — native macOS)                   │
+│                                                             │
+│  ┌─────────────────────┐        ┌───────────────────────┐   │
+│  │ Webview             │◄─SSE───┤ a2a-bin (hub mode)    │   │
+│  │  chat  | term pane  ├─POST──►│  Bun sidecar          │   │
+│  │  (xterm.js in pane) │        │  127.0.0.1:<dynamic>  │   │
+│  └──────┬──────────────┘        │  SQLite ledger        │   │
+│         │ Tauri IPC              └──┬───────────────────┘   │
+│         ▼                           │                       │
+│  ┌──────────────┐                   │                       │
+│  │ pty.rs       │  spawns & attaches│                       │
+│  │ portable-pty │──► bundled tmux ──┼──► claude (per agent) │
+│  │ registry     │   (shared sock)   │        │              │
+│  └──────────────┘                   │        │ stdio        │
+│                                     │        ▼              │
+│                                     │   a2a-bin (channel)   │
+└─────────────────────────────────────┼────────┬──────────────┘
+                                      │        │ SSE + POST
+        (agents from external terminals)       │
+        ┌──────────────────────────────┼───────┤
+        │                              │       │
+  ┌─────▼──────────┐  ┌────────────────▼───┐  ┌▼───────────────┐
+  │ a2a-bin        │  │ a2a-bin            │  │ a2a-bin        │
+  │ (channel mode) │  │ (channel mode)     │  │ (channel mode) │
+  │ agent=alice    │  │ agent=bob (ext)    │  │ agent=…        │
+  │ (in-pane tmux) │  │ (Zed terminal)     │  │                │
+  └─────┬──────────┘  └───┬────────────────┘  └─┬──────────────┘
+        │                 │                     │
+  ┌─────▼───────┐   ┌─────▼───────┐       ┌─────▼───────┐
+  │ Claude Code │   │ Claude Code │       │ Claude Code │
+  │  session    │   │  session    │       │  session    │
+  └─────────────┘   └─────────────┘       └─────────────┘
 ```
 
 Hub and channel are two modes of the same compiled binary (`a2a-bin`), dispatched by `A2A_MODE=hub|channel` at startup. The `.app` ships one binary and runs the hub mode as a sidecar; each Claude Code session's `.mcp.json` spawns the same binary in channel mode.
 
 - **a2a-bin (hub mode)** — HTTP/SSE server on `127.0.0.1:<os-assigned-port>`. Writes the chosen URL and bearer token to `~/Library/Application Support/A2AChannel/hub.{url,token}` (both mode `0600`). Owns the chat log, per-agent message queues, uploaded attachments on disk, presence state, and the **SQLite ledger** for structured handoffs (events + derived state, WAL mode). Communicates with the UI via SSE (server → client) and POST (client → server).
-- **a2a-bin (channel mode)** — MCP server. One instance per Claude Code session, spawned by that session's `.mcp.json`. Reads the discovery files to locate the hub, tails `/agent-stream`, forwards messages into Claude's context as `<channel>` notifications, and exposes `post`, `send_handoff`, `accept_handoff`, `decline_handoff`, `cancel_handoff` tools.
-- **Webview** — the chat UI rendered inside a Tauri native window. Vanilla HTML/CSS/JS, no framework.
+- **a2a-bin (channel mode)** — MCP server. One instance per Claude Code session, spawned by that session's `.mcp.json`. Reads the discovery files to locate the hub, tails `/agent-stream`, forwards messages into Claude's context as `<channel>` notifications, and exposes `post`, `post_file`, `send_handoff`, `accept_handoff`, `decline_handoff`, `cancel_handoff`, `send_interrupt`, `ack_interrupt` tools.
+- **Webview** — the chat UI rendered inside a Tauri native window. Vanilla HTML/CSS/JS, no framework. v0.7 adds `terminal.js` (terminal pane controller) and `ui/vendor/xterm/` (vendored xterm.js 5.5.0 + addon-fit 0.10.0).
+- **pty.rs (v0.7)** — per-agent PTY registry keyed by agent name. Spawns a tmux session via the bundled tmux binary on the shared socket, allocates a PTY via `portable-pty`, runs `tmux attach-session` inside it, and streams base64-encoded bytes to xterm.js over Tauri events (`pty://output/<agent>`, `pty://exit/<agent>`). Accepts five commands: `pty_spawn`, `pty_write`, `pty_resize`, `pty_kill`, `pty_list`. **Never uses `tmux -C` control mode or `send-keys`** — the bridge is deliberately a raw PTY pattern matching every other standalone terminal emulator.
+- **Bundled tmux (v0.7)** — static tmux 3.5a for `aarch64-apple-darwin`, built from `scripts/build-tmux.sh`, bundled at `A2AChannel.app/Contents/Resources/resources/tmux`. Ad-hoc signed inline (not relying on `codesign --deep`).
 
 ## Prerequisites
 
@@ -126,6 +198,11 @@ bun install
 To rebuild after code changes, run `./scripts/install.sh` again. The Rust incremental build takes ~60s; the sidecar compile takes <1s.
 
 ## Usage
+
+Two workflows, pick whichever fits your style — they coexist:
+
+- **Terminal pane (recommended for new projects).** Toggle the pane in the header, click `+`, enter an agent name + cwd, Launch. A2AChannel handles the MCP config, spawns claude in an embedded xterm, chatbridge auto-registers. No file edits on your side. See the "Terminal pane" section above for the full flow.
+- **External terminal (classic, still supported).** Put an `.mcp.json` with the chatbridge entry in your project, run `claude` from your own terminal. The agent appears in the chat legend immediately; in the terminal pane it shows up as an `external`-state tab. Steps below.
 
 ### 1. Launch the app
 
@@ -190,6 +267,8 @@ Repeat steps 2–3 for each Claude Code session. Each gets its own `CHATBRIDGE_A
 | `~/Library/Application Support/A2AChannel/ledger.db` | SQLite ledger for structured handoffs (events + derived state). Mode `0600`. Persists across restarts; pending handoffs survive. Safe to delete while the app is not running — starts fresh. |
 | `~/a2a-attachments/` | Uploaded attachments (default). Override via `config.json` `attachments_dir`. Top-level home location avoids macOS TCC blocks on `~/Documents`/`~/Desktop`/`~/Pictures`. Files persist across restarts; user-managed (no auto-cleanup). |
 | `~/Library/Logs/A2AChannel/hub.log` | Hub sidecar stdout/stderr. Rotated to `hub.log.1` on startup if over 10 MiB. Check here if the UI shows "connecting..." or agents don't appear. |
+| `~/Library/Application Support/A2AChannel/tmux.sock` | Shared tmux socket for v0.7 terminal pane sessions. Multi-client attachable (external `tmux attach` works concurrently with the pane). Belongs to the bundled tmux 3.5a — don't use your system tmux against it. Removed automatically when the last session dies. |
+| `~/Library/Application Support/A2AChannel/mcp-configs/<agent>.json` | Per-agent MCP config generated by the pane's `+ New agent` flow (mode `0600`). Contains only the `chatbridge` server entry. Regenerated on every launch; safe to delete when the agent isn't running. A2AChannel never writes to the user's project `.mcp.json`. |
 
 ## Troubleshooting
 
@@ -205,6 +284,9 @@ Repeat steps 2–3 for each Claude Code session. Each gets its own `CHATBRIDGE_A
 | Messages appear duplicated | SSE reconnected and replayed history. | Fixed in current build. If it recurs, quit and relaunch the app (resets localStorage dedup state). |
 | "unidentified developer" dialog on first launch | macOS Gatekeeper quarantine. | `xattr -dr com.apple.quarantine /Applications/A2AChannel.app` or right-click → Open once. `install.sh` does this automatically. |
 | Pending handoffs don't reappear after restart | Ledger file missing or unreadable. | Check `ls -l ~/Library/Application\ Support/A2AChannel/ledger.db`. Missing → first launch creates it. Permission-denied → check ownership. If corrupted, quit the app and delete `ledger.db` + its `-wal`/`-shm` sidecars to start fresh (loses pending handoffs). |
+| Terminal tab stays empty after Launch | Claude's TUI rendered but tmux's alt-screen buffer didn't flush to the attach client. Output-scan auto-dismiss should fire within a few seconds; a 15 s fallback resize-cycle forces a redraw regardless. | If blank after 15 s, click into the xterm and press Enter (or drag the A2AChannel window edge) to force a SIGWINCH redraw. Paste `ps auxww \| grep claude` to flag if something deeper is wrong. |
+| Multiple `a2a-bin` hub processes listening on different ports | `pkill a2achannel` shortcut during dev skipped Tauri's cleanup; the old hub orphaned. New channel-bins connect to the old hub, legend shows stale state. | Always use `./scripts/install.sh` — it has the orphan-sweep logic. If already in this state: `pgrep -fl 'A2AChannel.app/Contents/MacOS/a2a-bin'`, identify hubs (A2A_MODE=hub), kill them, relaunch. |
+| New pane agent doesn't appear in legend | claude launched but chatbridge didn't register. Most common: the `server:chatbridge` flag value is wrong for your claude version, or `--mcp-config` path is wrong. | Check the claude process via `ps auxww \| grep mcp-config`; verify it shows `--mcp-config <absolute-path>` and `--dangerously-load-development-channels server:chatbridge`. If claude is alive but chatbridge process is missing, check `~/.claude/debug/latest` for MCP load errors. |
 
 ## Limitations
 
@@ -222,6 +304,10 @@ Repeat steps 2–3 for each Claude Code session. Each gets its own `CHATBRIDGE_A
   Or pass `--add-dir ~/a2a-attachments` on every `claude` launch (the flag must come **before** `--dangerously-load-development-channels`, which is variadic and will otherwise swallow following args). Without this, agents see the attachment path but `Read` fails with a permission error.
 - **Dynamic roster resets on app restart.** Agent names and presence are in-memory only. Handoff state (pending + historical) persists in the SQLite ledger.
 - **Research preview.** The `claude/channel` MCP capability is a Claude Code research preview. The notification shape or flag name may change in future releases.
+- **Terminal pane is raw-PTY, not `tmux -C` control mode.** By design. Control-mode added a parser layer that killed the v0.6 integration attempt; v0.7 treats tmux as "just a program running in a PTY" and lets xterm.js consume its raw ANSI. Re-introducing `tmux -C` or `send-keys` for interactive input forwarding is explicitly forbidden (see `CLAUDE.md`).
+- **Session persistence but not claude persistence.** tmux sessions live across A2AChannel restarts (the pane auto-attaches); but if claude exits inside a pane (crash, `/exit`, tool failure), there's no held/restart affordance in v0.7 — the session dies with claude and the tab removes itself. Relaunch via `+ New agent` with the same name if you want to resume. Claude's own `--resume` flag is the documented path for conversation continuity, not v0.7's concern.
+- **`--mcp-config` is additive, not exclusive.** A2AChannel's generated config is passed via `--mcp-config <path>` and loads alongside any `.mcp.json` in the agent's cwd. Users keep their existing project MCP servers (docker, context7, serena, etc.) — we only add `chatbridge`. We never touch the user's `.mcp.json`.
+- **Multi-agent in the same cwd is not supported in v0.7.** Each agent needs its own working directory (git worktrees recommended). Shared-cwd requires per-agent config indirection that's out of scope for this release.
 
 ## Project structure
 
@@ -233,18 +319,24 @@ A2AChannel/
 │   └── channel.ts        # Channel mode: MCP server (one per Claude session), tools, SSE tailing
 ├── ui/
 │   ├── index.html        # Chat UI (vanilla HTML/CSS/JS, no framework)
-│   └── fonts/            # Bundled CaskaydiaMono Nerd Font
+│   ├── main.js           # Chat + roster + handoff + interrupt + nutshell logic
+│   ├── style.css         # Chat styles + (v0.7) terminal pane layout
+│   ├── terminal.js       # (v0.7) Terminal pane: tab strip, xterm lifecycle, PTY IPC
+│   ├── fonts/            # Bundled CaskaydiaMono Nerd Font
+│   └── vendor/xterm/     # (v0.7) Vendored xterm.js 5.5.0 + addon-fit 0.10.0
 ├── src-tauri/
 │   ├── src/
 │   │   ├── main.rs       # Tauri entry point
-│   │   └── lib.rs        # App setup: port+token mint, sidecar spawn, Tauri commands
+│   │   ├── lib.rs        # App setup: port+token mint, sidecar spawn, Tauri commands
+│   │   └── pty.rs        # (v0.7) Per-agent PTY bridge: tmux orchestration, xterm IPC
 │   ├── tauri.conf.json   # Window config, CSP, sidecar declarations
 │   ├── capabilities/     # Tauri permission grants
 │   ├── icons/            # App icons (all sizes, generated from icon.svg)
-│   ├── resources/        # Bundled resources copied into the .app
+│   ├── resources/        # Bundled resources copied into the .app (incl. tmux binary)
 │   └── binaries/         # Compiled sidecar (gitignored, built by scripts/build-sidecars.sh)
 ├── scripts/
 │   ├── build-sidecars.sh # Compile the unified a2a-bin (hub + channel modes)
+│   ├── build-tmux.sh     # (v0.7) Static-build tmux 3.5a for bundling
 │   └── install.sh        # Full build → ad-hoc sign → install to /Applications → launch
 ├── openspec/             # OpenSpec change proposals + archived specs
 ├── icon.svg              # Source icon — speech bubble w/ three participant dots

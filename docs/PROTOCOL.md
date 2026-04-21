@@ -466,3 +466,21 @@ derived-state table alongside `handoffs`.
 | `decision` | Pinnable, searchable outcome of a discussion. |
 
 None are implemented yet. The handoff pilot proves the pattern.
+
+---
+
+# Terminal pane (v0.7) — out-of-band
+
+The embedded terminal pane introduced in v0.7 is **not part of this protocol**. It's a shell-side surface with no hub involvement:
+
+- The pane lives entirely in the Tauri shell + webview. No new HTTP routes on the hub, no new SSE event kinds, no ledger schema change.
+- `claude` processes the pane spawns register with the hub via their own `channel-bin` sidecar, identical to claudes launched from a user's terminal. The hub sees them as normal `agent joined` events; it cannot distinguish A2AChannel-pane agents from external ones.
+- The tmux socket at `~/Library/Application Support/A2AChannel/tmux.sock` is a multi-client shared socket. Anything that can speak tmux (the pane, or a user's external terminal via `tmux -S <sock> attach`) sees the same session state. This is tmux's native behavior; A2AChannel doesn't implement any synchronization.
+
+**Practical consequence for protocol design:** adding protocol messages that reference the terminal pane state (e.g., "send this slash-command to agent X") would need to cross the out-of-band boundary. Don't do that — the pane is deliberately segregated so that:
+
+1. Chat/handoff/interrupt/nutshell semantics stay consistent whether the agent runs in the pane or a user's own terminal.
+2. The pane can be disabled (header toggle) without affecting any protocol flow.
+3. A user who prefers their own terminal never loses access to any coordination feature.
+
+If a future release needs to coordinate claude sessions programmatically (e.g., "restart this agent"), the right protocol shape is a new message kind the agent acts on, not a pane-specific command. v0.8+ scope.

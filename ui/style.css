@@ -899,3 +899,186 @@ button.danger:hover { background: var(--ctp-surface1); border-color: rgba(243, 1
   font-weight: 400;
   letter-spacing: 0.02em;
 }
+
+/* ───────────── Terminal pane (v0.7) ───────────── */
+/*
+ * The app body becomes a flex row when the pane is enabled (class on
+ * #app-body). Chat + terminal columns share horizontal space via a
+ * --split CSS var (percentage of chat-col width, splitter lets user
+ * drag). Header and nutshell sit above, full-width.
+ *
+ * Default state: pane hidden (class .no-terminal on body). Legacy
+ * flow from v0.6 is unchanged — chat fills the whole width.
+ */
+.app-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+  overflow: hidden;
+}
+body.no-terminal .splitter,
+body.no-terminal .terminal-col {
+  display: none;
+}
+body.no-terminal .chat-col {
+  flex: 1 1 auto;
+}
+body:not(.no-terminal) .chat-col {
+  flex: 0 0 calc(var(--split, 50%));
+  min-width: 0;
+}
+.chat-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.splitter {
+  flex: 0 0 4px;
+  background: var(--ctp-surface0);
+  cursor: col-resize;
+  transition: background 0.15s;
+}
+.splitter:hover,
+.splitter.dragging {
+  background: var(--ctp-lavender);
+}
+.terminal-col {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 240px;
+  background: var(--ctp-crust);
+  color: var(--ctp-text);
+  overflow: hidden;
+}
+
+.terminal-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  background: var(--ctp-mantle);
+  border-bottom: 1px solid var(--ctp-surface0);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+.terminal-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 4px 10px;
+  background: var(--ctp-surface0);
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: 'SF Mono', Menlo, monospace;
+  color: var(--ctp-subtext1);
+  cursor: pointer;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.terminal-tab:hover {
+  background: var(--ctp-surface1);
+}
+.terminal-tab.active {
+  background: var(--ctp-surface1);
+  color: var(--ctp-text);
+  border-color: var(--ctp-lavender);
+}
+.terminal-tab[data-state="dead"] {
+  opacity: 0.6;
+  font-style: italic;
+}
+.terminal-tab[data-state="external"] {
+  opacity: 0.75;
+}
+.terminal-tab .state-dot {
+  width: 6px; height: 6px;
+  border-radius: 3px;
+  background: var(--ctp-overlay0);
+}
+.terminal-tab[data-state="live"] .state-dot     { background: var(--ctp-green); }
+.terminal-tab[data-state="launching"] .state-dot { background: var(--ctp-yellow); }
+.terminal-tab[data-state="dead"] .state-dot      { background: var(--ctp-red); }
+.terminal-tab[data-state="external"] .state-dot  { background: var(--ctp-overlay0); }
+.terminal-tab .close-x {
+  opacity: 0;
+  font-size: 12px;
+  color: var(--ctp-overlay1);
+  cursor: pointer;
+  padding: 0 3px;
+  margin-left: 2px;
+}
+.terminal-tab:hover .close-x,
+.terminal-tab.active .close-x {
+  opacity: 1;
+}
+.terminal-tab .close-x:hover {
+  color: var(--ctp-red);
+}
+.terminal-tab-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px; height: 22px;
+  background: transparent;
+  border: 1px dashed var(--ctp-surface1);
+  border-radius: 4px;
+  color: var(--ctp-overlay1);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+}
+.terminal-tab-new:hover {
+  border-color: var(--ctp-lavender);
+  color: var(--ctp-lavender);
+}
+
+.terminal-body {
+  flex: 1 1 auto;
+  position: relative;
+  overflow: hidden;
+  padding: 4px 6px;
+  min-height: 0;
+}
+.terminal-pane {
+  position: absolute;
+  inset: 4px 6px;
+  display: none;
+}
+.terminal-pane.active {
+  display: block;
+}
+/* xterm widget fills its pane. xterm.css handles the rest. */
+.terminal-pane .xterm {
+  height: 100%;
+}
+.terminal-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--ctp-overlay0);
+  padding: 12px;
+  text-align: center;
+}
+.terminal-external-info {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--ctp-overlay1);
+  padding: 16px;
+  text-align: center;
+  gap: 8px;
+}

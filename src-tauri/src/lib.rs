@@ -1,3 +1,5 @@
+mod pty;
+
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write as _},
@@ -96,7 +98,7 @@ fn target_triple() -> String {
     format!("{}-apple-darwin", std::env::consts::ARCH)
 }
 
-fn app_data_dir() -> PathBuf {
+pub(crate) fn app_data_dir() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("A2AChannel")
@@ -266,6 +268,41 @@ fn resolve_a2a_bin() -> Result<PathBuf, String> {
         "a2a-bin not found in {} (looked for 'a2a-bin' and 'a2a-bin-{}')",
         dir.display(),
         target_triple()
+    ))
+}
+
+// Locate the bundled tmux binary.
+//   - Bundled .app: Contents/Resources/tmux (Tauri's bundle.resources dest).
+//   - `tauri dev`: src-tauri/resources/tmux (source checkout).
+// Mirrors resolve_a2a_bin() shape; both get called at PTY spawn time.
+pub(crate) fn resolve_tmux_bin() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe_dir = exe
+        .parent()
+        .ok_or_else(|| "no exe dir".to_string())?
+        .to_path_buf();
+    // Tauri's bundle.resources copies files preserving the source path
+    // structure, so `src-tauri/resources/tmux` lands at
+    // `Contents/Resources/resources/tmux` in the bundled .app, NOT at
+    // the flat `Contents/Resources/tmux` path. Check both shapes so we
+    // survive a Tauri behavior change.
+    let candidates = [
+        exe_dir.join("../Resources/resources/tmux"), // bundled .app
+        exe_dir.join("../Resources/tmux"),           // flat fallback
+        exe_dir.join("../../resources/tmux"),        // `tauri dev` (src-tauri/target/.../a2achannel)
+    ];
+    for p in &candidates {
+        if p.exists() {
+            return Ok(p.clone());
+        }
+    }
+    Err(format!(
+        "tmux not found near {} (checked {:?})",
+        exe_dir.display(),
+        candidates
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
     ))
 }
 
@@ -519,19 +556,26 @@ fn get_mcp_template() -> Result<String, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(HubState {
             child: Mutex::new(None),
             info: Mutex::new(None),
             attachments_dir: Mutex::new(None),
             human_name: Mutex::new(None),
         })
+        .manage(pty::PtyRegistry::default())
         .invoke_handler(tauri::generate_handler![
             get_hub_url,
             get_mcp_template,
             get_attachments_dir,
             get_human_name,
             open_config_file,
-            reload_settings
+            reload_settings,
+            pty::pty_spawn,
+            pty::pty_write,
+            pty::pty_resize,
+            pty::pty_kill,
+            pty::pty_list
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -624,6 +668,12 @@ pub fn run() {
                 if let Some(child) = child_opt {
                     let _ = child.kill();
                 }
+                // PTY handles: Tauri's managed-state Drop chain fires when
+                // the app exits, which drops each PtyHandle → drops its
+                // `tmux attach-session` child → SIGHUP → the attach client
+                // detaches cleanly. The tmux sessions themselves live on
+                // the detached socket; they MUST survive app quit per the
+                // v0.7 design (Decision 2). Do not call pty_kill here.
             };
             match event {
                 RunEvent::ExitRequested { .. } => kill(),
