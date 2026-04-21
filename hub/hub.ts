@@ -16,7 +16,13 @@
 
 import { Database } from "bun:sqlite";
 import { chmodSync } from "node:fs";
+import { rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
+
+// Make every file the hub creates born 0600. SQLite creates ledger.db-wal
+// and ledger.db-shm itself — without this, they'd briefly exist with
+// umask-default perms before our explicit chmodSync closes the race.
+process.umask(0o077);
 
 const PORT = Number(process.env.PORT ?? 8011);
 const AUTH_TOKEN = (process.env.A2A_TOKEN ?? "").trim();
@@ -1111,10 +1117,23 @@ function json(body: unknown, init?: ResponseInit): Response {
   });
 }
 
+// Allowed Origin values for mutating routes. No-Origin requests (curl,
+// sidecars, server-to-server) pass through; cross-origin pages from a
+// browser send their real Origin and are rejected. Belt-and-suspenders
+// against a future regression where a route forgets auth.
+const ALLOWED_ORIGINS = new Set<string>([
+  "tauri://localhost",
+  "http://tauri.localhost",
+]);
+
 // Reject requests that don't present the exact bearer token in the
 // Authorization header. Used for mutating routes (POST). Returns null on
-// success (authenticated), or a 401 Response on failure.
+// success (authenticated), or a 401/403 Response on failure.
 function requireAuth(req: Request): Response | null {
+  const origin = req.headers.get("origin");
+  if (origin && !ALLOWED_ORIGINS.has(origin)) {
+    return json({ error: "forbidden origin" }, { status: 403 });
+  }
   if (!AUTH_TOKEN) {
     return json({ error: "hub misconfigured: no token" }, { status: 500 });
   }
@@ -1386,11 +1405,9 @@ async function handleUpload(req: Request): Promise<Response> {
     // local users have no business reading uploads off disk.
     chmodSync(tmp, 0o600);
     // Atomic rename; writes are visible only after this completes.
-    await Bun.$`mv ${tmp} ${target}`.quiet();
+    await rename(tmp, target);
   } catch (e) {
-    try {
-      await Bun.$`rm -f ${tmp}`.quiet();
-    } catch {}
+    try { await unlink(tmp); } catch {}
     console.error("[hub] upload write failed:", e);
     return json({ error: "failed to persist image" }, { status: 500 });
   }
@@ -1979,7 +1996,7 @@ const server = Bun.serve({
         }
       }
       if (req.method === "GET" && pathname === "/handoffs") {
-        const authFail = requireAuth(req);
+        const authFail = requireReadAuth(req, url);
         return authFail ?? handleListHandoffs(req);
       }
       // Interrupt endpoints.
@@ -2006,8 +2023,10 @@ const server = Bun.serve({
       }
       return json({ error: "not found", path: pathname }, { status: 404 });
     } catch (e) {
+      // Log the exception (stack, SQL text, file paths) server-side; return a
+      // generic message to the caller so internals don't leak.
       console.error("[hub] error", e);
-      return json({ error: String(e) }, { status: 500 });
+      return json({ error: "internal error" }, { status: 500 });
     }
   },
 });

@@ -324,10 +324,18 @@ async function authedUpload(
   const { readFileSync, statSync } = await import("node:fs");
   const { basename } = await import("node:path");
   const filename = basename(filePath);
+  // Match hub's IMAGE_MAX_BYTES (8 MiB). Check size via stat before
+  // reading so a huge file can't OOM the sidecar just to be rejected.
+  const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
   let bytes: Uint8Array;
   try {
     const stat = statSync(filePath);
     if (!stat.isFile()) throw new Error(`${filePath} is not a regular file`);
+    if (stat.size > MAX_UPLOAD_BYTES) {
+      throw new Error(
+        `file too large: ${stat.size} bytes (max ${MAX_UPLOAD_BYTES})`,
+      );
+    }
     bytes = new Uint8Array(readFileSync(filePath));
   } catch (e) {
     throw new Error(`could not read ${filePath}: ${(e as Error).message ?? e}`);
