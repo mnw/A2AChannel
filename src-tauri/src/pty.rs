@@ -22,7 +22,10 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::{app_data_dir, resolve_a2a_bin, resolve_tmux_bin};
+use crate::{
+    app_data_dir, resolve_a2a_bin, resolve_anthropic_api_key, resolve_claude_path,
+    resolve_tmux_bin,
+};
 
 // ── Agent name validation ─────────────────────────────────────────
 // Mirrors hub.ts AGENT_NAME_RE: letters, digits, _.- and space, 1..64,
@@ -62,31 +65,6 @@ struct OutputPayload {
 // ── tmux helpers ──────────────────────────────────────────────────
 fn tmux_socket_path() -> PathBuf {
     app_data_dir().join("tmux.sock")
-}
-
-fn login_shell() -> String {
-    std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string())
-}
-
-// Wrap `claude ...` (or any user command) in an INTERACTIVE shell so
-// .zshrc is sourced and aliases expand. See POC_NOTES.md Finding 1.
-// We use -i (not -l) because the claude alias lives in .zshrc, not
-// .zprofile, on Anthropic's default installer shape.
-//
-// Returns a SINGLE shell-command string, not a split argv. Why:
-//   tmux's new-session takes the shell-command as the joined-rest-of-argv
-//   and runs it via `/bin/sh -c "<joined>"`. If we passed ["zsh", "-ic",
-//   "claude --mcp-config '...'"] as three argv elements, /bin/sh would
-//   re-tokenize on whitespace and zsh would see -c with only "claude"
-//   as its script — the flags after claude become positional args that
-//   claude never reads. Empirical cost: --mcp-config silently dropped.
-//
-// The single-quote wrap around the inner command preserves it as one
-// token through /bin/sh's re-parse. Internal single-quotes are escaped
-// with the standard 'sh' idiom: `'\''`.
-fn shell_wrap(cmd: &str) -> String {
-    let escaped = cmd.replace('\'', r"'\''");
-    format!("{} -ic '{}'", login_shell(), escaped)
 }
 
 // Run a bounded tmux command (no PTY; just exit-code + stdout). Used for
@@ -174,21 +152,38 @@ fn write_mcp_config_for(agent: &str) -> Result<PathBuf, String> {
 // and enables development channels (required for the
 // `notifications/claude/channel` path the sidecar uses).
 //
-// The whole thing becomes the argument to `$SHELL -ic`, so internal
-// path quoting is handled with single-quotes (safe against spaces in
-// `Application Support`).
-fn claude_command(agent: &str) -> Result<String, String> {
+// Claude's absolute path comes from config.json (`claude_path`, defaults
+// to `~/.claude/local/claude`). We do NOT source the user's `.zshrc` to
+// find it — that was the biggest spawn-latency cost (1–5 s of plugin
+// loading per launch). Users with non-default claude locations edit
+// config.json once and click ↻.
+//
+// The whole string becomes the argument to `/bin/sh -c` via tmux's
+// argv-join, so single-quote escaping around paths preserves spaces
+// (e.g. `Application Support`).
+fn claude_command(agent: &str, session_mode: Option<&str>) -> Result<String, String> {
     let cfg_path = write_mcp_config_for(agent)?;
-    // Escape single-quotes in the path defensively (shouldn't appear in
-    // Application Support, but belt-and-suspenders).
+    // Escape single-quotes in the MCP-config path defensively.
     let path_str = cfg_path.to_string_lossy().replace('\'', r"'\''");
+    // Optional session-mode prefix. `--continue` = most recent conversation
+    // in cwd (no arg). `--resume` = open claude's interactive session
+    // picker (no arg). Claude tracks its own state under
+    // ~/.claude/projects/ — A2AChannel does not persist session IDs.
+    let mode_part = match session_mode {
+        Some("continue") => "--continue ",
+        Some("resume")   => "--resume ",
+        Some(other)      => return Err(format!("invalid session_mode: {other}")),
+        None             => "",
+    };
+    let claude_path = resolve_claude_path();
+    let claude_escaped = claude_path.to_string_lossy().replace('\'', r"'\''");
     // `server:<name>` is the v2.1+ argument shape for
     // --dangerously-load-development-channels. Confirmed by inspecting
     // the user's existing claude sessions via `ps auxww`. The flag is
     // hidden from `--help` so this shape isn't documented anywhere
     // public; if claude's CLI changes it again, update here.
     Ok(format!(
-        "claude --mcp-config '{path_str}' --dangerously-load-development-channels server:chatbridge"
+        "'{claude_escaped}' {mode_part}--mcp-config '{path_str}' --dangerously-load-development-channels server:chatbridge"
     ))
 }
 
@@ -199,6 +194,7 @@ pub fn pty_spawn(
     state: State<'_, PtyRegistry>,
     agent: String,
     cwd: String,
+    session_mode: Option<String>,
 ) -> Result<(), String> {
     if !valid_agent_name(&agent) {
         return Err(format!("invalid agent name: {agent}"));
@@ -213,8 +209,11 @@ pub fn pty_spawn(
         }
     }
 
-    let shell_cmd = claude_command(&agent)?;
-    let wrapped = shell_wrap(&shell_cmd);
+    // Claude command — absolute path to binary, parseable directly by
+    // /bin/sh -c (tmux's argv-join fallback). No zsh wrapper, so no
+    // .zshrc sourcing cost (was 1–5 s per spawn). See claude_command().
+    let spawn_cmd = claude_command(&agent, session_mode.as_deref())?;
+    let api_key = resolve_anthropic_api_key();
 
     if session_exists(&agent) {
         // Session outlived a prior A2AChannel instance. Do NOT run
@@ -241,21 +240,26 @@ pub fn pty_spawn(
         // crash, or graceful shutdown from the ×/kill path), the pane
         // exits, the session dies, and the UI's pty://exit handler
         // removes the tab. Cleaner than the held-pane + Restart UX.
-        // `wrapped` is passed as a SINGLE argv element so tmux doesn't
-        // split it on whitespace when joining argv for /bin/sh -c.
-        tmux_run(&[
-            "new-session",
-            "-d",
-            "-s",
-            &agent,
-            "-x",
-            "80",
-            "-y",
-            "24",
-            "-c",
-            &cwd,
-            &wrapped,
-        ])?;
+        // `spawn_cmd` is passed as a SINGLE argv element so tmux
+        // doesn't split it on whitespace when joining argv for
+        // /bin/sh -c. API key (if configured) goes through tmux's
+        // `-e` session-env flag so processes in the session inherit
+        // it; we don't touch `.zshrc`.
+        let api_env = api_key
+            .as_ref()
+            .map(|k| format!("ANTHROPIC_API_KEY={k}"));
+        let mut args: Vec<&str> = vec!["new-session", "-d", "-s", &agent];
+        if let Some(ref env) = api_env {
+            args.push("-e");
+            args.push(env);
+        }
+        args.extend_from_slice(&[
+            "-x", "80",
+            "-y", "24",
+            "-c", &cwd,
+            &spawn_cmd,
+        ]);
+        tmux_run(&args)?;
         // Hide the default tmux status bar — redundant with the
         // A2AChannel tab label and costs a row.
         let _ = tmux_run(&["set-option", "-t", &agent, "status", "off"]);
@@ -280,6 +284,11 @@ pub fn pty_spawn(
     builder.arg("attach-session");
     builder.arg("-t");
     builder.arg(&agent);
+    // xterm.js advertises itself as xterm-256color; declare it here so
+    // tmux (and anything claude spawns via Bash) has a valid terminfo
+    // entry. Without this, users whose shell config doesn't export TERM
+    // see `open terminal failed: terminal does not support clear`.
+    builder.env("TERM", "xterm-256color");
 
     let child = pair
         .slave

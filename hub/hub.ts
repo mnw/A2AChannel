@@ -48,7 +48,7 @@ const HANDOFF_CONTEXT_MAX_BYTES = 1_048_576;
 const HANDOFF_TASK_MAX_CHARS = 500;
 const HANDOFF_REASON_MAX_CHARS = 500;
 const HANDOFF_ID_RE = /^h_[0-9a-f]{16}$/;
-const LEDGER_SCHEMA_VERSION = 2;
+const LEDGER_SCHEMA_VERSION = 3;
 type HandoffStatus = "pending" | "accepted" | "declined" | "cancelled" | "expired";
 // User-configurable file-extension allowlist. Defaults match the Rust
 // shell's default_attachment_extensions(); the env always wins when set.
@@ -319,6 +319,27 @@ function migrateLedger(db: Database): void {
       db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '2')");
     })();
     console.log(`[ledger] applied migration v2`);
+  }
+  if (current < 3) {
+    // v3 — claude-session capture. Keyed by (agent, cwd); stores the
+    // `claude --resume <id>` identifier so the spawn modal can offer
+    // "restore previous session" when the user re-launches the same
+    // agent in the same directory. PTY-side concern, persisted in the
+    // existing ledger db for consistency.
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE claude_sessions (
+          agent          TEXT    NOT NULL,
+          cwd            TEXT    NOT NULL,
+          resume_flag    TEXT    NOT NULL,
+          captured_at_ms INTEGER NOT NULL,
+          PRIMARY KEY (agent, cwd)
+        );
+        CREATE INDEX idx_claude_sessions_agent ON claude_sessions(agent);
+      `);
+      db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '3')");
+    })();
+    console.log(`[ledger] applied migration v3`);
   }
 }
 
@@ -1923,6 +1944,56 @@ function handleGetNutshell(): Response {
   return json(readNutshell());
 }
 
+// ── Claude session capture (PTY side) ─────────────────────────
+// The UI's output-scan detects the `claude --resume <id>` hint that claude
+// prints on exit. It POSTs { agent, cwd, resume_flag } here; later the
+// spawn modal GETs this record and prefills the restore field.
+const RESUME_FLAG_RE = /^[A-Za-z0-9_.:/\-]{1,256}$/;
+
+async function handleSaveSession(req: Request): Promise<Response> {
+  const guard = ledgerGuard();
+  if (guard) return guard;
+  const sizeCheck = requireJsonBody(req);
+  if (sizeCheck) return sizeCheck;
+  const body = (await req.json().catch(() => ({}))) as {
+    agent?: string; cwd?: string; resume_flag?: string;
+  };
+  const agent = (body.agent ?? "").trim();
+  const cwd = (body.cwd ?? "").trim();
+  const resume_flag = (body.resume_flag ?? "").trim();
+  if (!validName(agent)) return json({ error: "invalid agent" }, { status: 400 });
+  if (!cwd || cwd.length > 1024) return json({ error: "invalid cwd" }, { status: 400 });
+  if (!RESUME_FLAG_RE.test(resume_flag)) {
+    return json({ error: "invalid resume_flag" }, { status: 400 });
+  }
+  ledgerDb!
+    .query(`
+      INSERT INTO claude_sessions (agent, cwd, resume_flag, captured_at_ms)
+        VALUES (?, ?, ?, ?)
+      ON CONFLICT(agent, cwd) DO UPDATE SET
+        resume_flag    = excluded.resume_flag,
+        captured_at_ms = excluded.captured_at_ms
+    `)
+    .run(agent, cwd, resume_flag, Date.now());
+  return json({ ok: true });
+}
+
+function handleGetSession(url: URL): Response {
+  const guard = ledgerGuard();
+  if (guard) return guard;
+  const agent = (url.searchParams.get("agent") ?? "").trim();
+  const cwd = (url.searchParams.get("cwd") ?? "").trim();
+  if (!validName(agent)) return json({ error: "invalid agent" }, { status: 400 });
+  if (!cwd) return json({ error: "cwd required" }, { status: 400 });
+  const row = ledgerDb!
+    .query<{ resume_flag: string; captured_at_ms: number }, [string, string]>(
+      "SELECT resume_flag, captured_at_ms FROM claude_sessions WHERE agent = ? AND cwd = ?",
+    )
+    .get(agent, cwd);
+  if (!row) return json(null);
+  return json({ resume_flag: row.resume_flag, captured_at_ms: row.captured_at_ms });
+}
+
 // ── Server ─────────────────────────────────────────────────────
 const server = Bun.serve({
   hostname: "127.0.0.1",
@@ -2020,6 +2091,16 @@ const server = Bun.serve({
       if (req.method === "GET" && pathname === "/nutshell") {
         const authFail = requireReadAuth(req, url);
         return authFail ?? handleGetNutshell();
+      }
+      // Claude session capture — PTY-side concern persisted here so the
+      // spawn modal can offer restore on relaunch.
+      if (req.method === "POST" && pathname === "/sessions") {
+        const authFail = requireAuth(req);
+        return authFail ?? (await handleSaveSession(req));
+      }
+      if (req.method === "GET" && pathname === "/sessions") {
+        const authFail = requireReadAuth(req, url);
+        return authFail ?? handleGetSession(url);
       }
       return json({ error: "not found", path: pathname }, { status: 404 });
     } catch (e) {

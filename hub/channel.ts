@@ -72,7 +72,7 @@ function resolveHub(): HubInfo | null {
 }
 
 const mcp = new Server(
-  { name: "chatbridge", version: "0.7.0" },
+  { name: "chatbridge", version: "0.7.1" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },

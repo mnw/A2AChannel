@@ -9,6 +9,8 @@ A2AChannel is a native macOS app that turns multiple Claude Code sessions into a
 
 ### What's new in v0.7
 
+- **v0.7.5 — Homebrew install + faster spawn + UX polish.** `brew install --cask mnw/a2achannel/a2achannel` now gets you a prebuilt bundle. Claude path + API key live in `config.json` (defaults to Anthropic's installer location) so we skip `.zshrc` entirely — spawn-to-first-screen dropped from ~15 s to sub-second. New: right-aligned self bubbles with tails, permission-prompt tab flash when another agent is awaiting approval, `--continue` / `--resume` radios in the spawn modal (claude's own session picker), drag-drop file uploads on the chat window, sparkle-loader while claude boots, vertical tab rail on the right edge of the terminal pane, draggable splitter grip.
+- **Visual refresh.** Warm-dark palette, Fraunces/Inter/JetBrains Mono typography vendored locally, new app icon (three Claude silhouettes in a speech bubble).
 - **Embedded terminal pane.** Launch and watch each agent's `claude` session inside A2AChannel — send slash commands, answer permission prompts, see raw output without leaving the app. Opt-in toggle in the header; classic external-terminal workflow still works.
 - **One-click agent launch.** `+ New agent` prompts for a name and cwd, writes the MCP config, spawns claude in a bundled tmux session, auto-dismisses the dev-channels confirmation prompt. No more manual `.mcp.json` editing for new agents.
 - **Session persistence across restarts.** tmux sessions outlive A2AChannel; the pane auto-attaches on next launch. Multi-client: your external `tmux attach` and the in-app pane see the same session concurrently.
@@ -122,7 +124,7 @@ git worktree add ../myproject-bob
 
 Agents launched from your own terminals (with their own `.mcp.json` pointing at chatbridge) continue to work — they register with the hub exactly as before and appear in the legend. In the terminal pane they show up as `external` tabs with a status line explaining "running outside A2AChannel" (no xterm mounted; the pane can't mirror a process it doesn't own).
 
-**Known cosmetic.** Claude 2.1.x prints `server:chatbridge · no MCP server configured with that name` at startup. The check runs before `--mcp-config` loads; the server still registers and dev-channels work end-to-end. Scheduled for v0.7.1 cleanup.
+**Known cosmetic.** Claude 2.1.x prints `server:chatbridge · no MCP server configured with that name` at startup. The check runs before `--mcp-config` loads; the server still registers and dev-channels work end-to-end.
 
 ## Architecture
 
@@ -170,7 +172,22 @@ Hub and channel are two modes of the same compiled binary (`a2a-bin`), dispatche
 - **pty.rs (v0.7)** — per-agent PTY registry keyed by agent name. Spawns a tmux session via the bundled tmux binary on the shared socket, allocates a PTY via `portable-pty`, runs `tmux attach-session` inside it, and streams base64-encoded bytes to xterm.js over Tauri events (`pty://output/<agent>`, `pty://exit/<agent>`). Accepts five commands: `pty_spawn`, `pty_write`, `pty_resize`, `pty_kill`, `pty_list`. **Never uses `tmux -C` control mode or `send-keys`** — the bridge is deliberately a raw PTY pattern matching every other standalone terminal emulator.
 - **Bundled tmux (v0.7)** — static tmux 3.5a for `aarch64-apple-darwin`, built from `scripts/build-tmux.sh`, bundled at `A2AChannel.app/Contents/Resources/resources/tmux`. Ad-hoc signed inline (not relying on `codesign --deep`).
 
-## Prerequisites
+## Install
+
+### From Homebrew (recommended)
+
+```bash
+brew tap mnw/a2achannel
+brew install --cask a2achannel
+```
+
+Prebuilt DMG + signed `.app`, ~130 MB, Apple Silicon only. `brew upgrade --cask a2achannel` to update, `brew uninstall --cask a2achannel` to remove. The cask's `zap` stanza cleans up `~/Library/Application Support/A2AChannel` on uninstall if you want a full wipe: `brew uninstall --zap --cask a2achannel`.
+
+### From source
+
+For contributors or anyone who wants to build locally.
+
+**Prerequisites:**
 
 | Requirement | Why | Install |
 |---|---|---|
@@ -179,10 +196,10 @@ Hub and channel are two modes of the same compiled binary (`a2a-bin`), dispatche
 | [Rust](https://rustup.rs) | Builds the Tauri shell | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
 | Xcode Command Line Tools | C toolchain for native deps | `xcode-select --install` |
 
-## Build & install
+**Build:**
 
 ```bash
-git clone <repo-url> A2AChannel
+git clone https://github.com/mnw/A2AChannel.git
 cd A2AChannel
 bun install
 ./scripts/install.sh
@@ -196,6 +213,8 @@ bun install
 4. **Launches** the app.
 
 To rebuild after code changes, run `./scripts/install.sh` again. The Rust incremental build takes ~60s; the sidecar compile takes <1s.
+
+**Cut a release:** contributors with push access can use `./scripts/release.sh <version>` — bumps versions, commits, tags, builds, zips, pushes a GitHub release, and updates the Homebrew tap in one shot. See `scripts/release.sh --help`.
 
 ## Usage
 

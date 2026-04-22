@@ -5,11 +5,13 @@
 //   listen('pty://output/<agent>', e => term.write(bytesFromB64(e.payload.b64)))
 //   ResizeObserver         → invoke('pty_resize', { agent, cols, rows })
 //
-// Tab state machine (design Decision 7):
+// Tab state machine (post-v0.7 final):
 //   external   agent in roster, no tmux session A2AChannel owns     → info card, no xterm
 //   launching  spawn in progress                                     → xterm booting
 //   live       we own a PTY, xterm attached                          → active claude / shell
-//   dead       held pane (remain-on-exit); Restart affordance shown  → xterm retained for scrollback
+//
+// When claude exits the pane exits, session dies, pty://exit fires, tab removes.
+// No held-pane / dead state — that was v0.7-alpha.
 //
 // Runs as a plain <script> after main.js; reuses its globals (ROSTER, HUMAN_NAME,
 // legendEl, AGENT_NAME_RE by re-declaration) without polluting them.
@@ -54,6 +56,8 @@
   const spawnCwdPick  = document.getElementById('spawn-cwd-pick');
   const spawnCancel   = document.getElementById('spawn-cancel');
   const spawnSubmit   = document.getElementById('spawn-submit');
+  const spawnSessionContinue = document.getElementById('spawn-session-continue');
+  const spawnSessionResume   = document.getElementById('spawn-session-resume');
   const confirmModal  = document.getElementById('confirm-modal');
   const confirmTitle  = document.getElementById('confirm-title');
   const confirmPrompt = document.getElementById('confirm-prompt');
@@ -64,11 +68,20 @@
   const NAME_RE = /^[A-Za-z0-9_.-][A-Za-z0-9 _.-]{0,62}[A-Za-z0-9_.-]$|^[A-Za-z0-9_.-]$/;
 
   // --- Toggle + splitter -------------------------------------------------
-  const PANE_KEY  = 'a2achannel_terminal_enabled';
   const SPLIT_KEY = 'a2achannel_terminal_split';
 
+  // Pane visibility is NOT persisted across launches. Default is closed;
+  // if the user has any tmux sessions outlived their last quit, we
+  // auto-open on launch so those agents remain visible. Toggle works
+  // during the session; re-opening the app resets to this "closed
+  // unless there's work" rule. Split ratio persists separately.
+  // Clean up old persisted keys from pre-0.7.1 installs.
+  localStorage.removeItem('a2achannel_terminal_enabled');
+  localStorage.removeItem('a2achannel_ui_version');
+  let _paneEnabled = false;
+
   function paneEnabled() {
-    return localStorage.getItem(PANE_KEY) === 'true';
+    return _paneEnabled;
   }
   function applyPaneClass() {
     body.classList.toggle('no-terminal', !paneEnabled());
@@ -83,10 +96,9 @@
   applySplit();
 
   toggleBtn?.addEventListener('click', () => {
-    const next = !paneEnabled();
-    localStorage.setItem(PANE_KEY, String(next));
+    _paneEnabled = !_paneEnabled;
     applyPaneClass();
-    if (next) reconcile();
+    if (_paneEnabled) reconcile();
     // Force xterm refits since the container size changed.
     for (const t of tabs.values()) if (t.term) t.fitAddon?.fit();
   });
@@ -159,8 +171,12 @@
   }
 
   // --- Tauri IPC wrappers ------------------------------------------------
-  async function ptySpawn(agent, cwd) {
-    return invoke('pty_spawn', { agent, cwd });
+  async function ptySpawn(agent, cwd, sessionMode) {
+    const args = { agent, cwd };
+    if (sessionMode === 'resume' || sessionMode === 'continue') {
+      args.sessionMode = sessionMode;
+    }
+    return invoke('pty_spawn', args);
   }
   async function ptyWrite(agent, b64) {
     return invoke('pty_write', { agent, b64 });
@@ -191,14 +207,14 @@
     return bytes;
   }
 
-  // --- Xterm theme (Catppuccin Mocha, mirrors CSS vars) -----------------
+  // --- Xterm theme (warm-dark, mirrors style.css tokens) -----------------
   const xtermTheme = {
-    background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#f5e0dc',
-    black: '#45475a',   red: '#f38ba8',   green: '#a6e3a1',   yellow: '#f9e2af',
-    blue:  '#89b4fa',   magenta: '#f5c2e7', cyan: '#94e2d5',  white: '#bac2de',
-    brightBlack: '#585b70', brightRed: '#f38ba8', brightGreen: '#a6e3a1',
-    brightYellow: '#f9e2af', brightBlue: '#89b4fa', brightMagenta: '#f5c2e7',
-    brightCyan: '#94e2d5', brightWhite: '#a6adc8',
+    background: '#14110f', foreground: '#f5ede2', cursor: '#d97757',
+    black: '#2a231e',   red: '#d4604a',  green: '#7fb069',   yellow: '#e8a857',
+    blue:  '#6b9bc9',   magenta: '#a788c4', cyan: '#6ab5a3',  white: '#a69583',
+    brightBlack: '#4a3d34', brightRed: '#e07a63', brightGreen: '#9dc285',
+    brightYellow: '#f0be7a', brightBlue: '#84afd9', brightMagenta: '#bb9fd5',
+    brightCyan: '#83c9b9', brightWhite: '#f5ede2',
   };
 
   // --- Tab rendering -----------------------------------------------------
@@ -259,43 +275,76 @@
     // Prune any helper overlays; xterm (if present) stays inside.
     for (const child of Array.from(t.paneEl.children)) {
       if (child.classList?.contains('terminal-empty') ||
-          child.classList?.contains('terminal-external-info')) {
+          child.classList?.contains('terminal-external-info') ||
+          child.classList?.contains('terminal-loading')) {
         child.remove();
       }
+    }
+    // Show the sparkle-loader during launching AND during early "live"
+    // before claude's first byte arrives. Claude's startup (Bun runtime
+    // + TUI + MCP init) takes 3–15 s, during which a just-mounted xterm
+    // would sit blank — worse feedback than a spinner. We defer the
+    // xterm mount until `attachOutputListener` sees the first byte.
+    if (t.state === 'launching' || (t.state === 'live' && !t.term)) {
+      const loader = document.createElement('div');
+      loader.className = 'terminal-loading';
+      const img = document.createElement('img');
+      img.src = 'sparkle.webp';
+      img.alt = '';
+      loader.appendChild(img);
+      const label = document.createElement('div');
+      label.textContent = t.state === 'launching' ? 'spawning session…' : 'claude is starting…';
+      loader.appendChild(label);
+      t.paneEl.appendChild(loader);
+      return;
     }
     if (t.state === 'external') {
       const info = document.createElement('div');
       info.className = 'terminal-external-info';
       info.innerHTML =
         '<div>' + t.tabEl.dataset.agent + ' is running outside A2AChannel.</div>' +
-        '<div style="font-size:11px; color:var(--ctp-overlay0);">Quit the external ' +
+        '<div style="font-size:11px; color:var(--text-dim);">Quit the external ' +
         'claude session to launch it inside the pane.</div>';
       t.paneEl.appendChild(info);
-    } else if (t.state === 'live' && !t.term) {
-      // Mount a fresh xterm.
-      const term = new window.Terminal({
-        theme: xtermTheme,
-        fontFamily: "'SF Mono', Menlo, monospace",
-        fontSize: 12,
-        cursorBlink: true,
-        convertEol: false,
-        scrollback: 10000,
-      });
-      const fitAddon = new window.FitAddon.FitAddon();
-      term.loadAddon(fitAddon);
-      term.open(t.paneEl);
-      fitAddon.fit();
-      term.onData((data) => {
-        ptyWrite(t.tabEl.dataset.agent, strToB64(data)).catch((e) =>
-          console.error('[terminal] write', e));
-      });
-      t.term = term;
-      t.fitAddon = fitAddon;
-      // Observe size changes so SIGWINCH propagates.
-      const ro = new ResizeObserver(() => sendResize(t));
-      ro.observe(t.paneEl);
-      t._ro = ro;
     }
+    // `live` with t.term already mounted: nothing to do — xterm stays in place.
+  }
+
+  // Lazily create the xterm on first PTY output so the sparkle-loader
+  // stays visible during claude's multi-second boot. Idempotent.
+  function mountXterm(t) {
+    if (t.term) return;
+    // Prune any helper overlays (loader, external-info) before mounting.
+    for (const child of Array.from(t.paneEl.children)) {
+      if (child.classList?.contains('terminal-empty') ||
+          child.classList?.contains('terminal-external-info') ||
+          child.classList?.contains('terminal-loading')) {
+        child.remove();
+      }
+    }
+    const term = new window.Terminal({
+      theme: xtermTheme,
+      fontFamily: "'SF Mono', Menlo, monospace",
+      fontSize: 12,
+      cursorBlink: true,
+      convertEol: false,
+      scrollback: 10000,
+    });
+    const fitAddon = new window.FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(t.paneEl);
+    fitAddon.fit();
+    term.onData((data) => {
+      ptyWrite(t.tabEl.dataset.agent, strToB64(data)).catch((e) =>
+        console.error('[terminal] write', e));
+    });
+    t.term = term;
+    t.fitAddon = fitAddon;
+    const ro = new ResizeObserver(() => sendResize(t));
+    ro.observe(t.paneEl);
+    t._ro = ro;
+    // Propagate the real xterm size to the PTY immediately.
+    sendResize(t);
   }
 
   function sendResize(t) {
@@ -311,6 +360,8 @@
     for (const [name, t] of tabs) {
       t.tabEl.classList.toggle('active', name === agent);
       t.paneEl.classList.toggle('active', name === agent);
+      // Clear the attention flash on the tab the user is looking at.
+      if (name === agent) t.tabEl.classList.remove('needs-attention');
     }
     activeAgent = agent;
     const t = tabs.get(agent);
@@ -324,25 +375,82 @@
   // confirmation prompt. When we see this text in the output stream, we
   // auto-send Enter (option 1 is pre-selected) and force a redraw so the
   // rest of the TUI flushes to the xterm.
-  const DEV_CHANNELS_PROMPT_MARKER = 'I am using this for local development';
-  const TAIL_BUFFER_MAX = 1024;
-  const decoder = new TextDecoder('utf-8', { fatal: false });
+  // Claude 2.1.117+ renders the dev-channels confirmation prompt
+  // character-by-character with cursor-positioning escape codes
+  // interleaved, so the raw byte stream has no spaces between letters.
+  // We normalize the tail (strip everything but A-Za-z) before matching
+  // against a spaces-stripped marker. Older claude versions emitted the
+  // phrase as a contiguous string; this approach matches both shapes.
+  const DEV_CHANNELS_PROMPT_MARKER = 'Iamusingthisforlocaldevelopment';
+  const TAIL_BUFFER_MAX = 4096;
+  // NOTE: each output scanner MUST keep its own TextDecoder. Sharing one
+  // decoder with `{stream: true}` across two scanners corrupts both —
+  // each call advances the decoder's partial-UTF8 state machine. When
+  // dev-channels marker detection fails, claude sits at the confirmation
+  // prompt forever and no first screen / chatbridge registration ever
+  // happens. Keep these instances separate.
+  const devDecoder = new TextDecoder('utf-8', { fatal: false });
+  const attnDecoder = new TextDecoder('utf-8', { fatal: false });
+
+  // CSI / OSC escape sequences used by claude's TUI. Strip BEFORE the
+  // letters-only scrub — the final letter of `ESC [ n C` (cursor
+  // forward) is a letter (`C`) and would otherwise pollute the
+  // letters-only string with stray cursor-control characters.
+  const ANSI_ESCAPE_RE = /\x1b(?:\[[0-9;?]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|[@-Z\\-_])/g;
+
+  // Attention marker — fires when claude prints a permission prompt.
+  // All of claude's permission asks start with "Do you want to …"
+  // (proceed, continue, allow, run, etc.); letters-only = 'Doyouwantto'.
+  // We set `needs-attention` on the tab when the user is NOT currently
+  // focused on that tab, so they can see at a glance which agent
+  // needs an answer.
+  const ATTENTION_MARKER = 'Doyouwantto';
+  const ATTN_TAIL_MAX = 2048;
+
+  function maybeFlagAttention(t, agent, chunkBytes) {
+    t.attnTail = (t.attnTail || '') + attnDecoder.decode(chunkBytes, { stream: true });
+    if (t.attnTail.length > ATTN_TAIL_MAX) {
+      t.attnTail = t.attnTail.slice(-ATTN_TAIL_MAX);
+    }
+    const lettersOnly = t.attnTail
+      .replace(ANSI_ESCAPE_RE, '')
+      .replace(/[^A-Za-z]/g, '');
+    if (lettersOnly.includes(ATTENTION_MARKER)) {
+      // Release the buffer so the next prompt re-fires the flash.
+      t.attnTail = '';
+      // Only flag if the tab isn't already the focused one — the
+      // whole point is to notify about background agents.
+      if (activeAgent !== agent) {
+        t.tabEl.classList.add('needs-attention');
+      }
+    }
+  }
 
   function maybeAutoDismissDevChannels(t, agent, chunkBytes) {
     if (t.warningDismissed) return;
     // Accumulate a rolling tail of decoded output to handle the marker
     // being split across chunks. Cheap — bounded at TAIL_BUFFER_MAX.
-    t.outputTail = (t.outputTail || '') + decoder.decode(chunkBytes, { stream: true });
+    t.outputTail = (t.outputTail || '') + devDecoder.decode(chunkBytes, { stream: true });
     if (t.outputTail.length > TAIL_BUFFER_MAX) {
       t.outputTail = t.outputTail.slice(-TAIL_BUFFER_MAX);
     }
-    if (t.outputTail.includes(DEV_CHANNELS_PROMPT_MARKER)) {
+    // First strip ANSI escape sequences (claude 2.1.117+ emits each
+    // letter of the prompt with a CSI cursor-forward between them, and
+    // the trailing `C` of `ESC [ n C` is a letter that would otherwise
+    // contaminate the letters-only version), then keep only letters
+    // and match against a spaces-stripped marker.
+    const lettersOnly = t.outputTail
+      .replace(ANSI_ESCAPE_RE, '')
+      .replace(/[^A-Za-z]/g, '');
+    if (lettersOnly.includes(DEV_CHANNELS_PROMPT_MARKER)) {
       t.warningDismissed = true;
       t.outputTail = ''; // release buffer
+      t._launchStage?.('dev-channels marker detected');
       // Small delay so claude's prompt is fully rendered before we Enter.
       setTimeout(() => {
         if (!tabs.has(agent)) return;
         ptyWrite(agent, strToB64('\r')).catch(() => {});
+        t._launchStage?.('Enter sent (dismiss)');
         // Force-flush tmux's alt-screen buffer by cycling the PTY size
         // so claude's post-prompt TUI draw reaches our xterm.
         setTimeout(() => {
@@ -352,6 +460,7 @@
           const rows = tt.term.rows;
           ptyResize(agent, cols, Math.max(5, rows - 1))
             .then(() => ptyResize(agent, cols, rows))
+            .then(() => t._launchStage?.('SIGWINCH cycle done'))
             .catch(() => {});
         }, 300);
       }, 100);
@@ -370,32 +479,60 @@
     t.outputTail = '';
     t.outputUnlisten = await listen(`pty://output/${agent}`, (e) => {
       const bytes = b64ToBytes(e.payload.b64);
-      if (t.term) t.term.write(bytes);
+      if (!t._firstByteLogged && t._launchStage) {
+        t._firstByteLogged = true;
+        t._launchStage(`first PTY byte (${bytes.length}B)`);
+      }
+      // Lazy mount: the first byte is our signal that claude's TUI is
+      // ready to render. Until then, the sparkle-loader covers the pane.
+      if (!t.term) {
+        mountXterm(t);
+        t._launchStage?.('xterm mounted');
+      }
+      t.term.write(bytes);
       maybeAutoDismissDevChannels(t, agent, bytes);
+      maybeFlagAttention(t, agent, bytes);
     });
     t.exitUnlisten = await listen(`pty://exit/${agent}`, () => {
-      // No more held pane / dead state — when claude exits, the tmux
-      // session is gone. Remove the tab; the next reconcile re-surfaces
-      // an `external` tab if the agent is still in the hub roster
-      // (unlikely since chatbridge exits with claude).
+      // When claude exits the tmux session dies (no remain-on-exit).
+      // Remove the tab. Session state is tracked by claude itself under
+      // ~/.claude/projects/; our spawn modal offers --continue and
+      // --resume radio options that invoke claude's own resume path.
       removeTab(agent);
       reconcile();
     });
   }
 
-  // --- Spawn / Launch / Restart / Kill -----------------------------------
-  async function handleLaunch(agent, cwd) {
+  // --- Spawn / Launch / Kill ---------------------------------------------
+  async function handleLaunch(agent, cwd, sessionMode = null) {
+    // Force the pane open so the loader + xterm are actually visible.
+    // Auto-open-on-launch is the documented rule: "if the terminal has
+    // agents, keep it open."
+    if (!_paneEnabled) {
+      _paneEnabled = true;
+      applyPaneClass();
+    }
+    // --- Startup timing instrumentation ---
+    const t0 = performance.now();
+    const stage = (label) =>
+      console.log(`[launch-timing] +${Math.round(performance.now() - t0)}ms — ${agent} — ${label}`);
+    stage('handleLaunch start');
     const t = ensureTab(agent);
     setTabState(agent, 'launching');
     focusTab(agent);
+    t._launchT0 = t0;
+    t._launchStage = stage;
     try {
-      await ptySpawn(agent, cwd);
+      stage('invoke pty_spawn');
+      await ptySpawn(agent, cwd, sessionMode);
+      stage('pty_spawn returned');
       rememberCwd(agent, cwd);
       t.cwd = cwd;
       t.external = false;
       setTabState(agent, 'live');
-      // renderPaneBody mounts the xterm; then attach listeners.
+      // renderPaneBody keeps the loader up; xterm mounts on first byte.
       await attachOutputListener(agent);
+      stage('output listener attached');
       sendResize(t);
       // Auto-dismiss + redraw is now output-driven in
       // maybeAutoDismissDevChannels — fires exactly when the warning
@@ -429,26 +566,34 @@
     );
     if (!ok) return;
 
-    // Graceful: send /exit to claude. Claude processes the command,
-    // shuts down its MCP servers (including chatbridge), prints goodbye,
-    // and exits. The shell exits, tmux pane ends, session dies (no
-    // remain-on-exit), pty://exit fires, removeTab() runs — natural chain.
+    // Graceful: send /exit + Enter to claude's REPL. Claude processes
+    // the command, shuts down its MCP servers (including chatbridge),
+    // exits. The shell exits, tmux pane ends, session dies (no
+    // remain-on-exit), pty://exit fires, removeTab() runs.
+    //
+    // Note: we do NOT send a leading Escape to back out of nested
+    // modes. Claude's input layer consumes `\x1b` (and our `/` that
+    // follows) as a key-combo, leaving only `xit` in the input field.
+    // If the user is mid-tool (vim, pager, slash-picker), the 10 s
+    // force-kill fallback below handles it.
     try {
-      await ptyWrite(agent, strToB64('/exit\n'));
+      await ptyWrite(agent, strToB64('/exit\r'));
     } catch (e) {
       console.error('[terminal] /exit write failed:', e);
     }
 
-    // Fallback: if claude hasn't exited within 5 s (hung tool, weird
-    // state), force-kill the tmux session directly. Same chain from
-    // there, just less graceful.
+    // Fallback: if claude hasn't exited within 10 s (MCP-server
+    // cleanup can be slow, or claude is hung), force-kill the tmux
+    // session directly. Same chain from there, just less graceful.
+    // Not logged as a warning — both paths end the session as
+    // requested by the user; it's an implementation detail.
     setTimeout(async () => {
       if (!tabs.has(agent)) return; // already exited cleanly
-      console.warn('[terminal] /exit timeout on', agent, '— force-killing');
+      console.debug('[terminal] /exit timeout on', agent, '— force-killing');
       try { await ptyKill(agent); } catch (e) {
         console.error('[terminal] force-kill failed:', e);
       }
-    }, 5000);
+    }, 10000);
   }
 
   // --- New agent modal ---------------------------------------------------
@@ -458,9 +603,15 @@
   function openSpawnModal(prefillAgent = '', prefillCwd = '') {
     spawnAgentEl.value = prefillAgent;
     spawnCwdEl.value = prefillCwd;
+    // Session mode radios reset to unselected — user opts in explicitly.
+    if (spawnSessionContinue) spawnSessionContinue.checked = false;
+    if (spawnSessionResume)   spawnSessionResume.checked = false;
     spawnModal.classList.add('open');
     setTimeout(() => spawnAgentEl.focus(), 0);
   }
+  // Allow main.js (the roster's "+ agent" button) to open the spawn
+  // modal without cross-script globals.
+  document.addEventListener('a2a:open-spawn', () => openSpawnModal());
   function closeSpawnModal() { spawnModal.classList.remove('open'); }
   spawnCancel?.addEventListener('click', closeSpawnModal);
   spawnModal?.addEventListener('click', (e) => {
@@ -470,6 +621,7 @@
     const dir = await pickDirectory();
     if (dir) spawnCwdEl.value = dir;
   });
+
   spawnSubmit?.addEventListener('click', async () => {
     const agent = spawnAgentEl.value.trim();
     const cwd = spawnCwdEl.value.trim();
@@ -478,8 +630,11 @@
       return;
     }
     if (!cwd) { alert('Pick a working directory.'); return; }
+    let sessionMode = null;
+    if (spawnSessionContinue?.checked) sessionMode = 'continue';
+    else if (spawnSessionResume?.checked) sessionMode = 'resume';
     closeSpawnModal();
-    await handleLaunch(agent, cwd);
+    await handleLaunch(agent, cwd, sessionMode);
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && spawnModal.classList.contains('open')) closeSpawnModal();
@@ -574,6 +729,23 @@
   setInterval(() => { if (paneEnabled()) reconcile(); }, 5000);
   // Initial reconcile on load (roster might not be ready yet; retries on interval).
   setTimeout(reconcile, 500);
+
+  // Auto-open the pane at launch if tmux has any sessions on our
+  // socket — the user had agents open when they last quit, so keeping
+  // them visible beats making them re-toggle. No sessions → stay closed.
+  (async () => {
+    try {
+      const names = await ptyList();
+      if (names.length && !_paneEnabled) {
+        _paneEnabled = true;
+        applyPaneClass();
+        reconcile();
+        for (const t of tabs.values()) if (t.term) t.fitAddon?.fit();
+      }
+    } catch (e) {
+      // No tmux server running yet / hub not up — leave pane closed.
+    }
+  })();
 
   // Re-reconcile whenever the legend gets rebuilt (main.js's applyRoster mutates it).
   // Cheap signal: MutationObserver on the legend element.

@@ -46,6 +46,18 @@ struct AppConfig {
     human_name: Option<String>,
     #[serde(default)]
     attachment_extensions: Option<Vec<String>>,
+    // Absolute path to the `claude` binary. Defaults to Anthropic's
+    // installer location. Declared in config so we can skip sourcing
+    // the user's `.zshrc` to find it — the single biggest cost in
+    // agent spawn latency (1–5 s of plugin loading per launch).
+    #[serde(default)]
+    claude_path: Option<String>,
+    // Optional Anthropic API key. Left empty by default; users whose
+    // claude install uses keychain OAuth (the usual case) don't need
+    // to set this. When non-empty, passed to tmux via `new-session -e`
+    // so claude inherits it without us sourcing `.zshrc`.
+    #[serde(default)]
+    anthropic_api_key: Option<String>,
 }
 
 const RESERVED_NAMES: &[&str] = &["you", "all", "system"];
@@ -171,6 +183,57 @@ fn default_attachments_dir() -> PathBuf {
         .join("a2a-attachments")
 }
 
+fn default_claude_path() -> PathBuf {
+    // Anthropic's default-installer wrapper script location.
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(".claude/local/claude")
+}
+
+// Expand a leading `~` or `$HOME` in a user-provided path into the
+// actual home directory. Config paths are persisted as strings; this
+// gives us portability across Macs without having to bake an absolute
+// path into the seed config.
+fn expand_tilde(path: &str) -> PathBuf {
+    let trimmed = path.trim();
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    if trimmed == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home;
+        }
+    }
+    PathBuf::from(trimmed)
+}
+
+// Resolve the claude binary path for agent spawns. Reads config on
+// every call so clicking ↻ (reload settings) picks up edits without
+// an app relaunch. Empty or missing → Anthropic's installer default.
+pub fn resolve_claude_path() -> PathBuf {
+    let cfg = load_config();
+    let raw = cfg
+        .claude_path
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    match raw {
+        Some(s) => expand_tilde(&s),
+        None => default_claude_path(),
+    }
+}
+
+// Optional ANTHROPIC_API_KEY to inject into claude's env at spawn.
+// Empty/unset → nothing injected; claude falls back to its keychain
+// OAuth (the usual case).
+pub fn resolve_anthropic_api_key() -> Option<String> {
+    let cfg = load_config();
+    cfg.anthropic_api_key
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 fn load_config() -> AppConfig {
     let path = config_file();
     match fs::read_to_string(&path) {
@@ -228,6 +291,8 @@ fn resolve_attachments_dir_and_seed(human_name: &str, extensions: &[String]) -> 
             "human_name": human_name,
             "attachments_dir": serde_json::Value::Null,
             "attachment_extensions": extensions,
+            "claude_path": "~/.claude/local/claude",
+            "anthropic_api_key": "",
         });
         if let Err(e) = fs::create_dir_all(cfg_path.parent().unwrap_or(&PathBuf::from("/tmp"))) {
             eprintln!("[setup] create config dir failed: {e}");

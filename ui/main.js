@@ -83,6 +83,9 @@ const sendBtn = document.getElementById('send-btn');
 sendBtn.addEventListener('click', () => send());
 const legendEl = document.getElementById('legend');
 const targetEl = document.getElementById('target');
+const targetDisplay = document.getElementById('target-display');
+const targetDisplayText = targetDisplay?.querySelector('.target-display-text');
+const targetMenu = document.getElementById('target-menu');
 const emojiBtn = document.getElementById('emoji-btn');
 const emojiPop = document.getElementById('emoji-popover');
 const mentionPop = document.getElementById('mention-popover');
@@ -245,6 +248,82 @@ function renderTargetDropdown() {
   }
   const match = [...targetEl.options].some((o) => o.value === prev);
   targetEl.value = match ? prev : 'auto';
+  renderTargetMenu();
+}
+
+function renderTargetMenu() {
+  if (!targetMenu) return;
+  targetMenu.innerHTML = '';
+
+  const build = (value, label, extraClass = '') => {
+    const el = document.createElement('div');
+    el.className = 'target-option' + (extraClass ? ' ' + extraClass : '');
+    if (value === targetEl.value) el.classList.add('selected');
+    el.dataset.value = value;
+    el.role = 'option';
+    el.textContent = label;
+    el.addEventListener('click', () => {
+      targetEl.value = value;
+      renderTargetMenu();
+      updateTargetDisplayLabel();
+      closeTargetMenu();
+    });
+    return el;
+  };
+
+  targetMenu.appendChild(build('auto', '@ mentions'));
+  for (const a of ROSTER) {
+    targetMenu.appendChild(build(a.name, `→ ${cap(a.name)}`));
+  }
+  if (ROSTER.length > 1) {
+    targetMenu.appendChild(build('all', '→ All'));
+  }
+
+  const interruptAgents = ROSTER.filter((a) => a.name !== HUMAN_NAME);
+  if (interruptAgents.length) {
+    const divider = document.createElement('div');
+    divider.className = 'target-menu-divider';
+    targetMenu.appendChild(divider);
+    for (const a of interruptAgents) {
+      targetMenu.appendChild(build(`!${a.name}`, `⚠ Interrupt ${cap(a.name)}`, 'interrupt'));
+    }
+  }
+
+  updateTargetDisplayLabel();
+}
+
+function updateTargetDisplayLabel() {
+  if (!targetDisplayText) return;
+  const v = targetEl.value || 'auto';
+  const opt = [...targetEl.options].find((o) => o.value === v);
+  targetDisplayText.textContent = opt ? opt.textContent : '@ mentions';
+}
+
+function openTargetMenu() {
+  if (!targetMenu || !targetDisplay) return;
+  targetMenu.classList.add('open');
+  targetDisplay.setAttribute('aria-expanded', 'true');
+}
+function closeTargetMenu() {
+  if (!targetMenu || !targetDisplay) return;
+  targetMenu.classList.remove('open');
+  targetDisplay.setAttribute('aria-expanded', 'false');
+}
+
+if (targetDisplay) {
+  targetDisplay.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (targetMenu.classList.contains('open')) closeTargetMenu();
+    else openTargetMenu();
+  });
+  document.addEventListener('click', (e) => {
+    if (!targetMenu?.classList.contains('open')) return;
+    if (targetMenu.contains(e.target) || targetDisplay.contains(e.target)) return;
+    closeTargetMenu();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && targetMenu?.classList.contains('open')) closeTargetMenu();
+  });
 }
 
 async function loadRoster() {
@@ -339,8 +418,8 @@ function addMessage(data) {
   const avatar = document.createElement('div');
   avatar.className = 'msg-avatar';
   avatar.textContent = (displayName[0] || '?').toUpperCase();
-  if (from === 'you') avatar.style.background = 'var(--ctp-blue)';
-  else if (from === 'system') avatar.style.background = 'var(--ctp-red)';
+  if (from === 'you') avatar.style.background = 'var(--orange)';
+  else if (from === 'system') avatar.style.background = 'var(--red)';
   else if (COLORS[from]) avatar.style.background = COLORS[from];
   div.appendChild(avatar);
 
@@ -545,7 +624,12 @@ function applyPresence(agents) {
   }
   const names = ROSTER.map(a => a.name);
   const onCount = names.filter(n => agents[n]).length;
-  statusText.textContent = `live · ${onCount}/${names.length} agents online`;
+  let hubLabel = '';
+  try {
+    const p = new URL(BUS).port;
+    if (p) hubLabel = ` · hub :${p}`;
+  } catch { /* BUS may be empty pre-bootstrap */ }
+  statusText.textContent = `${onCount}/${names.length} agents${hubLabel}`;
   if (mentionPop.classList.contains('open')) updateMentionPopover();
 }
 
@@ -750,7 +834,7 @@ function renderMentionPopover() {
     const item = document.createElement('div');
     item.className = 'mention-item' + (i === mentionActive ? ' active' : '') +
                      (online === false ? ' offline' : '');
-    const color = name === 'all' ? 'var(--ctp-subtext0)' : (COLORS[name] || 'var(--ctp-subtext0)');
+    const color = name === 'all' ? 'var(--text-muted)' : (COLORS[name] || 'var(--text-muted)');
     const meta = name === 'all' ? 'broadcast' : (online ? 'online' : 'offline');
     item.innerHTML = `<span class="dot" style="background:${color}"></span>` +
                      `<span>${name}</span>` +
@@ -1059,7 +1143,7 @@ async function handleHandoffAction(id, action) {
 }
 
 /* ── Interrupt cards ─────────────────────────────────────── */
-const interruptCards = new Map(); // interrupt_id → { element, version, status }
+const interruptCards = new Map(); // interrupt_id → { element, version, status, snapshot }
 
 function renderInterruptCard(event) {
   const snapshot = event.snapshot || (() => {
@@ -1075,6 +1159,7 @@ function renderInterruptCard(event) {
     updateInterruptCardDom(existing.element, snapshot, event);
     existing.version = incomingVersion;
     existing.status = snapshot.status;
+    existing.snapshot = snapshot;
   } else {
     const el = buildInterruptCardDom(snapshot, event);
     // Sticky: pending interrupts go to the TOP of the message area so they can't
@@ -1085,7 +1170,7 @@ function renderInterruptCard(event) {
       messagesEl.appendChild(el);
     }
     interruptCards.set(event.interrupt_id, {
-      element: el, version: incomingVersion, status: snapshot.status,
+      element: el, version: incomingVersion, status: snapshot.status, snapshot,
     });
     while (messagesEl.childElementCount > MESSAGE_DOM_LIMIT) {
       const first = messagesEl.firstChild;
@@ -1492,3 +1577,13 @@ if (mcpCopyBtn) mcpCopyBtn.addEventListener('click', async () => {
     document.execCommand?.('copy');
   }
 });
+
+/* ── + agent → terminal-pane spawn modal ─────────────────── */
+// The roster's "+ agent" button uses the same spawn flow as the
+// terminal pane's tab-strip "+". terminal.js listens for this event.
+const addAgentBtn = document.getElementById('add-agent-btn');
+if (addAgentBtn) {
+  addAgentBtn.addEventListener('click', () => {
+    document.dispatchEvent(new CustomEvent('a2a:open-spawn'));
+  });
+}
