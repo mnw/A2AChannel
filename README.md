@@ -2,14 +2,13 @@
 
 > Coordination primitives for parallel Claude Code sessions — messages, handoffs, interrupts.
 
-![demo](docs/demo.gif)
-<!-- Two Claude Code agents coordinating via handoff. -->
+<!-- TODO: add docs/demo.gif -->
 
 ## Why
 
-Claude Code sub-agents share their parent's context. Separate Claude Code sessions don't — each is its own island. A2AChannel gives independent sessions a shared room, structured handoffs, and interrupts, so they can work as a team without you copy-pasting between windows.
+Claude Code sub-agents share their parent's context. Separate Claude Code sessions don't — each is its own island. A2AChannel gives independent sessions a shared room, structured handoffs, and interrupts, so they can coordinate without you shuttling context between windows. Agents launch from the app itself — bundled terminal pane, bundled tmux, no `.mcp.json` editing, no separate windows to juggle.
 
-The coordination is a protocol, not a chat app. Every message is a typed primitive with durable state, logged to an append-only SQLite ledger. You're in the room too, as a first-class participant.
+The coordination is a protocol, not a chat app. Every message is a typed primitive with durable state, logged to an append-only SQLite ledger. You're in the room too. Handoffs and interrupts persist across restarts; pending work replays to the right agent on reconnect.
 
 ## Three primitives
 
@@ -37,6 +36,8 @@ Decline-with-reason is the key mechanic: unlike chat, the sender gets a routable
 
 Handoffs with `task` prefixed `[nutshell]` and `context.patch` set update the project's shared summary atomically on accept — one-line broadcast to every peer.
 
+A **nutshell** is the project's shared running summary — one paragraph every agent sees at the top of the room. Any agent can propose an update by sending a handoff with `task: "[nutshell] ..."` and a `context.patch` string. On accept, the patch replaces the current summary and broadcasts to all peers.
+
 ### Interrupts — `send_interrupt`, `ack_interrupt`
 
 Soft preemption. Surfaces a red-bordered card stuck to the top of the recipient's chat until they acknowledge. Not a hard kill — the recipient keeps running — but a required ack means the signal can't be silently dropped. Reserve for genuine "stop and re-read this" moments.
@@ -45,8 +46,6 @@ Soft preemption. Surfaces a red-bordered card stuck to the top of the recipient'
 |---|---|
 | `send_interrupt` | `to`, `text` (≤500 chars) |
 | `ack_interrupt` | `interrupt_id` |
-
-Every primitive writes exactly one event + one derived-state row per SQLite transaction. Pending work survives app restart and replays to the right agent on reconnect.
 
 ## Quickstart
 
@@ -120,7 +119,7 @@ Edit, click **↻** in the header to reload — hub restarts with the new values
 ## Architecture
 
 <details>
-<summary>System diagram and component breakdown</summary>
+<summary>System diagram</summary>
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -156,6 +155,8 @@ Edit, click **↻** in the header to reload — hub restarts with the new values
   └─────────────┘   └─────────────┘       └─────────────┘
 ```
 
+</details>
+
 **a2a-bin (hub mode)** — HTTP + SSE server on a dynamic loopback port. Owns the chat log, per-agent queues, attachments on disk, SQLite ledger for structured primitives (events + derived state, WAL mode). Bearer-token auth on all routes; read routes also accept `?token=` for `EventSource` and `<img>`.
 
 **a2a-bin (channel mode)** — MCP server, one per Claude Code session. Reads the discovery files at `~/Library/Application Support/A2AChannel/hub.{url,token}`, tails `/agent-stream`, forwards messages into Claude's context as `<channel>` notifications, exposes the 8 coordination tools.
@@ -167,7 +168,6 @@ Edit, click **↻** in the header to reload — hub restarts with the new values
 **Bundled tmux** — static tmux 3.5a for `aarch64-apple-darwin`, built via `scripts/build-tmux.sh`, bundled in the app.
 
 Full protocol schemas, endpoints, and state machines: [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
-</details>
 
 ## Troubleshooting
 
