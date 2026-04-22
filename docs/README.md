@@ -9,7 +9,7 @@ Long-form documentation and demo assets.
 
 ---
 
-## `demo.gif` — spec
+
 
 15–20 second screencast demonstrating the core loop. Meant to be embedded
 inline in the repository README.

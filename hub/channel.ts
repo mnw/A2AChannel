@@ -59,10 +59,7 @@ function readTrimmed(path: string): string | null {
   }
 }
 
-// Resolve both hub URL and auth token. An explicit CHATBRIDGE_HUB env
-// pins the URL (escape hatch for debugging); the token always comes
-// from disk. Returns null if any required piece is missing so the
-// outer loop retries.
+// CHATBRIDGE_HUB env pins the URL (debug escape hatch); token always comes from disk.
 function resolveHub(): HubInfo | null {
   const url = HUB_ENV || readTrimmed(URL_PATH);
   if (!url || !/^https?:\/\//i.test(url)) return null;
@@ -272,7 +269,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   ],
 }));
 
-// Auth'd POST helper with automatic token-rotation retry on 401.
+// Auto-retries once with a fresh token on 401.
 async function authedPost(
   path: string,
   body: unknown,
@@ -309,8 +306,6 @@ async function authedPost(
   return { status: r.status, body: text, json: parsed };
 }
 
-// Auth'd multipart upload — used by post_file. Reads the whole file into
-// memory; the hub enforces size caps and will reject oversized payloads.
 async function authedUpload(
   filePath: string,
 ): Promise<{ status: number; body: string; json: unknown }> {
@@ -320,12 +315,10 @@ async function authedUpload(
       `hub not found (need ${URL_PATH} and ${TOKEN_PATH}, or CHATBRIDGE_HUB env)`,
     );
   }
-  // Bun's File API reads disk bytes; fall back to readFileSync for safety.
   const { readFileSync, statSync } = await import("node:fs");
   const { basename } = await import("node:path");
   const filename = basename(filePath);
-  // Match hub's IMAGE_MAX_BYTES (8 MiB). Check size via stat before
-  // reading so a huge file can't OOM the sidecar just to be rejected.
+  // stat() before read() so a huge file can't OOM the sidecar just to be rejected.
   const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
   let bytes: Uint8Array;
   try {
@@ -342,8 +335,6 @@ async function authedUpload(
   }
   const send = async (h: HubInfo) => {
     const form = new FormData();
-    // Cast past ArrayBuffer vs SharedArrayBuffer strictness in the type
-    // system; at runtime Blob accepts any typed-array view.
     form.append("file", new Blob([bytes as unknown as BlobPart]), filename);
     return fetch(`${h.url}/upload`, {
       method: "POST",
@@ -395,7 +386,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     const to = String(args.to ?? "all");
     const caption = args.caption !== undefined ? String(args.caption) : "";
 
-    // 1. Upload bytes → hub returns { url, id }.
     const up = await authedUpload(path);
     if (up.status < 200 || up.status >= 300) toolError(up, "post_file upload");
     const url =
@@ -404,9 +394,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         : "";
     if (!url) throw new Error("post_file: hub returned no url");
 
-    // 2. Post a chat entry with the returned URL as the attachment. Reuses
-    // /post so the message flows through the same broadcast + enqueue path
-    // as any other agent-originated chat entry.
     const send = await authedPost("/post", {
       from: AGENT,
       to,
@@ -503,19 +490,14 @@ async function tailHub(): Promise<void> {
     loggedMissingOnce = false;
 
     try {
-      // /agent-stream now requires auth. Authorization header would work
-      // here (we're using fetch, not EventSource), but pass the token via
-      // ?token= for symmetry with the UI and so server access logs see
-      // the same shape from every reader.
+      // Use ?token= for symmetry with the UI (EventSource can't send headers).
       const url =
         `${hub.url}/agent-stream` +
         `?agent=${encodeURIComponent(AGENT)}` +
         `&token=${encodeURIComponent(hub.token)}`;
       const r = await fetch(url);
       if (!r.ok || !r.body) {
-        // 401 here means our cached token is stale (app restarted, new
-        // token minted). The next loop iteration re-reads the discovery
-        // file and picks up the rotated value.
+        // On 401 the next iteration re-reads the discovery file and picks up the rotated token.
         await new Promise((s) => setTimeout(s, 2000));
         continue;
       }
@@ -541,7 +523,6 @@ async function tailHub(): Promise<void> {
             to?: string;
             text?: string;
             ts?: string;
-            // Structured-message fields (present for kind starting with "handoff." or "interrupt.")
             kind?: string;
             handoff_id?: string;
             interrupt_id?: string;
@@ -549,7 +530,6 @@ async function tailHub(): Promise<void> {
             expires_at_ms?: number;
             status?: string;
             replay?: boolean;
-            // Briefing payload (type === "briefing")
             tools?: string[];
             peers?: Array<{ name: string; online: boolean }>;
             attachments_dir?: string;
@@ -563,13 +543,8 @@ async function tailHub(): Promise<void> {
             continue;
           }
           try {
-            // Briefing: a one-off onboarding notification with tool inventory,
-            // peer list, attachments path, and current project nutshell.
-            // Delivered as a regular chat notification (no custom kind) because
-            // Claude Code's channel client appears to silently drop unknown
-            // kinds — we were losing briefings by tagging them kind=briefing.
-            // The prose is prefixed with a recognizable tag so the agent's
-            // model can still pattern-match on it in context.
+            // Ship briefings as regular chat notifications — Claude Code's channel client
+            // silently drops unknown kinds. Recognizable prose prefix lets the model match on it.
             if (evt.type === "briefing") {
               const parts: string[] = [
                 `[A2AChannel briefing] You are "${AGENT}" in a shared room.`,
@@ -602,9 +577,6 @@ async function tailHub(): Promise<void> {
               });
               continue;
             }
-            // Nutshell updates: ambient context refresh. Same rationale as
-            // briefings — ship as regular chat content so Claude Code's
-            // channel client accepts it.
             if (evt.type === "nutshell.updated") {
               const text = evt.text ?? "";
               await mcp.notification({
@@ -622,7 +594,6 @@ async function tailHub(): Promise<void> {
               ts: evt.ts ?? "",
             };
             if (evt.kind) {
-              // Forward structured events with their protocol metadata as channel attributes.
               meta.kind = evt.kind;
               if (evt.handoff_id) meta.handoff_id = evt.handoff_id;
               if (evt.interrupt_id) meta.interrupt_id = evt.interrupt_id;

@@ -3,16 +3,10 @@ let AUTH_TOKEN = '';                     // filled by bootstrap(); bearer token 
 let HUMAN_NAME = 'you';                  // filled by bootstrap(); the human's identity in the roster
 const handoffCards = new Map();          // handoff_id → { element, version, status, snapshot }
 const MESSAGE_DOM_LIMIT = 2000;          // trim #messages to this many nodes
-// Generic attachment URL — any allowlisted extension served at /image/<id>.
-// (The route is named /image/ for back-compat; the hub allowlist is what
-// actually decides which extensions are accepted at upload time.)
 const ATTACHMENT_URL_RE = /^\/image\/[A-Za-z0-9_-]+\.[a-z0-9]{1,10}$/i;
 const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp)$/i;
 
-// Inline "ask for a reason" modal. Replaces window.prompt() which Tauri's
-// WebView silently returns null from. Resolves to the user's text on OK
-// (empty string if they OK'd without typing), or null on Cancel / Escape /
-// backdrop click. If `required` is true, an empty input keeps the dialog open.
+// Inline replacement for window.prompt — Tauri's WebView returns null from prompt for security.
 const reasonModal       = document.getElementById('reason-modal');
 const reasonModalTitle  = document.getElementById('reason-modal-title');
 const reasonModalPrompt = document.getElementById('reason-modal-prompt');
@@ -54,14 +48,12 @@ reasonModalInput?.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); reasonModalOk.click(); }
 });
 
-// Wrapper that adds Authorization to mutating fetches.
 async function authedFetch(path, init = {}) {
   const headers = { ...(init.headers || {}) };
   if (AUTH_TOKEN) headers['Authorization'] = `Bearer ${AUTH_TOKEN}`;
   return fetch(`${BUS}${path}`, { ...init, headers });
 }
 
-// Parse an error response body, preferring the JSON `error` field if present.
 async function parseErrorBody(r) {
   try {
     const body = await r.text();
@@ -124,15 +116,9 @@ function shade(hex, pct) {
   return '#' + ((r << 16) | (g << 8) | b).toString(16).padStart(6, '0');
 }
 
-// Per-agent body colors pre-shaded. Caller (addMessage / renderLegend)
-// reads COLORS[name] and BODY_COLORS[name] directly and applies via
-// element.style.* — no dynamic <style> tag (Tauri 2's nonce-CSP blocks
-// programmatically-inserted <style> elements even with 'unsafe-inline').
+// Per-agent colors are applied inline — Tauri 2's nonce-CSP blocks dynamic <style> tags.
 const BODY_COLORS = {};
 
-// Sanitize agent name for CSS class use. Still needed for structural classes
-// (mention highlighting, per-agent hover selectors) but no longer carries
-// color — colors are inlined on the elements.
 function cssName(name) {
   return 'a-' + name.replace(/[^A-Za-z0-9_-]/g, '_');
 }
@@ -173,7 +159,6 @@ legendEl.addEventListener('click', async (e) => {
       addMessage({ from: 'system', to: 'you', text: `Remove failed: ${err}`, ts: '' });
       btn.disabled = false;
     }
-    // On success the hub broadcasts roster update → UI rebuilds itself.
   } catch (err) {
     addMessage({ from: 'system', to: 'you', text: `Remove failed: ${err?.message ?? err}`, ts: '' });
     btn.disabled = false;
@@ -181,8 +166,6 @@ legendEl.addEventListener('click', async (e) => {
 });
 
 function renderLegend() {
-  // The human is just another roster member (registered by the hub at startup).
-  // Rebuild all pills from ROSTER; the human comes through naturally.
   legendEl.innerHTML = '';
 
   for (const a of ROSTER) {
@@ -190,12 +173,9 @@ function renderLegend() {
     const legItem = document.createElement('div');
     legItem.className = 'legend-item offline';
     legItem.dataset.agent = a.name;
-    // The human pill never gets a remove button — it's a permanent roster member.
     const removeBtn = isHuman
       ? ''
       : `<button type="button" class="legend-remove" title="Remove agent" aria-label="Remove ${a.name}">×</button>`;
-    // Dot color is applied inline — the dynamic stylesheet approach collided
-    // with Tauri 2's nonce-CSP even with style-src 'unsafe-inline'.
     legItem.innerHTML =
       `<div class="legend-dot" style="background:${a.color}"></div>` +
       `<span class="legend-label">${a.name}</span>` +
@@ -233,8 +213,7 @@ function renderTargetDropdown() {
     optAll.textContent = '→ All';
     targetEl.appendChild(optAll);
   }
-  // Interrupt composer mode — special option that routes the text through
-  // POST /interrupts instead of /send. See the send() function for dispatch.
+  // "!<agent>" targets route through POST /interrupts (see send()).
   const sep = document.createElement('option');
   sep.disabled = true;
   sep.textContent = '──────────';
@@ -335,10 +314,7 @@ async function loadRoster() {
   }
 }
 
-// Pull the current pending-handoff set from the ledger and render cards.
-// /agent-stream replays handoffs to the agent's MCP channel on reconnect,
-// but /stream does not — so without this call, the UI loses every card on
-// page refresh (and on settings reload, which clears the DOM).
+// /stream doesn't replay handoffs the way /agent-stream does, so load pending ones explicitly.
 async function loadPendingHandoffs() {
   try {
     const r = await authedFetch('/handoffs?status=pending&limit=500');
@@ -390,8 +366,7 @@ async function loadNutshell() {
   }
 }
 
-// Append ?token= to URLs that the browser can't authenticate via header
-// (EventSource, <img src>). Idempotent: skips if token is empty or already present.
+// EventSource / <img> can't send Authorization headers — append ?token= instead.
 function withToken(path) {
   if (!AUTH_TOKEN) return path;
   if (/[?&]token=/.test(path)) return path;
@@ -412,8 +387,6 @@ function addMessage(data) {
   const cls = from === 'you' || from === 'system' ? `from-${from}` : `from-${cssName(from)}`;
   div.className = `msg ${cls}`;
 
-  // Avatar — circle with the sender's initial. Color: agent's hash-derived
-  // palette entry, or a fixed accent for you/system.
   const displayName = NAMES[from] || from;
   const avatar = document.createElement('div');
   avatar.className = 'msg-avatar';
@@ -423,7 +396,6 @@ function addMessage(data) {
   else if (COLORS[from]) avatar.style.background = COLORS[from];
   div.appendChild(avatar);
 
-  // Content column — header (name/ts/to) stacked above the bubble.
   const content = document.createElement('div');
   content.className = 'msg-content';
 
@@ -432,9 +404,6 @@ function addMessage(data) {
   const nameSpan = document.createElement('span');
   nameSpan.className = 'msg-name';
   nameSpan.textContent = displayName;
-  // Per-agent colour applied inline (dynamic <style> blocked by CSP nonce).
-  // from-you / from-system get their colours from the static inline-<style>
-  // block in <head>, which CSP accepts as part of the initial document.
   if (from !== 'you' && from !== 'system' && COLORS[from]) {
     nameSpan.style.color = COLORS[from];
   }
@@ -443,8 +412,6 @@ function addMessage(data) {
   tsSpan.className = 'msg-ts';
   tsSpan.textContent = data.ts || '';
   header.appendChild(tsSpan);
-  // Only show the "→ to" suffix when the message is directed at a single
-  // non-broadcast target. Avoids visual noise on every broadcast line.
   if (data.to && data.to !== 'all' && data.to !== from) {
     const toSpan = document.createElement('span');
     toSpan.className = 'msg-to';
@@ -453,21 +420,16 @@ function addMessage(data) {
   }
   content.appendChild(header);
 
-  // Body bubble — innerHTML is fine here because every user-controlled
-  // string goes through escHtml before linkify/highlightMentions augment it.
+  // innerHTML is safe here: all user-controlled text goes through escHtml before linkify/highlight.
   const safeAttachment = data.image && isSafeAttachmentSrc(data.image) ? data.image : null;
   const attachmentHtml = safeAttachment ? renderAttachmentHtml(safeAttachment) : '';
   const body = document.createElement('div');
   body.className = 'msg-body';
-  // Body color is uniform (var(--ctp-rosewater)) for readability. Per-agent
-  // color is used only on the name pill — the name already identifies the
-  // sender, tinting the body just hurt contrast on the dark background.
   body.innerHTML = highlightMentions(linkify(escHtml(data.text || ''))) + attachmentHtml;
   content.appendChild(body);
 
   div.appendChild(content);
   messagesEl.appendChild(div);
-  // Bound DOM growth on long sessions.
   while (messagesEl.childElementCount > MESSAGE_DOM_LIMIT) {
     messagesEl.removeChild(messagesEl.firstChild);
   }
@@ -484,9 +446,6 @@ function renderAttachmentHtml(url) {
   if (IMAGE_EXT_RE.test(url)) {
     return `<img src="${safeUrl}" alt="attachment" data-zoomable="1" />`;
   }
-  // Generic non-image attachment: show filename + extension as a clickable
-  // chip that opens in a new tab. Browsers will render PDFs natively and
-  // download anything else.
   const filename = url.split('/').pop() || 'attachment';
   const dot = filename.lastIndexOf('.');
   const ext = dot >= 0 ? filename.slice(dot + 1).toUpperCase() : 'FILE';
@@ -499,13 +458,9 @@ function renderAttachmentHtml(url) {
 function imgUrl(u) {
   if (!u) return '';
   if (/^https?:\/\//.test(u)) return u;
-  // Local /image/<id>.<ext> served by the hub — needs ?token= auth
-  // (the <img> tag cannot send the Authorization header).
   return `${BUS}${withToken(u)}`;
 }
 
-// Delegated click-to-zoom for image attachments; re-validates URL before
-// opening to avoid anything weird that bypassed escaping.
 messagesEl.addEventListener('click', (e) => {
   const img = e.target.closest?.('.msg-body img[data-zoomable]');
   if (!img) return;
@@ -514,9 +469,7 @@ messagesEl.addEventListener('click', (e) => {
   window.open(src, '_blank', 'noopener');
 });
 
-// Top-center "Link copied" toast. Single DOM element shared across all copy
-// buttons; debounced so rapid clicks extend the visible window instead of
-// stacking multiple toasts.
+// Shared toast element; rapid clicks extend the visible window rather than stacking toasts.
 const copyToastEl = document.getElementById('copy-toast');
 let _copyToastTimer = 0;
 function showCopyToast(msg) {
@@ -527,8 +480,6 @@ function showCopyToast(msg) {
   _copyToastTimer = setTimeout(() => copyToastEl.classList.remove('visible'), 1400);
 }
 
-// Delegated one-click copy for links inside message bodies. Reads the
-// decoded href from dataset so the clipboard gets the unescaped URL.
 messagesEl.addEventListener('click', (e) => {
   const btn = e.target.closest?.('.msg-link-copy');
   if (!btn) return;
@@ -542,7 +493,6 @@ messagesEl.addEventListener('click', (e) => {
   };
   if (navigator.clipboard?.writeText) {
     navigator.clipboard.writeText(href).then(flashCopied).catch(() => {
-      // Fallback via hidden textarea for older WebViews.
       const ta = document.createElement('textarea');
       ta.value = href;
       ta.style.position = 'fixed';
@@ -572,16 +522,13 @@ function escAttr(s) {
 }
 
 function linkify(s) {
-  // Input is already escaped by escHtml. Use a replacer function so $-sequences
-  // in the URL ($&, $1, $', etc.) aren't treated as substitution patterns.
+  // Replacer function (not replacement string) so $-sequences in the URL aren't treated as groups.
   return s.replace(/(https?:\/\/[^\s<]+)/g, (_, url) =>
     `<a class="msg-link" href="${url}" target="_blank" rel="noopener">${url}</a>` +
     `<button type="button" class="msg-link-copy" data-href="${url}" aria-label="Copy link" title="Copy link"></button>`);
 }
 
-// Agent names allow '.' '-' '_' (plus alnum + spaces). '.' and '-' are
-// regex metacharacters — without escaping, an agent named "a.b" would
-// match "@axb" and silently intercept unrelated mentions.
+// Agent names can contain regex metacharacters ('.' '-'); escape before building the mention regex.
 function escRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&');
 }
@@ -639,8 +586,7 @@ function markAllOffline() {
   applyPresence(empty);
 }
 
-// Persist last-seen id across app restarts so chat history is not duplicated.
-// Tied to a hub session id so a hub restart (which resets the id sequence) doesn't suppress new messages.
+// (session, lastSeenId) persists across restarts; hub restart mints a new session → reset lastSeenId.
 let serverSession = localStorage.getItem('a2achannel_session') || '';
 let lastSeenId = parseInt(localStorage.getItem('a2achannel_last_event_id') || '0', 10) || 0;
 
@@ -658,19 +604,15 @@ function handleEvent(data) {
   if (data.type === 'roster')   { applyRoster(data.agents || []); return; }
   if (data.type === 'presence') { applyPresence(data.agents || {}); return; }
   if (data.type === 'nutshell.updated') { applyNutshell(data.snapshot || null); return; }
-  // Dedup chat entries by their server-assigned id.
   if (typeof data.id === 'number') {
     if (data.id <= lastSeenId) return;
     lastSeenId = data.id;
     localStorage.setItem('a2achannel_last_event_id', String(lastSeenId));
   }
-  // Structured handoff events render as cards, not chat rows.
   if (typeof data.kind === 'string' && data.kind.startsWith('handoff.')) {
     renderHandoffCard(data);
     return;
   }
-  // Structured interrupt events — high-visibility cards sticky to the top of
-  // the message area while pending.
   if (typeof data.kind === 'string' && data.kind.startsWith('interrupt.')) {
     renderInterruptCard(data);
     return;
@@ -707,9 +649,7 @@ async function send() {
 
   const mode = targetEl.value || 'auto';
 
-  // Interrupt composer mode — target values like "!bob" route through
-  // POST /interrupts instead of /send. No attachment support on interrupts;
-  // surface a warning if the user had one queued.
+  // Targets prefixed with "!" route through /interrupts instead of /send.
   if (mode.startsWith('!')) {
     const toAgent = mode.slice(1);
     if (!text) {
@@ -901,8 +841,6 @@ fileInput.addEventListener('change', () => {
 });
 
 async function uploadAttachment(file) {
-  // Server validates the extension against the configured allowlist.
-  // No client-side MIME gate — browsers report wildly inconsistent types.
   renderAttachment(null, file.name, true);
   const fd = new FormData();
   fd.append('file', file);
@@ -922,9 +860,6 @@ function renderAttachment(url, name, loading) {
   attachRow.innerHTML = '';
   const chip = document.createElement('div');
   chip.className = 'attachment-chip';
-  // Inline thumbnail only if the file is an image extension; otherwise
-  // show the extension badge so users can tell at a glance what they
-  // attached.
   if (url) {
     if (IMAGE_EXT_RE.test(url)) {
       const img = document.createElement('img');
@@ -991,14 +926,12 @@ window.addEventListener('drop', (e) => {
 
 /* ── Handoff card rendering ──────────────────────────────── */
 function renderHandoffCard(event) {
-  // Extract the snapshot: hub embeds it directly on the SSE entry.
   const snapshot = event.snapshot || (() => {
     try { return JSON.parse(event.text || '{}'); } catch { return null; }
   })();
   if (!snapshot || !event.handoff_id) return;
 
-  // Version reconciliation: ignore stale broadcasts. Log every transition
-  // so we can diagnose "card stuck at pending" bug reports without devtools.
+  // Version reconciliation: discard stale broadcasts; log transitions for debugging.
   const existing = handoffCards.get(event.handoff_id);
   const incomingVersion = Number(event.version ?? snapshot.version ?? 0);
   console.debug('[handoff]', event.kind, event.handoff_id,
@@ -1023,7 +956,6 @@ function renderHandoffCard(event) {
       status: snapshot.status,
       snapshot,
     });
-    // Trim DOM to bound.
     while (messagesEl.childElementCount > MESSAGE_DOM_LIMIT) {
       const first = messagesEl.firstChild;
       if (first && first._handoffId) handoffCards.delete(first._handoffId);
@@ -1042,7 +974,6 @@ function buildHandoffCardDom(snapshot, event) {
 }
 
 function updateHandoffCardDom(el, snapshot, event) {
-  // Reset status classes.
   el.className = 'handoff-card';
   el.classList.add(`status-${snapshot.status}`);
 
@@ -1099,7 +1030,6 @@ function updateHandoffCardDom(el, snapshot, event) {
     ${actionsHtml}
   `;
 
-  // Action handlers.
   el.querySelectorAll('.handoff-actions button').forEach((btn) => {
     btn.addEventListener('click', () => handleHandoffAction(snapshot.id, btn.dataset.action));
   });
@@ -1112,9 +1042,6 @@ async function handleHandoffAction(id, action) {
   if (action === 'accept') {
     body = { by: HUMAN_NAME };
   } else if (action === 'decline') {
-    // Tauri's WebView silently returns null from window.prompt for security
-    // reasons — we need a custom dialog. askReason() below opens a minimal
-    // inline modal and resolves to the typed reason (or null on cancel).
     const reason = await askReason('Decline handoff', 'Why are you declining?', { required: true });
     if (!reason) return;
     body = { by: HUMAN_NAME, reason };
@@ -1136,7 +1063,6 @@ async function handleHandoffAction(id, action) {
       const err = await parseErrorBody(r);
       addMessage({ from: 'system', to: HUMAN_NAME, text: `Handoff ${action} failed: ${err}`, ts: '' });
     }
-    // On success the hub broadcasts handoff.update which re-renders the card.
   } catch (e) {
     addMessage({ from: 'system', to: HUMAN_NAME, text: `Handoff ${action} error: ${e?.message ?? e}`, ts: '' });
   }
@@ -1162,8 +1088,7 @@ function renderInterruptCard(event) {
     existing.snapshot = snapshot;
   } else {
     const el = buildInterruptCardDom(snapshot, event);
-    // Sticky: pending interrupts go to the TOP of the message area so they can't
-    // be missed; acknowledged ones render in line with chat history.
+    // Pending interrupts sticky to top; acknowledged ones flow in line.
     if (snapshot.status === 'pending') {
       messagesEl.insertBefore(el, messagesEl.firstChild);
     } else {
@@ -1195,9 +1120,10 @@ function updateInterruptCardDom(el, snapshot, event) {
   el.classList.add(`status-${snapshot.status}`);
   const replayBadge = event.replay === true || event.replay === 'true'
     ? `<span class="interrupt-replay-badge">(replay)</span>` : '';
-  const actionsHtml = snapshot.status === 'pending' && snapshot.to_agent === HUMAN_NAME
+  const isRecipient = snapshot.to_agent === HUMAN_NAME;
+  const actionsHtml = snapshot.status === 'pending'
     ? `<div class="interrupt-actions">
-         <button type="button" data-action="ack">Acknowledge</button>
+         <button type="button" data-action="ack">${isRecipient ? 'Acknowledge' : 'Acknowledge (on behalf)'}</button>
        </div>`
     : '';
   el.innerHTML = `
@@ -1251,10 +1177,11 @@ function applyNutshell(snapshot) {
     updated_by: snapshot.updated_by ?? null,
   };
   renderNutshell();
-  // Brief highlight so the human notices the change.
   nutshellEl.classList.add('flash');
   setTimeout(() => nutshellEl.classList.remove('flash'), 1400);
 }
+
+const NUTSHELL_PREVIEW_MAX = 125;
 
 function renderNutshell() {
   nutshellEl.style.display = 'flex';
@@ -1262,9 +1189,14 @@ function renderNutshell() {
   if (!txt) {
     nutshellBodyEl.textContent = 'No project summary yet — agents or the human can propose one.';
     nutshellBodyEl.classList.add('empty');
+    nutshellBodyEl.removeAttribute('title');
   } else {
-    nutshellBodyEl.textContent = txt;
+    const preview = txt.length > NUTSHELL_PREVIEW_MAX
+      ? txt.slice(0, NUTSHELL_PREVIEW_MAX).trimEnd() + '…'
+      : txt;
+    nutshellBodyEl.textContent = preview;
     nutshellBodyEl.classList.remove('empty');
+    nutshellBodyEl.title = txt;
   }
   if (nutshellCurrent.version > 0) {
     const who = nutshellCurrent.updated_by || 'system';
@@ -1293,8 +1225,8 @@ async function submitNutshellProposal() {
   }
   nutshellSubmit.disabled = true;
   try {
-    // Send as a handoff proposal to the human. The hub's handoff-accept path
-    // detects the "[nutshell]" task prefix and applies the patch atomically.
+    // Nutshell edits flow through the handoff primitive — the accept path detects
+    // the "[nutshell]" task prefix and applies context.patch atomically.
     const r = await authedFetch('/handoffs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1310,9 +1242,7 @@ async function submitNutshellProposal() {
       const err = await parseErrorBody(r);
       addMessage({ from: 'system', to: HUMAN_NAME, text: `Nutshell proposal failed: ${err}`, ts: '' });
     } else {
-      // The human is the sender AND recipient here — auto-accept by firing the
-      // accept endpoint immediately. Agents proposing edits follow the normal
-      // accept-by-human flow; the human editing their own nutshell shortcircuits.
+      // Human is both sender and recipient — auto-accept to skip the confirmation step.
       const body = await r.json();
       if (body?.id) {
         await authedFetch(`/handoffs/${encodeURIComponent(body.id)}/accept`, {
@@ -1371,8 +1301,6 @@ function updateCountdownLabel(cardEl) {
 }
 
 setInterval(() => {
-  // Early-out: most sessions have no open handoffs, so don't iterate
-  // a Map every second for nothing.
   if (handoffCards.size === 0) return;
   for (const { element } of handoffCards.values()) {
     if (element.classList.contains('status-pending')) {
@@ -1389,8 +1317,7 @@ async function bootstrap() {
   if (invoke) {
     try {
       const info = await invoke('get_hub_url');
-      // The Rust command now returns { url, token }. Accept the legacy
-      // bare-string return too, so a hub downgrade doesn't brick the UI.
+      // get_hub_url returns { url, token }; accept legacy bare-string too.
       if (info && typeof info === 'object') {
         if (typeof info.url === 'string' && info.url) BUS = info.url;
         if (typeof info.token === 'string') AUTH_TOKEN = info.token;
@@ -1407,20 +1334,15 @@ async function bootstrap() {
       if (typeof name === 'string' && name) {
         HUMAN_NAME = name;
         NAMES[HUMAN_NAME] = cap(HUMAN_NAME);
-        // Keep legacy "you" → "You" label for free-text chat routing.
       }
-    } catch {
-      // older Rust shell without the command: stick with default "you".
-    }
+    } catch {}
     try {
       const version = await invoke('get_app_version');
       const metaEl = document.getElementById('brand-meta');
       if (metaEl && typeof version === 'string' && version) {
         metaEl.textContent = `v${version}`;
       }
-    } catch {
-      // older Rust shell without the command: show empty.
-    }
+    } catch {}
   }
   try {
     await loadRoster();
@@ -1454,8 +1376,6 @@ function tauriInvoke(cmd, args) {
 }
 
 function fallbackTemplate() {
-  // Used when running in a plain browser (no Tauri). Path is the typical
-  // install location; user can edit the textarea to correct it.
   return JSON.stringify({
     mcpServers: {
       chatbridge: {
@@ -1520,7 +1440,6 @@ if (reloadBtn) {
         if (typeof info.url === 'string' && info.url) BUS = info.url;
         if (typeof info.token === 'string') AUTH_TOKEN = info.token;
       }
-      // Refresh the human name in case it changed.
       try {
         const name = await tauriInvoke('get_human_name');
         if (typeof name === 'string' && name) {
@@ -1528,20 +1447,13 @@ if (reloadBtn) {
           NAMES[HUMAN_NAME] = cap(HUMAN_NAME);
         }
       } catch {}
-      // Tear down the existing SSE + card state; the new hub has a fresh
-      // session id and chatLog, so the old lastSeenId is stale.
+      // New hub → fresh session id + chatLog; tear down SSE and cards, then replay from ledger.
       if (activeES) { try { activeES.close(); } catch {} activeES = null; }
       handoffCards.clear();
-      // Drop any rendered chat + handoff cards from the DOM; they'll replay
-      // (roster + presence + pending handoffs) from the fresh hub.
       messagesEl.innerHTML = '';
       lastFrom = null;
       lastSeenId = 0;
       localStorage.setItem('a2achannel_last_event_id', '0');
-      // Reconnect SSE against the new URL, then re-render any handoffs,
-      // interrupts, and the nutshell already in the (fresh) hub's ledger —
-      // the hub keeps them across restarts; the UI just lost them when we
-      // cleared #messages.
       interruptCards.clear();
       connect();
       await loadNutshell();
@@ -1587,9 +1499,7 @@ if (mcpCopyBtn) mcpCopyBtn.addEventListener('click', async () => {
   }
 });
 
-/* ── + agent → terminal-pane spawn modal ─────────────────── */
-// The roster's "+ agent" button uses the same spawn flow as the
-// terminal pane's tab-strip "+". terminal.js listens for this event.
+// Shares the spawn flow with terminal.js's tab-strip "+" via the a2a:open-spawn event.
 const addAgentBtn = document.getElementById('add-agent-btn');
 if (addAgentBtn) {
   addAgentBtn.addEventListener('click', () => {

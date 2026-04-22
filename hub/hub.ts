@@ -1,27 +1,12 @@
-/**
- * A2AChannel hub — dynamic-roster edition with token auth + protocol ledger.
- *
- * Any agent that connects to /agent-stream?agent=<NAME> is auto-registered.
- * The human is registered at startup as a permanent roster member.
- *
- * Env:
- *   PORT                     default 8011 (Rust shell always sets it)
- *   A2A_TOKEN                bearer token required on mutating routes
- *   A2A_ATTACHMENTS_DIR      absolute path where uploaded attachments are persisted
- *                            (legacy name A2A_IMAGES_DIR is read as a fallback)
- *   A2A_LEDGER_DB            absolute path to the SQLite ledger (structured-handoff)
- *   A2A_HUMAN_NAME           name of the human participant in the roster
- *   A2A_ALLOWED_EXTENSIONS   comma-separated file-extension allowlist
- */
+// A2AChannel hub. Dynamic roster; any agent that hits /agent-stream?agent=<n> auto-registers.
+// Env vars: PORT, A2A_TOKEN, A2A_ATTACHMENTS_DIR, A2A_LEDGER_DB, A2A_HUMAN_NAME, A2A_ALLOWED_EXTENSIONS.
 
 import { Database } from "bun:sqlite";
 import { chmodSync } from "node:fs";
 import { rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
-// Make every file the hub creates born 0600. SQLite creates ledger.db-wal
-// and ledger.db-shm itself — without this, they'd briefly exist with
-// umask-default perms before our explicit chmodSync closes the race.
+// Close the chmod-after-write race on SQLite's ledger.db-wal / ledger.db-shm.
 process.umask(0o077);
 
 const PORT = Number(process.env.PORT ?? 8011);
@@ -50,8 +35,7 @@ const HANDOFF_REASON_MAX_CHARS = 500;
 const HANDOFF_ID_RE = /^h_[0-9a-f]{16}$/;
 const LEDGER_SCHEMA_VERSION = 3;
 type HandoffStatus = "pending" | "accepted" | "declined" | "cancelled" | "expired";
-// User-configurable file-extension allowlist. Defaults match the Rust
-// shell's default_attachment_extensions(); the env always wins when set.
+// Extension allowlist; env wins over the defaults (which match the Rust shell's defaults).
 const DEFAULT_ALLOWED_EXTENSIONS = ["jpg", "jpeg", "png", "pdf", "md"];
 const ALLOWED_EXTENSIONS = new Set<string>(
   ((process.env.A2A_ALLOWED_EXTENSIONS ?? "").split(",")
@@ -62,10 +46,7 @@ const ALLOWED_EXTENSIONS = new Set<string>(
 if (ALLOWED_EXTENSIONS.size === 0) {
   for (const e of DEFAULT_ALLOWED_EXTENSIONS) ALLOWED_EXTENSIONS.add(e);
 }
-// Content-Type for the served file. Unknown but allowed extensions get
-// served as octet-stream — the browser won't render them inline, which
-// is actually the safe default. The CSP header on /image/ also blocks
-// any execution if the file happens to be HTML/JS/SVG.
+// Unknown-but-allowed extensions serve as octet-stream; the strict CSP on /image/ blocks execution.
 const EXT_TO_MIME: Record<string, string> = {
   png: "image/png",
   jpg: "image/jpeg",
@@ -88,10 +69,7 @@ const EXT_TO_MIME: Record<string, string> = {
   yml: "text/yaml; charset=utf-8",
 };
 const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp"]);
-// Allow letters, digits, spaces, and _.- inside; first and last char must be non-space.
 const AGENT_NAME_RE = /^[A-Za-z0-9_.-][A-Za-z0-9 _.-]{0,62}[A-Za-z0-9_.-]$|^[A-Za-z0-9_.-]$/;
-// Generic attachment URL — extension is checked against ALLOWED_EXTENSIONS
-// at upload time, so the regex only needs to constrain the URL shape.
 const IMAGE_URL_RE = /^\/image\/[A-Za-z0-9_-]+\.[a-z0-9]{1,10}$/i;
 const IMAGE_PATH_SEGMENT_RE = /^[A-Za-z0-9_-]+\.[a-z0-9]{1,10}$/i;
 const RESERVED_NAMES = new Set(["you", "all", "system"]);
@@ -124,7 +102,6 @@ type Entry = {
   agents?: Agent[] | Record<string, boolean>;
 };
 
-// ── Bounded drop-oldest queue with async pull ─────────────────
 class DropQueue<T> {
   private items: T[] = [];
   private waiters: Array<(v: T) => void> = [];
@@ -164,7 +141,6 @@ class DropQueue<T> {
   }
 }
 
-// ── State ──────────────────────────────────────────────────────
 const knownAgents = new Map<string, Agent>();
 const chatLog: Entry[] = [];
 const uiSubscribers = new Set<DropQueue<Entry>>();
@@ -175,7 +151,6 @@ const permanentAgents = new Set<string>();  // agents exempt from stale cleanup
 let entrySeq = 0;
 const SESSION_ID = randomId(8);
 
-// ── Ledger (SQLite) ────────────────────────────────────────────
 let ledgerDb: Database | null = null;
 let ledgerEnabled = false;
 
@@ -194,16 +169,12 @@ function openLedger(): void {
       console.error(`[ledger] chmod 0600 on ${LEDGER_DB} failed:`, e);
     }
     migrateLedger(ledgerDb);
-    // WAL mode + the migration's first write materializes the -wal and
-    // -shm sidecar files. SQLite creates them with the umask default
-    // (typically 0644), which would expose ledger contents (incl. handoff
-    // bodies) to other local users. Tighten to match the main DB.
+    // WAL-mode sidecars (-wal/-shm) are created by SQLite with umask default; tighten to 0600.
     for (const suffix of ["-wal", "-shm"]) {
       const sidePath = `${LEDGER_DB}${suffix}`;
       try {
         chmodSync(sidePath, 0o600);
       } catch (e: unknown) {
-        // ENOENT is expected if WAL hasn't materialized yet; ignore.
         const code = (e as NodeJS.ErrnoException | undefined)?.code;
         if (code !== "ENOENT") {
           console.error(`[ledger] chmod 0600 on ${sidePath} failed:`, e);
@@ -220,7 +191,6 @@ function openLedger(): void {
 }
 
 function migrateLedger(db: Database): void {
-  // meta table is the version source of truth; create eagerly.
   db.exec(`
     CREATE TABLE IF NOT EXISTS meta (
       key   TEXT PRIMARY KEY,
@@ -282,11 +252,7 @@ function migrateLedger(db: Database): void {
     console.log(`[ledger] applied migration v1`);
   }
   if (current < 2) {
-    // v2 — structured messages beyond handoffs. Adds two tables:
-    //   interrupts: high-visibility attention messages, pending → acknowledged.
-    //   nutshell:   one-row living project summary, edited via handoff proposals.
-    // The `events` table is reused for all kinds; `handoff_id` column was a
-    // misnomer from the v1 scope, now retained and used for any message id.
+    // v2 migration: adds `interrupts` + `nutshell` tables; reuses `events` for all kinds.
     db.transaction(() => {
       db.exec(`
         CREATE TABLE interrupts (
@@ -321,11 +287,7 @@ function migrateLedger(db: Database): void {
     console.log(`[ledger] applied migration v2`);
   }
   if (current < 3) {
-    // v3 — claude-session capture. Keyed by (agent, cwd); stores the
-    // `claude --resume <id>` identifier so the spawn modal can offer
-    // "restore previous session" when the user re-launches the same
-    // agent in the same directory. PTY-side concern, persisted in the
-    // existing ledger db for consistency.
+    // v3 migration: claude-session capture keyed by (agent, cwd) for the spawn modal's restore flow.
     db.transaction(() => {
       db.exec(`
         CREATE TABLE claude_sessions (
@@ -345,7 +307,6 @@ function migrateLedger(db: Database): void {
 
 openLedger();
 
-// ── Handoff state machine ──────────────────────────────────────
 type HandoffSnapshot = {
   id: string;
   from_agent: string;
@@ -511,10 +472,7 @@ function acceptHandoff(id: string, by: string, comment?: string): HandoffOutcome
   }
   const now = Date.now();
   const db = ledgerDb;
-  // If this handoff is a nutshell proposal (task prefix "[nutshell]" and
-  // context is an object with a `patch` string), apply the patch in the
-  // same transaction as the accept event. Keeps the ledger consistent —
-  // nutshell updates are versioned by the same `events.seq` sequence.
+  // Nutshell proposals (task prefix "[nutshell]") apply context.patch in the same tx as accept.
   let nutshellSnapshot: NutshellSnapshot | null = null;
   const isNutshellEdit =
     loaded.row.task.startsWith("[nutshell]") &&
@@ -528,7 +486,7 @@ function acceptHandoff(id: string, by: string, comment?: string): HandoffOutcome
         nutshellPatch = ctx.patch;
       }
     } catch {
-      // Malformed context — accept the handoff but don't touch the nutshell.
+      // Malformed context — accept the handoff but skip the nutshell patch.
     }
   }
   db.transaction(() => {
@@ -542,8 +500,6 @@ function acceptHandoff(id: string, by: string, comment?: string): HandoffOutcome
     }
   })();
   const outcome: HandoffOutcome = { kind: "transition", snapshot: snapshotHandoff(id)! };
-  // Broadcast the nutshell update — outside the transaction, but safe
-  // because the projection is already committed.
   if (nutshellSnapshot) {
     broadcastNutshell(nutshellSnapshot);
   }
@@ -645,16 +601,12 @@ function listHandoffs(filter: ListHandoffsFilter = {}): HandoffSnapshot[] {
     params.push(filter.for, filter.for);
   }
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-  // Bind LIMIT as a parameter — the value is already validated to a numeric
-  // range above, but parameterization keeps the SQL builder discipline
-  // uniform across all user-derived inputs.
   params.push(limit);
   const rows = ledgerDb
     .query<HandoffRow, typeof params>(
       `SELECT * FROM handoffs ${where} ORDER BY created_at_ms DESC LIMIT ?`,
     )
     .all(...params);
-  // Version lookup per row — n+1 but n is bounded by limit (default 100).
   return rows.map((row) => {
     const ver = ledgerDb!
       .query<{ max_seq: number | null }, [string]>(
@@ -679,7 +631,6 @@ function pendingFor(agent: string): HandoffSnapshot[] {
   return listHandoffs({ status: "pending", for: agent, limit: 1000 });
 }
 
-// ── Nutshell state ─────────────────────────────────────────────
 type NutshellSnapshot = {
   text: string;
   version: number;
@@ -702,7 +653,7 @@ function readNutshell(): NutshellSnapshot {
     .query<NutshellRow, []>("SELECT text, version, updated_at_ms, updated_by FROM nutshell WHERE id = 0")
     .get();
   if (!row) {
-    // Should never happen — v2 migration seeds a row. Fail open.
+    // Shouldn't happen — v2 migration seeds a row. Fail open.
     return { text: "", version: 0, updated_at_ms: Date.now(), updated_by: null };
   }
   return {
@@ -713,9 +664,7 @@ function readNutshell(): NutshellSnapshot {
   };
 }
 
-// Write a new nutshell text. Caller is responsible for wrapping this in
-// a transaction alongside the triggering event (currently the handoff
-// accept). Returns the updated snapshot.
+// Caller must wrap this in the same transaction as the triggering event (handoff accept).
 function writeNutshellInTx(
   db: Database,
   newText: string,
@@ -726,7 +675,6 @@ function writeNutshellInTx(
     "UPDATE nutshell SET text = ?, version = version + 1, updated_at_ms = ?, updated_by = ? WHERE id = 0",
     [newText, now, updatedBy],
   );
-  // Re-read inside the transaction to get the incremented version.
   const row = db
     .query<NutshellRow, []>("SELECT text, version, updated_at_ms, updated_by FROM nutshell WHERE id = 0")
     .get();
@@ -738,7 +686,6 @@ function writeNutshellInTx(
   };
 }
 
-// ── Interrupt state machine ────────────────────────────────────
 type InterruptStatus = "pending" | "acknowledged";
 
 type InterruptSnapshot = {
@@ -836,8 +783,7 @@ function ackInterrupt(id: string, by: string): InterruptOutcome {
   if (!ledgerDb) throw new Error("ledger disabled");
   const loaded = loadInterrupt(id);
   if (!loaded) return { kind: "not_found" };
-  // The recipient is the expected ack'er. The human name is ALSO allowed so
-  // a user can ack on behalf of a late-responding agent if needed.
+  // Recipient or human can ack — human may ack on behalf of a non-responding agent.
   if (loaded.row.to_agent !== by && by !== HUMAN_NAME) {
     return { kind: "forbidden", reason: "not the recipient" };
   }
@@ -904,7 +850,6 @@ function pendingInterruptsFor(agent: string): InterruptSnapshot[] {
   return listInterrupts({ status: "pending", for: agent, limit: 1000 });
 }
 
-// ── Utilities ──────────────────────────────────────────────────
 function ts(): string {
   return new Date().toTimeString().slice(0, 8);
 }
@@ -935,8 +880,7 @@ function validName(name: string): boolean {
   );
 }
 
-// Constant-time string comparison. Returns false immediately for unequal
-// lengths (a length oracle is not a secret leak).
+// Constant-time string comparison (length oracle is not a secret leak).
 function ctEquals(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
@@ -1008,16 +952,11 @@ function rosterSnapshot(): Entry {
 function broadcastRoster(): void {
   const snap = rosterSnapshot();
   for (const q of uiSubscribers) q.push(snap);
-  // Also fan out a refreshed briefing to each currently-connected agent.
-  // Without this, an agent that connected BEFORE a later-joining peer holds
-  // a stale peer list forever (until its own next reconnect) — that was the
-  // "Django never sees Drupal" symptom observed during the v0.6 shakedown.
+  // Re-brief connected agents so early-joiners learn about later-joining peers.
   broadcastBriefingsToConnectedAgents();
 }
 
-// Build the briefing event for a specific agent (peer list excludes self).
-// Extracted so both /agent-stream connect AND broadcastRoster can emit
-// identically-shaped briefings. Keep the tool list in sync with channel.ts.
+// Peer list excludes self. Tool list must stay in sync with channel.ts.
 function buildBriefing(agent: string): Entry & {
   type: string;
   tools: string[];
@@ -1070,10 +1009,7 @@ function broadcastBriefingsToConnectedAgents(): void {
 function presenceSnapshot(): Entry {
   const agents: Record<string, boolean> = {};
   for (const name of knownAgents.keys()) {
-    // Permanent roster members (e.g. the human) are always online whenever
-    // the hub is running — they don't have a channel-bin to report via
-    // /agent-stream, so connection-count would always be 0 and the pill
-    // would show offline otherwise.
+    // Permanent members (e.g. human) have no channel-bin → force them online whenever the hub is up.
     agents[name] = permanentAgents.has(name)
       ? true
       : (agentConnections.get(name) ?? 0) > 0;
@@ -1084,17 +1020,11 @@ function presenceSnapshot(): Entry {
 function broadcastPresence(): void {
   const snap = presenceSnapshot();
   for (const q of uiSubscribers) q.push(snap);
-  // Deliberately NOT re-broadcasting briefings here. broadcastRoster already
-  // fans briefings out on membership changes; firing them on every
-  // connection-count flip would duplicate the per-connect briefing an agent
-  // already receives and create a tight feedback loop during churn.
+  // Do NOT re-brief here — presence flips are too frequent; briefings fan out on roster changes.
 }
 
-// Rewrite /image/<id>.<ext> URLs to absolute disk paths so agents can read
-// them directly with their Read tool. The UI still receives the URL form
-// via /stream; only agent-facing deliveries get the rewrite.
+// Agents get disk paths (so they can Read the file directly); UI still gets URL form via /stream.
 function imageUrlToPath(url: string): string {
-  // Caller has already validated against IMAGE_URL_RE.
   const segment = url.slice("/image/".length);
   return join(ATTACHMENTS_DIR, segment);
 }
@@ -1102,25 +1032,19 @@ function imageUrlToPath(url: string): string {
 function agentEntry(entry: Entry): Entry {
   if (!entry.image) return entry;
   const absPath = ATTACHMENTS_DIR ? imageUrlToPath(entry.image) : entry.image;
-  // Generic "attachment" prefix covers images, PDFs, markdown, etc. The
-  // agent inspects the path's extension to decide whether to use Read
-  // (text/code/markdown), Read with pages= (PDFs), or its image vision.
+  // Single [attachment:] prefix — the agent dispatches on the path's extension.
   const suffix = `\n[attachment: ${absPath}]`;
   return { ...entry, text: (entry.text ?? "") + suffix };
 }
 
 function enqueueTo(name: string, entry: Entry): void {
-  // Permanent roster members (the human) have no channel-bin draining
-  // their queue, so anything pushed here just fills up to AGENT_QUEUE_MAX
-  // and gets dropped — pointless work. The human reads via /stream, which
-  // already received this entry through broadcastUI.
+  // Permanent members have no channel-bin draining their queue; they read via /stream instead.
   if (permanentAgents.has(name)) return;
   const q = agentQueues.get(name);
   if (!q) return; // agent was removed between target resolution and dispatch
   q.push(entry);
 }
 
-// ── HTTP helpers ───────────────────────────────────────────────
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -1138,18 +1062,13 @@ function json(body: unknown, init?: ResponseInit): Response {
   });
 }
 
-// Allowed Origin values for mutating routes. No-Origin requests (curl,
-// sidecars, server-to-server) pass through; cross-origin pages from a
-// browser send their real Origin and are rejected. Belt-and-suspenders
-// against a future regression where a route forgets auth.
+// CORS for mutating routes. No-Origin requests (curl, sidecars) pass; cross-origin browsers are rejected.
 const ALLOWED_ORIGINS = new Set<string>([
   "tauri://localhost",
   "http://tauri.localhost",
 ]);
 
-// Reject requests that don't present the exact bearer token in the
-// Authorization header. Used for mutating routes (POST). Returns null on
-// success (authenticated), or a 401/403 Response on failure.
+// Bearer-token gate for mutating routes. Returns null on success or a 401/403 Response on failure.
 function requireAuth(req: Request): Response | null {
   const origin = req.headers.get("origin");
   if (origin && !ALLOWED_ORIGINS.has(origin)) {
@@ -1166,11 +1085,8 @@ function requireAuth(req: Request): Response | null {
   return null;
 }
 
-// Read-route auth: accepts either Authorization: Bearer header OR
-// ?token=<token> query param. EventSource and <img> tags cannot set
-// custom headers, so the query-param fallback is required for /stream,
-// /agent-stream, /image/<id>, and JSON probes the UI makes via fetch.
-// Tokens-in-URLs land in access logs — hub.log is mode 0600 to compensate.
+// Read-route auth: Authorization header OR ?token=<token> for EventSource / <img>. Query-param
+// tokens land in hub.log, which is 0600-locked to compensate.
 function requireReadAuth(req: Request, url: URL): Response | null {
   if (!AUTH_TOKEN) {
     return json({ error: "hub misconfigured: no token" }, { status: 500 });
@@ -1184,8 +1100,7 @@ function requireReadAuth(req: Request, url: URL): Response | null {
   return null;
 }
 
-// Body size gate for JSON routes. Returns null on success, or a 411/413
-// Response on failure. Must be called *before* req.json() or req.text().
+// Call before req.json()/req.text(). Returns null on success or a 411/413 Response on failure.
 function requireJsonBody(req: Request, max = JSON_BODY_MAX): Response | null {
   const lenRaw = req.headers.get("content-length");
   if (lenRaw === null) {
@@ -1268,7 +1183,6 @@ function makeSSE(
   });
 }
 
-// ── Routes ─────────────────────────────────────────────────────
 async function handleSend(req: Request): Promise<Response> {
   const sizeCheck = requireJsonBody(req);
   if (sizeCheck) return sizeCheck;
@@ -1290,7 +1204,6 @@ async function handleSend(req: Request): Promise<Response> {
   let broadcast = false;
 
   if (Array.isArray(body.targets) && body.targets.length) {
-    // Validate every element first; only then expand "all".
     for (const t of body.targets) {
       if (t === "all") continue;
       if (!knownAgents.has(t)) {
@@ -1357,7 +1270,6 @@ async function handlePost(req: Request): Promise<Response> {
   if (image && !IMAGE_URL_RE.test(image)) {
     return json({ error: "invalid image url" }, { status: 400 });
   }
-  // ensureAgent validates the name; no need to pre-validate.
   if (!ensureAgent(frm)) {
     return json({ error: `invalid from: ${frm}` }, { status: 400 });
   }
@@ -1368,7 +1280,6 @@ async function handlePost(req: Request): Promise<Response> {
   } else if (reserved === "all") {
     targets = [...knownAgents.keys()].filter((a) => a !== frm);
   } else if (knownAgents.has(rawTo)) {
-    // Case-sensitive match against original name.
     targets = [rawTo];
   } else {
     return json({ error: `unknown to: ${rawTo}` }, { status: 400 });
@@ -1376,9 +1287,7 @@ async function handlePost(req: Request): Promise<Response> {
 
   const entry: Entry = { from: frm, to: rawTo, text, image, ts: ts() };
   broadcastUI(entry);
-  // Peers receive the attachment as an absolute path (via agentEntry) rather
-  // than a URL so they can Read it directly. UI subscribers get the URL form
-  // via the broadcastUI call above.
+  // Peers get absolute paths (via agentEntry); UI already got URL form via broadcastUI above.
   const view = agentEntry(entry);
   for (const t of targets) enqueueTo(t, view);
   return json({ ok: true });
@@ -1398,11 +1307,7 @@ async function handleUpload(req: Request): Promise<Response> {
   if (file.size > IMAGE_MAX_BYTES) {
     return json({ error: "file too large" }, { status: 413 });
   }
-  // Extension-based allowlist. We trust the filename's extension over
-  // the browser-provided MIME (which is sniffed and frequently wrong).
-  // The /image/<id> serve route applies a strict CSP + nosniff so an
-  // attacker mis-uploading HTML disguised as .pdf can't execute in the
-  // viewer; agents read the file by absolute path with their own tooling.
+  // Trust the filename extension, not browser-supplied MIME. Serve route has strict CSP + nosniff.
   const rawName = (file.name ?? "").trim();
   const dot = rawName.lastIndexOf(".");
   const ext = dot >= 0 ? rawName.slice(dot + 1).toLowerCase() : "";
@@ -1421,11 +1326,8 @@ async function handleUpload(req: Request): Promise<Response> {
   const tmp = join(ATTACHMENTS_DIR, `.${filename}.tmp`);
   try {
     await Bun.write(tmp, buf);
-    // Tighten perms before publishing the file — the hub process is the
-    // only legitimate reader (it serves /image/<id> over HTTP); other
-    // local users have no business reading uploads off disk.
+    // Tighten perms before publish — hub is the only legitimate disk reader.
     chmodSync(tmp, 0o600);
-    // Atomic rename; writes are visible only after this completes.
     await rename(tmp, target);
   } catch (e) {
     try { await unlink(tmp); } catch {}
@@ -1502,11 +1404,7 @@ function handleAgentStream(agent: string): Response {
     agentConnections.set(agent, (agentConnections.get(agent) ?? 0) + 1);
     broadcastPresence();
 
-    // Briefing: tool inventory, peers, attachments path, human name, current
-    // nutshell. Sent BEFORE any replay so it lands first in the agent's
-    // context. Re-sent on every /agent-stream connect AND whenever the roster
-    // changes (via broadcastRoster → broadcastBriefingsToConnectedAgents) so
-    // late-joining peers propagate to everyone already connected.
+    // Briefing lands before replay so it arrives first in the agent's context.
     if (!permanentAgents.has(agent)) {
       try {
         send(buildBriefing(agent));
@@ -1515,9 +1413,7 @@ function handleAgentStream(agent: string): Response {
       }
     }
 
-    // Reconnect replay: deliver any pending handoffs + interrupts (as
-    // recipient OR originator) so the agent can resume its open-work queue.
-    // Chat messages are NOT replayed.
+    // Replay pending handoffs + interrupts (as recipient OR originator). Chat is NOT replayed.
     if (ledgerEnabled) {
       try {
         for (const snapshot of pendingFor(agent)) {
@@ -1559,7 +1455,6 @@ async function handleRemove(req: Request): Promise<Response> {
   return json({ ok: true });
 }
 
-// ── Handoff broadcasts ─────────────────────────────────────────
 function handoffEntry(
   snapshot: HandoffSnapshot,
   eventKind: "handoff.new" | "handoff.update",
@@ -1592,28 +1487,22 @@ function broadcastHandoff(
   eventKind: "handoff.new" | "handoff.update",
 ): void {
   const entry = handoffEntry(snapshot, eventKind);
-  // Record in chat_log (gets a monotonic id from broadcastUI) + broadcast to all UI subscribers.
   broadcastUI(entry);
-  // Push notifications to the relevant agents' queues.
   const recipients: string[] =
     eventKind === "handoff.new"
       ? [snapshot.to_agent]
       : [snapshot.from_agent, snapshot.to_agent];
   for (const name of new Set(recipients)) {
-    // Permanent members (human) have no channel-bin to consume — they
-    // already saw this via the broadcastUI call above.
+    // Permanent members (human) already saw this via broadcastUI.
     if (permanentAgents.has(name)) continue;
     const q = agentQueues.get(name);
     if (!q) continue;
-    // Agents receive a slightly different shape: they don't need the `snapshot`
-    // object embedded twice, since `text` already carries the JSON and channel.ts
-    // forwards top-level fields as meta.
+    // Agents don't need `snapshot` — `text` already carries the JSON; channel.ts forwards meta.
     const queueEntry = handoffEntry(snapshot, eventKind);
     q.push(queueEntry);
   }
 }
 
-// ── Interrupt broadcasts ───────────────────────────────────────
 function interruptEntry(
   snapshot: InterruptSnapshot,
   eventKind: "interrupt.new" | "interrupt.ack",
@@ -1657,7 +1546,6 @@ function broadcastInterrupt(
   }
 }
 
-// ── Nutshell broadcasts ────────────────────────────────────────
 function nutshellEntry(snapshot: NutshellSnapshot): Entry & {
   type: string;
   snapshot: NutshellSnapshot;
@@ -1671,14 +1559,11 @@ function nutshellEntry(snapshot: NutshellSnapshot): Entry & {
 }
 
 function broadcastNutshell(snapshot: NutshellSnapshot): void {
-  // Nutshell updates go to the UI (and are re-served to agents via the
-  // briefing on reconnect). No per-agent push — the nutshell is ambient
-  // context, not an actionable notification.
+  // Nutshell is ambient context — UI-only; agents receive it via briefing on reconnect.
   const entry = nutshellEntry(snapshot);
   for (const q of uiSubscribers) q.push(entry);
 }
 
-// ── Handoff HTTP routes ────────────────────────────────────────
 function ledgerGuard(): Response | null {
   if (!ledgerEnabled) {
     return json({ error: "ledger disabled" }, { status: 503 });
@@ -1727,11 +1612,7 @@ async function handleCreateHandoff(req: Request): Promise<Response> {
     );
   }
 
-  // The sender is auto-registered — by definition of sending, they're
-  // present. The recipient is NOT auto-registered: a handoff to a name
-  // that isn't in the current roster would silently pend and expire,
-  // indistinguishable from a legitimate offline peer. Reject the typo at
-  // send time instead. The human is always a permanent roster member.
+  // Sender auto-registers; recipient must already be in the roster so typos 400 immediately.
   ensureAgent(from);
   if (!knownAgents.has(to)) {
     return json(
@@ -1844,7 +1725,6 @@ function handleListHandoffs(req: Request): Response {
   return json(listHandoffs({ status: statusParam as HandoffStatus | "all", for: forParam, limit }));
 }
 
-// ── Interrupt HTTP routes ──────────────────────────────────────
 const INTERRUPT_TEXT_MAX_CHARS = 500;
 
 function interruptOutcomeResponse(outcome: InterruptOutcome): Response {
@@ -1886,8 +1766,7 @@ async function handleCreateInterrupt(req: Request): Promise<Response> {
   if (text.length > INTERRUPT_TEXT_MAX_CHARS) {
     return json({ error: `text too long (max ${INTERRUPT_TEXT_MAX_CHARS})` }, { status: 400 });
   }
-  // Same phantom-prevention rule as handoffs: sender is auto-registered,
-  // recipient must already be in the roster.
+  // Same phantom-prevention rule as handoffs.
   ensureAgent(from);
   if (!knownAgents.has(to)) {
     return json(
@@ -1939,15 +1818,11 @@ function handleListInterrupts(req: Request): Response {
   );
 }
 
-// ── Nutshell HTTP route ────────────────────────────────────────
 function handleGetNutshell(): Response {
   return json(readNutshell());
 }
 
-// ── Claude session capture (PTY side) ─────────────────────────
-// The UI's output-scan detects the `claude --resume <id>` hint that claude
-// prints on exit. It POSTs { agent, cwd, resume_flag } here; later the
-// spawn modal GETs this record and prefills the restore field.
+// PTY-side: UI POSTs { agent, cwd, resume_flag }; spawn modal GETs for restore prefill.
 const RESUME_FLAG_RE = /^[A-Za-z0-9_.:/\-]{1,256}$/;
 
 async function handleSaveSession(req: Request): Promise<Response> {
@@ -1994,7 +1869,6 @@ function handleGetSession(url: URL): Response {
   return json({ resume_flag: row.resume_flag, captured_at_ms: row.captured_at_ms });
 }
 
-// ── Server ─────────────────────────────────────────────────────
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: PORT,
@@ -2008,8 +1882,7 @@ const server = Bun.serve({
     }
 
     try {
-      // Read endpoints — auth via header OR ?token= query param so EventSource
-      // and <img> tags (which cannot set headers) can authenticate.
+      // Read endpoints: header OR ?token= for EventSource / <img>.
       if (req.method === "GET" && pathname === "/agents") {
         const authFail = requireReadAuth(req, url);
         return authFail ?? json([...knownAgents.values()]);
@@ -2033,7 +1906,6 @@ const server = Bun.serve({
         return authFail ?? (await handleImage(pathname.slice("/image/".length)));
       }
 
-      // Authenticated mutating endpoints.
       if (req.method === "POST" && pathname === "/send") {
         const authFail = requireAuth(req);
         return authFail ?? (await handleSend(req));
@@ -2050,7 +1922,6 @@ const server = Bun.serve({
         const authFail = requireAuth(req);
         return authFail ?? (await handleUpload(req));
       }
-      // Handoff endpoints.
       if (req.method === "POST" && pathname === "/handoffs") {
         const authFail = requireAuth(req);
         return authFail ?? (await handleCreateHandoff(req));
@@ -2070,7 +1941,6 @@ const server = Bun.serve({
         const authFail = requireReadAuth(req, url);
         return authFail ?? handleListHandoffs(req);
       }
-      // Interrupt endpoints.
       if (req.method === "POST" && pathname === "/interrupts") {
         const authFail = requireAuth(req);
         return authFail ?? (await handleCreateInterrupt(req));
@@ -2087,13 +1957,12 @@ const server = Bun.serve({
         const authFail = requireReadAuth(req, url);
         return authFail ?? handleListInterrupts(req);
       }
-      // Nutshell read (write path is via /handoffs with task prefix "[nutshell]").
+      // Nutshell read; write path is /handoffs with task prefix "[nutshell]".
       if (req.method === "GET" && pathname === "/nutshell") {
         const authFail = requireReadAuth(req, url);
         return authFail ?? handleGetNutshell();
       }
-      // Claude session capture — PTY-side concern persisted here so the
-      // spawn modal can offer restore on relaunch.
+      // Claude session capture for the spawn modal's restore flow.
       if (req.method === "POST" && pathname === "/sessions") {
         const authFail = requireAuth(req);
         return authFail ?? (await handleSaveSession(req));
@@ -2104,16 +1973,14 @@ const server = Bun.serve({
       }
       return json({ error: "not found", path: pathname }, { status: 404 });
     } catch (e) {
-      // Log the exception (stack, SQL text, file paths) server-side; return a
-      // generic message to the caller so internals don't leak.
+      // Log details server-side; return a generic message so internals don't leak.
       console.error("[hub] error", e);
       return json({ error: "internal error" }, { status: 500 });
     }
   },
 });
 
-// Register the human as a permanent roster member so handoffs can target them
-// and so the UI legend/mention autocomplete always lists them.
+// Register the human as a permanent roster member.
 if (validName(HUMAN_NAME)) {
   permanentAgents.add(HUMAN_NAME);
   ensureAgent(HUMAN_NAME);
@@ -2122,8 +1989,7 @@ if (validName(HUMAN_NAME)) {
   console.error(`[hub] invalid A2A_HUMAN_NAME "${HUMAN_NAME}" — human not registered`);
 }
 
-// Expiry sweep: every SWEEP_INTERVAL_MS, transition pending handoffs whose
-// expires_at_ms has passed into status='expired' with an audit event.
+// Expire pending handoffs past their TTL. Runs every SWEEP_INTERVAL_MS.
 const sweepTimer = setInterval(() => {
   if (!ledgerEnabled) return;
   try {

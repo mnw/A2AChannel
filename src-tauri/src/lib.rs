@@ -18,7 +18,7 @@ use tauri_plugin_shell::{
 };
 use tokio::io::AsyncWriteExt;
 
-const LOG_ROTATE_BYTES: u64 = 10 * 1024 * 1024; // rotate hub.log if it exceeds 10 MiB
+const LOG_ROTATE_BYTES: u64 = 10 * 1024 * 1024;
 const TOKEN_BYTES: usize = 32;
 
 struct HubState {
@@ -38,24 +38,15 @@ struct HubInfo {
 struct AppConfig {
     #[serde(default)]
     attachments_dir: Option<String>,
-    // Legacy key, read only if `attachments_dir` is absent. Kept so configs
-    // written by ≤ v0.4.x continue to work after the v0.5.0 rename.
+    // Legacy key for configs written by ≤ v0.4.x; read only when `attachments_dir` is absent.
     #[serde(default)]
     images_dir: Option<String>,
     #[serde(default)]
     human_name: Option<String>,
     #[serde(default)]
     attachment_extensions: Option<Vec<String>>,
-    // Absolute path to the `claude` binary. Defaults to Anthropic's
-    // installer location. Declared in config so we can skip sourcing
-    // the user's `.zshrc` to find it — the single biggest cost in
-    // agent spawn latency (1–5 s of plugin loading per launch).
     #[serde(default)]
     claude_path: Option<String>,
-    // Optional Anthropic API key. Left empty by default; users whose
-    // claude install uses keychain OAuth (the usual case) don't need
-    // to set this. When non-empty, passed to tmux via `new-session -e`
-    // so claude inherits it without us sourcing `.zshrc`.
     #[serde(default)]
     anthropic_api_key: Option<String>,
 }
@@ -69,9 +60,6 @@ fn default_attachment_extensions() -> Vec<String> {
         .collect()
 }
 
-// Validate one extension entry. Lowercase letters/digits, no dot,
-// 1..=10 chars. Anything else is rejected so the env var stays a
-// well-formed comma-separated list.
 fn valid_extension(ext: &str) -> bool {
     let n = ext.chars().count();
     if !(1..=10).contains(&n) {
@@ -81,10 +69,6 @@ fn valid_extension(ext: &str) -> bool {
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
 }
 
-// Resolve the configured attachment extensions, falling back to the
-// default set on missing/empty config. Filters out invalid entries
-// silently so a typo doesn't brick uploads — the validated set is
-// logged on startup so users can see what survived.
 fn resolve_attachment_extensions() -> Vec<String> {
     let cfg = load_config();
     let raw = cfg
@@ -136,9 +120,7 @@ fn default_human_name() -> String {
     "human".to_string()
 }
 
-// Validate a human name against the same constraints the hub applies to
-// agent names: must match AGENT_NAME_RE and must not be reserved.
-// Returns Err(message) on invalid input.
+// Mirrors hub.ts AGENT_NAME_RE plus reserved-word check.
 fn validate_human_name(name: &str) -> Result<(), String> {
     if RESERVED_NAMES
         .iter()
@@ -150,8 +132,6 @@ fn validate_human_name(name: &str) -> Result<(), String> {
             RESERVED_NAMES.join(", ")
         ));
     }
-    // Mirror the hub's regex check without pulling in a regex crate:
-    // enforce length + allowed-chars + boundary-non-space manually.
     let n = name.chars().count();
     if !(1..=64).contains(&n) {
         return Err(format!("human_name '{name}' must be 1..=64 characters"));
@@ -175,25 +155,18 @@ fn validate_human_name(name: &str) -> Result<(), String> {
 }
 
 fn default_attachments_dir() -> PathBuf {
-    // Top-level home directory avoids macOS TCC protections on
-    // ~/Documents, ~/Desktop, ~/Downloads, ~/Pictures — otherwise the
-    // agent's Read tool fails with EPERM even after `--add-dir`.
+    // Top-level ~/ avoids macOS TCC — ~/Documents etc. block the agent's Read tool.
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("a2a-attachments")
 }
 
 fn default_claude_path() -> PathBuf {
-    // Anthropic's default-installer wrapper script location.
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join(".claude/local/claude")
 }
 
-// Expand a leading `~` or `$HOME` in a user-provided path into the
-// actual home directory. Config paths are persisted as strings; this
-// gives us portability across Macs without having to bake an absolute
-// path into the seed config.
 fn expand_tilde(path: &str) -> PathBuf {
     let trimmed = path.trim();
     if let Some(rest) = trimmed.strip_prefix("~/") {
@@ -209,9 +182,6 @@ fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(trimmed)
 }
 
-// Resolve the claude binary path for agent spawns. Reads config on
-// every call so clicking ↻ (reload settings) picks up edits without
-// an app relaunch. Empty or missing → Anthropic's installer default.
 pub fn resolve_claude_path() -> PathBuf {
     let cfg = load_config();
     let raw = cfg
@@ -224,9 +194,6 @@ pub fn resolve_claude_path() -> PathBuf {
     }
 }
 
-// Optional ANTHROPIC_API_KEY to inject into claude's env at spawn.
-// Empty/unset → nothing injected; claude falls back to its keychain
-// OAuth (the usual case).
 pub fn resolve_anthropic_api_key() -> Option<String> {
     let cfg = load_config();
     cfg.anthropic_api_key
@@ -251,9 +218,6 @@ fn load_config() -> AppConfig {
     }
 }
 
-// Resolve the effective human identity name. Config override wins;
-// otherwise "human". Fails loudly on invalid input so misconfig never
-// ships as silent behavior drift.
 fn resolve_human_name() -> Result<String, String> {
     let cfg = load_config();
     let name = cfg.human_name.clone().unwrap_or_else(default_human_name);
@@ -261,15 +225,8 @@ fn resolve_human_name() -> Result<String, String> {
     Ok(name)
 }
 
-// Choose the attachments folder (config override or default), ensure it
-// exists. On first launch, write a default config.json so users can find
-// and edit it.
 fn resolve_attachments_dir_and_seed(human_name: &str, extensions: &[String]) -> PathBuf {
     let cfg = load_config();
-    // Prefer the modern key; fall back to the deprecated `images_dir` so
-    // configs from v0.4.x still resolve. Empty strings and nulls both
-    // count as "not set" so a user leaving the key blank falls through
-    // to the default rather than writing to an empty PathBuf.
     let pick = |opt: Option<String>| -> Option<String> {
         opt.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
     };
@@ -280,11 +237,6 @@ fn resolve_attachments_dir_and_seed(human_name: &str, extensions: &[String]) -> 
     if let Err(e) = fs::create_dir_all(&dir) {
         eprintln!("[setup] create attachments dir {} failed: {e}", dir.display());
     }
-    // Seed config.json on first launch. `attachments_dir` is included as
-    // `null` so the default applies on every machine (no user-specific
-    // absolute path baked into the seed) while still letting a new user
-    // discover the key and replace `null` with a path. Empty string and
-    // `null` both resolve to the default in `pick` above.
     let cfg_path = config_file();
     if !cfg_path.exists() {
         let seed = json!({
@@ -319,8 +271,7 @@ fn resolve_a2a_bin() -> Result<PathBuf, String> {
         .parent()
         .ok_or_else(|| "no exe dir".to_string())?
         .to_path_buf();
-    // In bundled .app: Contents/MacOS/a2a-bin (Tauri strips the triple).
-    // In `tauri dev`: ./a2a-bin-<triple> (triple retained).
+    // Bundled: Contents/MacOS/a2a-bin. Dev: ./a2a-bin-<triple>.
     let plain = dir.join("a2a-bin");
     if plain.exists() {
         return Ok(plain);
@@ -336,25 +287,18 @@ fn resolve_a2a_bin() -> Result<PathBuf, String> {
     ))
 }
 
-// Locate the bundled tmux binary.
-//   - Bundled .app: Contents/Resources/tmux (Tauri's bundle.resources dest).
-//   - `tauri dev`: src-tauri/resources/tmux (source checkout).
-// Mirrors resolve_a2a_bin() shape; both get called at PTY spawn time.
 pub(crate) fn resolve_tmux_bin() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let exe_dir = exe
         .parent()
         .ok_or_else(|| "no exe dir".to_string())?
         .to_path_buf();
-    // Tauri's bundle.resources copies files preserving the source path
-    // structure, so `src-tauri/resources/tmux` lands at
-    // `Contents/Resources/resources/tmux` in the bundled .app, NOT at
-    // the flat `Contents/Resources/tmux` path. Check both shapes so we
-    // survive a Tauri behavior change.
+    // Tauri's bundle.resources preserves source path structure, so the tmux resource can
+    // land at either Contents/Resources/resources/tmux or Contents/Resources/tmux.
     let candidates = [
-        exe_dir.join("../Resources/resources/tmux"), // bundled .app
-        exe_dir.join("../Resources/tmux"),           // flat fallback
-        exe_dir.join("../../resources/tmux"),        // `tauri dev` (src-tauri/target/.../a2achannel)
+        exe_dir.join("../Resources/resources/tmux"),
+        exe_dir.join("../Resources/tmux"),
+        exe_dir.join("../../resources/tmux"),
     ];
     for p in &candidates {
         if p.exists() {
@@ -404,9 +348,7 @@ fn atomic_write(dir: &Path, name: &str, contents: &str) -> Result<(), String> {
     fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let target = dir.join(name);
     let tmp = dir.join(format!("{name}.tmp"));
-    // Discard any leftover from a prior crash. We then create with
-    // O_EXCL + mode 0600 so the file never exists with looser perms,
-    // closing the chmod-after-write race.
+    // O_EXCL + mode 0600 below closes the chmod-after-write race; discard any leftover tmp first.
     let _ = fs::remove_file(&tmp);
     {
         let mut f = OpenOptions::new()
@@ -444,7 +386,7 @@ fn rotate_log_if_oversized(log_path: &Path) {
                     rotated.display()
                 );
             } else {
-                // Rotated archive may still hold tokens — keep it 0600 too.
+                // Rotated archive may still hold tokens.
                 let _ = chmod_0600(&rotated);
             }
         }
@@ -469,9 +411,7 @@ async fn stream_to_log(
             return;
         }
     };
-    // Tokens land in this log via SSE/image URL query strings (see
-    // requireReadAuth in hub.ts). Always tighten to 0600 — the create()
-    // above doesn't override existing perms on a pre-existing file.
+    // Tokens land in this log via SSE/image URL query strings — enforce 0600 on existing files.
     if let Err(e) = chmod_0600(&log_path) {
         eprintln!("[hub-log] {e}");
     }
@@ -525,28 +465,23 @@ fn open_config_file() -> Result<(), String> {
     Ok(())
 }
 
-// Re-read config.json and restart the hub sidecar with fresh env.
-// Returns the new {url, token} so the UI can hot-swap its bootstrap values
-// without a full app restart. Active Claude sessions' channel-bin subprocesses
-// reconnect automatically via the discovery-file retry loop.
+// Re-read config.json, kill the hub sidecar, restart it on a new port with fresh env.
+// Returns the new {url, token} so the UI can hot-swap without relaunching the app.
 #[tauri::command]
 fn reload_settings(
     handle: tauri::AppHandle,
     state: State<HubState>,
 ) -> Result<HubInfo, String> {
-    // Re-resolve config.
     let human_name = resolve_human_name()?;
     let extensions = resolve_attachment_extensions();
     let attachments_dir = resolve_attachments_dir_and_seed(&human_name, &extensions);
     let ledger_path = ledger_file();
 
-    // Mint fresh port + token (same policy as first boot).
     let port = pick_free_port()?;
     let url = format!("http://127.0.0.1:{port}");
     let token = mint_token()?;
 
-    // Kill the existing child before writing new discovery files so there's no
-    // window where two hub-bin processes race for the same port.
+    // Kill first so two hub-bin processes never race for the same port.
     {
         let child_opt = state.child.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(child) = child_opt {
@@ -554,8 +489,6 @@ fn reload_settings(
         }
     }
 
-    // Write discovery files atomically so any racing channel-bin retries see
-    // consistent (url, token) pairs.
     if let Err(e) = write_discovery_file(&url) {
         return Err(format!("write discovery file: {e}"));
     }
@@ -563,7 +496,6 @@ fn reload_settings(
         return Err(format!("write token file: {e}"));
     }
 
-    // Spawn a fresh sidecar with the new env.
     let shell = handle.shell();
     let cmd = shell
         .sidecar("a2a-bin")
@@ -577,7 +509,6 @@ fn reload_settings(
         .env("A2A_ALLOWED_EXTENSIONS", extensions.join(","));
     let (rx, child) = cmd.spawn().map_err(|e| format!("spawn a2a-bin: {e}"))?;
 
-    // Update state.
     let new_info = HubInfo {
         url: url.clone(),
         token: token.clone(),
@@ -589,7 +520,6 @@ fn reload_settings(
         *state.human_name.lock().unwrap_or_else(|e| e.into_inner()) = Some(human_name);
     }
 
-    // Stream the new sidecar's output to the same log file.
     let log_path = logs_dir().join("hub.log");
     tauri::async_runtime::spawn(async move {
         stream_to_log(rx, log_path).await;
@@ -599,10 +529,6 @@ fn reload_settings(
     Ok(new_info)
 }
 
-// Compile-time version string from Cargo.toml's [package] version. The
-// UI reads this on boot and stamps it into the brand-meta slot so the
-// label always matches the build. release.sh bumps Cargo.toml → rebuild
-// → UI shows the new version with zero manual sync.
 #[tauri::command]
 fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
@@ -628,6 +554,13 @@ fn get_mcp_template() -> Result<String, String> {
 
 
 pub fn run() {
+    // Wipe WKWebView disk cache before Tauri creates the webview — otherwise stale assets persist.
+    if let Some(cache_root) = dirs::cache_dir() {
+        let base = cache_root.join("com.mnw.a2achannel/WebKit");
+        let _ = fs::remove_dir_all(base.join("NetworkCache"));
+        let _ = fs::remove_dir_all(base.join("CacheStorage"));
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -671,7 +604,6 @@ pub fn run() {
                 eprintln!("[setup] token file write failed: {e}");
             }
 
-            // Resolve human identity first so it can seed config.json if missing.
             let human_name = match resolve_human_name() {
                 Ok(n) => n,
                 Err(e) => {
@@ -743,12 +675,8 @@ pub fn run() {
                 if let Some(child) = child_opt {
                     let _ = child.kill();
                 }
-                // PTY handles: Tauri's managed-state Drop chain fires when
-                // the app exits, which drops each PtyHandle → drops its
-                // `tmux attach-session` child → SIGHUP → the attach client
-                // detaches cleanly. The tmux sessions themselves live on
-                // the detached socket; they MUST survive app quit per the
-                // v0.7 design (Decision 2). Do not call pty_kill here.
+                // PTY handles Drop → attach-session children get SIGHUP → detach cleanly.
+                // tmux sessions are intentionally NOT killed here — they must survive app quit.
             };
             match event {
                 RunEvent::ExitRequested { .. } => kill(),

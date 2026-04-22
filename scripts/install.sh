@@ -60,8 +60,13 @@ sleep 0.3
 
 echo "==> installing to /Applications"
 rm -rf /Applications/A2AChannel.app
+[ -e /Applications/A2AChannel.app ] && { echo "abort: rm failed — app still running"; exit 1; }
 cp -R "$APP" /Applications/
+SRC_SHA=$(shasum -a 1 "$APP/Contents/MacOS/a2achannel" | awk '{print $1}')
+DST_SHA=$(shasum -a 1 /Applications/A2AChannel.app/Contents/MacOS/a2achannel | awk '{print $1}')
+[ "$SRC_SHA" = "$DST_SHA" ] || { echo "abort: copy didn't take (sha mismatch)"; exit 1; }
 xattr -dr com.apple.quarantine /Applications/A2AChannel.app 2>/dev/null || true
+rm -rf "$HOME/Library/Caches/com.mnw.a2achannel/WebKit" 2>/dev/null || true
 
 echo "==> launching"
 open /Applications/A2AChannel.app

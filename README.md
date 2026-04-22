@@ -2,7 +2,7 @@
 
 > Coordination primitives for parallel Claude Code sessions — messages, handoffs, interrupts.
 
-<!-- TODO: add docs/demo.gif -->
+![demo](docs/demo.gif)
 
 ## Why
 

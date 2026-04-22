@@ -1,15 +1,4 @@
-// PTY bridge for the v0.7 terminal pane.
-//
-// Architecture (per openspec terminal-pane-pty design Decision 1+2):
-//   - tmux owns the session (lives across A2AChannel quits).
-//   - For each agent, we run `tmux attach-session -t <agent>` inside a PTY
-//     whose master is bridged to xterm.js over Tauri events. Raw ANSI only;
-//     NO `tmux -C` control mode, NO `send-keys` for interactive input.
-//   - Session creation is a single chained invocation:
-//         tmux new-session -A -d -s <a> -c <cwd> '<cmd>' ; set-option -t <a> remain-on-exit on
-//   - Commands spawned through tmux go through `$SHELL -ic "..."` so
-//     .zshrc aliases (claude is aliased by Anthropic's installer) resolve.
-//     See POC_NOTES.md Finding 1.
+// PTY bridge: tmux owns the session; we attach one PTY per agent and bridge raw ANSI to xterm.js.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -27,10 +16,8 @@ use crate::{
     resolve_tmux_bin,
 };
 
-// ── Agent name validation ─────────────────────────────────────────
-// Mirrors hub.ts AGENT_NAME_RE: letters, digits, _.- and space, 1..64,
-// first and last non-space. Re-enforced defensively here so a bypassed
-// UI validator can't smuggle shell metacharacters into tmux argv.
+// Mirrors hub.ts AGENT_NAME_RE — re-enforced here so a bypassed UI validator can't
+// smuggle shell metacharacters into tmux argv.
 pub fn valid_agent_name(name: &str) -> bool {
     let n = name.chars().count();
     if !(1..=64).contains(&n) {
@@ -43,13 +30,10 @@ pub fn valid_agent_name(name: &str) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' || c == ' ')
 }
 
-// ── State ─────────────────────────────────────────────────────────
 pub struct PtyHandle {
     master: Box<dyn portable_pty::MasterPty + Send>,
     writer: Box<dyn Write + Send>,
-    // Kept so the child (`tmux attach-session`) isn't reaped while we still
-    // have a reader on the master. When the tab is closed or the session
-    // is killed, dropping the handle drops the child.
+    // Kept so the tmux attach-session child isn't reaped while we still read from the master.
     _child: Box<dyn portable_pty::Child + Send + Sync>,
 }
 
@@ -62,14 +46,10 @@ struct OutputPayload {
     b64: String,
 }
 
-// ── tmux helpers ──────────────────────────────────────────────────
 fn tmux_socket_path() -> PathBuf {
     app_data_dir().join("tmux.sock")
 }
 
-// Run a bounded tmux command (no PTY; just exit-code + stdout). Used for
-// new-session, set-option, list-sessions, kill-session, respawn-pane.
-// Returns stdout on success, Err(stderr or exit code) on failure.
 fn tmux_run(args: &[&str]) -> Result<String, String> {
     let tmux = resolve_tmux_bin()?;
     let sock = tmux_socket_path();
@@ -92,7 +72,6 @@ fn tmux_run(args: &[&str]) -> Result<String, String> {
 }
 
 fn session_exists(agent: &str) -> bool {
-    // `has-session` returns exit 0 if present, 1 if absent, tmux errors on bad name.
     let Ok(tmux) = resolve_tmux_bin() else {
         return false;
     };
@@ -107,19 +86,12 @@ fn session_exists(agent: &str) -> bool {
         .unwrap_or(false)
 }
 
-// Directory where per-agent MCP config files live. 0700 on the dir; 0600
-// on each file. Files are rewritten on every spawn so stale values heal.
 fn mcp_configs_dir() -> PathBuf {
     app_data_dir().join("mcp-configs")
 }
 
-// Write an MCP config JSON for `agent` pointing at the bundled a2a-bin
-// sidecar in channel mode. Returns the absolute path written.
-//
-// Per POC_NOTES.md Finding 4, this replaces the user-space `.mcp.json`
-// authoring flow — claude's `--mcp-config <path>` loads this file as a
-// supplementary server list. The user's own `.mcp.json` in cwd is still
-// loaded (unless we add --strict-mcp-config, which we don't).
+// Written (0600) on every spawn so stale values self-heal. Loaded additively via `--mcp-config`;
+// the user's cwd `.mcp.json` is still honored.
 fn write_mcp_config_for(agent: &str) -> Result<PathBuf, String> {
     use std::os::unix::fs::PermissionsExt;
     let dir = mcp_configs_dir();
@@ -147,28 +119,11 @@ fn write_mcp_config_for(agent: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-// Build the claude invocation for this agent. Loads the generated MCP
-// config so `chatbridge` registers and channel-bin connects to the hub,
-// and enables development channels (required for the
-// `notifications/claude/channel` path the sidecar uses).
-//
-// Claude's absolute path comes from config.json (`claude_path`, defaults
-// to `~/.claude/local/claude`). We do NOT source the user's `.zshrc` to
-// find it — that was the biggest spawn-latency cost (1–5 s of plugin
-// loading per launch). Users with non-default claude locations edit
-// config.json once and click ↻.
-//
-// The whole string becomes the argument to `/bin/sh -c` via tmux's
-// argv-join, so single-quote escaping around paths preserves spaces
-// (e.g. `Application Support`).
+// Build the claude invocation. Direct-exec (no shell), so claude_path must be absolute —
+// comes from config.json to avoid paying the .zshrc-loading cost on every spawn.
 fn claude_command(agent: &str, session_mode: Option<&str>) -> Result<String, String> {
     let cfg_path = write_mcp_config_for(agent)?;
-    // Escape single-quotes in the MCP-config path defensively.
     let path_str = cfg_path.to_string_lossy().replace('\'', r"'\''");
-    // Optional session-mode prefix. `--continue` = most recent conversation
-    // in cwd (no arg). `--resume` = open claude's interactive session
-    // picker (no arg). Claude tracks its own state under
-    // ~/.claude/projects/ — A2AChannel does not persist session IDs.
     let mode_part = match session_mode {
         Some("continue") => "--continue ",
         Some("resume")   => "--resume ",
@@ -177,17 +132,11 @@ fn claude_command(agent: &str, session_mode: Option<&str>) -> Result<String, Str
     };
     let claude_path = resolve_claude_path();
     let claude_escaped = claude_path.to_string_lossy().replace('\'', r"'\''");
-    // `server:<name>` is the v2.1+ argument shape for
-    // --dangerously-load-development-channels. Confirmed by inspecting
-    // the user's existing claude sessions via `ps auxww`. The flag is
-    // hidden from `--help` so this shape isn't documented anywhere
-    // public; if claude's CLI changes it again, update here.
     Ok(format!(
         "'{claude_escaped}' {mode_part}--mcp-config '{path_str}' --dangerously-load-development-channels server:chatbridge"
     ))
 }
 
-// ── Commands ──────────────────────────────────────────────────────
 #[tauri::command]
 pub fn pty_spawn(
     app: AppHandle,
@@ -200,8 +149,6 @@ pub fn pty_spawn(
         return Err(format!("invalid agent name: {agent}"));
     }
 
-    // Idempotent: if we already hold a handle for this agent, it means a
-    // tab is already attached. Refuse rather than spawn a duplicate.
     {
         let map = state.0.lock().unwrap();
         if map.contains_key(&agent) {
@@ -209,46 +156,41 @@ pub fn pty_spawn(
         }
     }
 
-    // Claude command — absolute path to binary, parseable directly by
-    // /bin/sh -c (tmux's argv-join fallback). No zsh wrapper, so no
-    // .zshrc sourcing cost (was 1–5 s per spawn). See claude_command().
     let spawn_cmd = claude_command(&agent, session_mode.as_deref())?;
     let api_key = resolve_anthropic_api_key();
 
+    // UTF-8 locale for the session. GUI launches under launchd inherit
+    // a blank or "C" locale, which makes claude's terminal-capability
+    // detection downgrade to ASCII (logo renders as `____` instead of
+    // Braille/box-drawing). Prefer the user's LANG if it's already
+    // UTF-8-ful; otherwise default to en_US.UTF-8 which ships with
+    // every macOS install.
+    let lang = std::env::var("LANG")
+        .ok()
+        .filter(|v| v.to_lowercase().contains("utf"))
+        .unwrap_or_else(|| "en_US.UTF-8".to_string());
+    let lang_env = format!("LANG={lang}");
+    let lc_all_env = format!("LC_ALL={lang}");
+
     if session_exists(&agent) {
-        // Session outlived a prior A2AChannel instance. Do NOT run
-        // `new-session -A` — with an existing session, -A devolves to
-        // attach-session, which needs a TTY for the invoking client.
-        // Our Rust shell has no controlling TTY, so it fails with
-        // "open terminal failed: not a terminal".
-        //
-        // Force `remain-on-exit off` on every attach — sessions created
-        // by older A2AChannel builds (v0.7-alpha) had it ON, which
-        // holds the pane after claude exits and prevents pty://exit
-        // from firing. Also hide tmux's default status bar since the
-        // A2AChannel tab already labels the session.
         let _ = tmux_run(&["set-option", "-t", &agent, "remain-on-exit", "off"]);
         let _ = tmux_run(&["set-option", "-t", &agent, "status", "off"]);
+        let _ = tmux_run(&["set-environment", "-t", &agent, "TERM", "xterm-256color"]);
+        let _ = tmux_run(&["set-environment", "-t", &agent, "LANG", &lang]);
+        let _ = tmux_run(&["set-environment", "-t", &agent, "LC_ALL", &lang]);
     } else {
-        // Fresh create. `-x 80 -y 24` is load-bearing: without explicit
-        // dimensions, tmux tries to probe the invoking terminal's size
-        // via TIOCGWINSZ. No TTY → "open terminal failed: not a
-        // terminal". Dimensions are just defaults — the PTY we attach
-        // below will SIGWINCH tmux to the real xterm size immediately.
-        //
-        // NOTE: no `remain-on-exit` — when claude exits (via /exit,
-        // crash, or graceful shutdown from the ×/kill path), the pane
-        // exits, the session dies, and the UI's pty://exit handler
-        // removes the tab. Cleaner than the held-pane + Restart UX.
-        // `spawn_cmd` is passed as a SINGLE argv element so tmux
-        // doesn't split it on whitespace when joining argv for
-        // /bin/sh -c. API key (if configured) goes through tmux's
-        // `-e` session-env flag so processes in the session inherit
-        // it; we don't touch `.zshrc`.
+        // -x 80 -y 24 is load-bearing: without explicit dims tmux probes TIOCGWINSZ and we
+        // have no controlling TTY. Real size is applied via SIGWINCH on attach.
         let api_env = api_key
             .as_ref()
             .map(|k| format!("ANTHROPIC_API_KEY={k}"));
         let mut args: Vec<&str> = vec!["new-session", "-d", "-s", &agent];
+        args.push("-e");
+        args.push("TERM=xterm-256color");
+        args.push("-e");
+        args.push(&lang_env);
+        args.push("-e");
+        args.push(&lc_all_env);
         if let Some(ref env) = api_env {
             args.push("-e");
             args.push(env);
@@ -260,12 +202,9 @@ pub fn pty_spawn(
             &spawn_cmd,
         ]);
         tmux_run(&args)?;
-        // Hide the default tmux status bar — redundant with the
-        // A2AChannel tab label and costs a row.
         let _ = tmux_run(&["set-option", "-t", &agent, "status", "off"]);
     }
 
-    // Now attach via a PTY we own. This is the xterm-facing side.
     let tmux = resolve_tmux_bin()?;
     let sock = tmux_socket_path();
     let pty_system = native_pty_system();
@@ -284,11 +223,9 @@ pub fn pty_spawn(
     builder.arg("attach-session");
     builder.arg("-t");
     builder.arg(&agent);
-    // xterm.js advertises itself as xterm-256color; declare it here so
-    // tmux (and anything claude spawns via Bash) has a valid terminfo
-    // entry. Without this, users whose shell config doesn't export TERM
-    // see `open terminal failed: terminal does not support clear`.
     builder.env("TERM", "xterm-256color");
+    builder.env("LANG", &lang);
+    builder.env("LC_ALL", &lang);
 
     let child = pair
         .slave
@@ -317,9 +254,7 @@ pub fn pty_spawn(
         );
     }
 
-    // Blocking reader on a dedicated thread (PTY reads would starve the
-    // tokio executor). Emits base64-encoded chunks; on EOF, emits exit and
-    // drops the handle.
+    // PTY reads are blocking — dedicated thread so we don't starve the tokio executor.
     let app_clone = app.clone();
     let agent_clone = agent.clone();
     let registry = state.0.clone();
@@ -398,9 +333,6 @@ pub fn pty_resize(
     Ok(())
 }
 
-// Dispose the whole tmux session. The PTY reader loop will detect EOF on
-// the attach client's stdout, emit pty://exit, and drop the handle from
-// the registry. Semantically distinct from restart.
 #[tauri::command]
 pub fn pty_kill(agent: String) -> Result<(), String> {
     if !valid_agent_name(&agent) {
@@ -410,12 +342,8 @@ pub fn pty_kill(agent: String) -> Result<(), String> {
     Ok(())
 }
 
-// Return the set of tmux sessions currently on our socket. Filter to
-// valid agent names so a stray session with unusual characters doesn't
-// leak into the UI tab strip.
 #[tauri::command]
 pub fn pty_list() -> Result<Vec<String>, String> {
-    // list-sessions returns exit 1 when no sessions exist — treat as empty.
     let tmux = resolve_tmux_bin()?;
     let sock = tmux_socket_path();
     let out = Command::new(tmux)
@@ -425,7 +353,7 @@ pub fn pty_list() -> Result<Vec<String>, String> {
         .output()
         .map_err(|e| format!("tmux list-sessions spawn: {e}"))?;
     if !out.status.success() {
-        // "no server running" is exit 1 with stderr noise; return [].
+        // "no server running" is exit 1 — treat as empty.
         return Ok(vec![]);
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
