@@ -37,3 +37,4 @@ CLAUDE.md
 .cursor/
 .cursorrules
 .github/copilot-instructions.md
+dist/

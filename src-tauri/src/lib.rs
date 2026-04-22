@@ -599,6 +599,15 @@ fn reload_settings(
     Ok(new_info)
 }
 
+// Compile-time version string from Cargo.toml's [package] version. The
+// UI reads this on boot and stamps it into the brand-meta slot so the
+// label always matches the build. release.sh bumps Cargo.toml → rebuild
+// → UI shows the new version with zero manual sync.
+#[tauri::command]
+fn get_app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 #[tauri::command]
 fn get_mcp_template() -> Result<String, String> {
     let a2a_bin = resolve_a2a_bin()?;
@@ -631,6 +640,7 @@ pub fn run() {
         .manage(pty::PtyRegistry::default())
         .invoke_handler(tauri::generate_handler![
             get_hub_url,
+            get_app_version,
             get_mcp_template,
             get_attachments_dir,
             get_human_name,

@@ -324,7 +324,7 @@
     }
     const term = new window.Terminal({
       theme: xtermTheme,
-      fontFamily: "'SF Mono', Menlo, monospace",
+      fontFamily: "'JetBrains Mono', 'SF Mono', Menlo, monospace",
       fontSize: 12,
       cursorBlink: true,
       convertEol: false,

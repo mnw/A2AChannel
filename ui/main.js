@@ -1412,6 +1412,15 @@ async function bootstrap() {
     } catch {
       // older Rust shell without the command: stick with default "you".
     }
+    try {
+      const version = await invoke('get_app_version');
+      const metaEl = document.getElementById('brand-meta');
+      if (metaEl && typeof version === 'string' && version) {
+        metaEl.textContent = `v${version}`;
+      }
+    } catch {
+      // older Rust shell without the command: show empty.
+    }
   }
   try {
     await loadRoster();
