@@ -27,8 +27,15 @@
 
     <div class="status-cluster">
       <div class="room-controls" id="room-controls" title="Filter the view to a single room">
-        <select id="room-switcher" aria-label="Room filter"></select>
-        <button type="button" class="icon-btn" id="pause-room-btn" title="Pause all agents in the selected room" aria-label="Pause room" disabled>
+        <div class="room-wrap">
+          <select id="room-switcher" class="visually-hidden" tabindex="-1" aria-hidden="true"></select>
+          <button type="button" class="room-display" id="room-display" aria-haspopup="listbox" aria-expanded="false">
+            <span class="room-display-text">All rooms</span>
+            <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div class="room-menu" id="room-menu" role="listbox"></div>
+        </div>
+        <button type="button" class="icon-btn" id="pause-room-btn" title="Pause all agents in the selected room. Agents finish their current tool call before stopping." aria-label="Pause room" disabled>
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
         </button>
         <button type="button" class="icon-btn" id="resume-room-btn" title="Resume all agents in the selected room" aria-label="Resume room" disabled>
@@ -132,8 +139,13 @@
       <button type="button" id="spawn-cwd-pick">Pick…</button>
     </div>
     <label>Room</label>
-    <input id="spawn-room-input" list="spawn-room-datalist" spellcheck="false" autocomplete="off" placeholder="defaults to git-root basename" style="width:100%;" />
-    <datalist id="spawn-room-datalist"></datalist>
+    <div class="spawn-room-combo">
+      <input id="spawn-room-input" spellcheck="false" autocomplete="off" placeholder="defaults to git-root basename" />
+      <button type="button" class="spawn-room-picker-btn" id="spawn-room-picker-btn" aria-haspopup="listbox" aria-expanded="false" aria-label="Pick from existing rooms">
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div class="spawn-room-menu" id="spawn-room-menu" role="listbox"></div>
+    </div>
     <div id="spawn-session-row" style="margin-top:6px;">
       <label style="text-transform:uppercase; letter-spacing:0.1em; font-family:var(--mono); font-size:10px; color:var(--text-dim);">Session</label>
       <div style="display:flex; flex-direction:column; gap:6px; margin-top:4px; font-family:var(--sans); font-size:12px; color:var(--text-muted);">

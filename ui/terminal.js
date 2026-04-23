@@ -32,8 +32,9 @@
   const spawnAgentEl  = document.getElementById('spawn-agent-input');
   const spawnCwdEl    = document.getElementById('spawn-cwd-input');
   const spawnCwdPick  = document.getElementById('spawn-cwd-pick');
-  const spawnRoomEl   = document.getElementById('spawn-room-input');
-  const spawnRoomList = document.getElementById('spawn-room-datalist');
+  const spawnRoomEl     = document.getElementById('spawn-room-input');
+  const spawnRoomBtn    = document.getElementById('spawn-room-picker-btn');
+  const spawnRoomMenu   = document.getElementById('spawn-room-menu');
   const spawnCancel   = document.getElementById('spawn-cancel');
   const spawnSubmit   = document.getElementById('spawn-submit');
   const spawnSessionContinue = document.getElementById('spawn-session-continue');
@@ -569,23 +570,60 @@
     setTimeout(() => spawnAgentEl.focus(), 0);
   }
 
-  // Populate the <datalist> with rooms currently in the roster (minus the human)
-  // for one-click autocomplete in the Room input.
+  // Custom styled popover over existing roster rooms — mirrors the composer's
+  // target-dropdown shape. User can still type a brand-new room label freely.
   function refreshSpawnRoomDatalist() {
-    if (!spawnRoomList) return;
+    if (!spawnRoomMenu) return;
+    spawnRoomMenu.innerHTML = '';
     const rooms = new Set();
     if (typeof ROSTER !== 'undefined' && Array.isArray(ROSTER)) {
       for (const a of ROSTER) {
         if (a && typeof a.room === 'string' && a.room) rooms.add(a.room);
       }
     }
-    spawnRoomList.innerHTML = '';
-    for (const r of [...rooms].sort()) {
-      const opt = document.createElement('option');
-      opt.value = r;
-      spawnRoomList.appendChild(opt);
+    const sorted = [...rooms].sort();
+    if (!sorted.length) {
+      const empty = document.createElement('div');
+      empty.className = 'spawn-room-option empty';
+      empty.textContent = 'No rooms yet — type a new name.';
+      spawnRoomMenu.appendChild(empty);
+      return;
+    }
+    for (const r of sorted) {
+      const opt = document.createElement('div');
+      opt.className = 'spawn-room-option';
+      opt.dataset.value = r;
+      opt.role = 'option';
+      opt.textContent = `# ${r}`;
+      opt.addEventListener('click', () => {
+        if (spawnRoomEl) spawnRoomEl.value = r;
+        closeSpawnRoomMenu();
+        spawnRoomEl?.focus();
+      });
+      spawnRoomMenu.appendChild(opt);
     }
   }
+  function openSpawnRoomMenu() {
+    if (!spawnRoomMenu || !spawnRoomBtn) return;
+    refreshSpawnRoomDatalist();
+    spawnRoomMenu.classList.add('open');
+    spawnRoomBtn.setAttribute('aria-expanded', 'true');
+  }
+  function closeSpawnRoomMenu() {
+    if (!spawnRoomMenu || !spawnRoomBtn) return;
+    spawnRoomMenu.classList.remove('open');
+    spawnRoomBtn.setAttribute('aria-expanded', 'false');
+  }
+  spawnRoomBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (spawnRoomMenu?.classList.contains('open')) closeSpawnRoomMenu();
+    else openSpawnRoomMenu();
+  });
+  document.addEventListener('click', (e) => {
+    if (!spawnRoomMenu?.classList.contains('open')) return;
+    if (!spawnRoomMenu.contains(e.target) && e.target !== spawnRoomBtn
+        && !spawnRoomBtn?.contains(e.target)) closeSpawnRoomMenu();
+  });
   document.addEventListener('a2a:open-spawn', () => openSpawnModal());
 
   // Room filter changed — if the currently-active tab is now hidden, swap to the

@@ -112,6 +112,9 @@ const SELECTED_ROOM_KEY = 'a2achannel_selected_room';
 const ROOM_ALL = '__ALL__';
 let SELECTED_ROOM = localStorage.getItem(SELECTED_ROOM_KEY) || ROOM_ALL;
 const roomSwitcherEl   = document.getElementById('room-switcher');
+const roomDisplayBtn   = document.getElementById('room-display');
+const roomDisplayText  = roomDisplayBtn?.querySelector('.room-display-text');
+const roomMenu         = document.getElementById('room-menu');
 const pauseRoomBtn     = document.getElementById('pause-room-btn');
 const resumeRoomBtn    = document.getElementById('resume-room-btn');
 
@@ -126,6 +129,8 @@ function distinctRooms() {
 function renderRoomSwitcher() {
   if (!roomSwitcherEl) return;
   const rooms = distinctRooms();
+  // Mirror options into the hidden <select> so the value is still readable the
+  // way the composer target-dropdown pattern does it — single source of truth.
   roomSwitcherEl.innerHTML = '';
   const allOpt = document.createElement('option');
   allOpt.value = ROOM_ALL;
@@ -143,9 +148,68 @@ function renderRoomSwitcher() {
     localStorage.setItem(SELECTED_ROOM_KEY, ROOM_ALL);
   }
   roomSwitcherEl.value = SELECTED_ROOM;
+  renderRoomMenu();
   updatePauseResumeState();
   applyRoomFilter();
 }
+
+function renderRoomMenu() {
+  if (!roomMenu) return;
+  roomMenu.innerHTML = '';
+  const rooms = distinctRooms();
+  const build = (value, label) => {
+    const el = document.createElement('div');
+    el.className = 'room-option';
+    if (value === SELECTED_ROOM) el.classList.add('selected');
+    el.dataset.value = value;
+    el.role = 'option';
+    el.textContent = label;
+    el.addEventListener('click', () => {
+      roomSwitcherEl.value = value;
+      roomSwitcherEl.dispatchEvent(new Event('change'));
+      closeRoomMenu();
+    });
+    return el;
+  };
+  roomMenu.appendChild(build(ROOM_ALL, 'All rooms'));
+  if (rooms.length) {
+    const div = document.createElement('div');
+    div.className = 'room-menu-divider';
+    roomMenu.appendChild(div);
+    for (const r of rooms) roomMenu.appendChild(build(r, `# ${r}`));
+  }
+  updateRoomDisplayLabel();
+}
+
+function updateRoomDisplayLabel() {
+  if (!roomDisplayText) return;
+  roomDisplayText.textContent =
+    SELECTED_ROOM === ROOM_ALL ? 'All rooms' : `# ${SELECTED_ROOM}`;
+}
+
+function openRoomMenu() {
+  if (!roomMenu || !roomDisplayBtn) return;
+  roomMenu.classList.add('open');
+  roomDisplayBtn.setAttribute('aria-expanded', 'true');
+}
+function closeRoomMenu() {
+  if (!roomMenu || !roomDisplayBtn) return;
+  roomMenu.classList.remove('open');
+  roomDisplayBtn.setAttribute('aria-expanded', 'false');
+}
+roomDisplayBtn?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (roomMenu?.classList.contains('open')) closeRoomMenu();
+  else openRoomMenu();
+});
+document.addEventListener('click', (e) => {
+  if (!roomMenu?.classList.contains('open')) return;
+  if (!roomMenu.contains(e.target) && e.target !== roomDisplayBtn
+      && !roomDisplayBtn?.contains(e.target)) closeRoomMenu();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && roomMenu?.classList.contains('open')) closeRoomMenu();
+});
 
 function updatePauseResumeState() {
   const hasRoom = SELECTED_ROOM !== ROOM_ALL;
@@ -195,6 +259,8 @@ function applyRoomFilter() {
 roomSwitcherEl?.addEventListener('change', () => {
   SELECTED_ROOM = roomSwitcherEl.value || ROOM_ALL;
   localStorage.setItem(SELECTED_ROOM_KEY, SELECTED_ROOM);
+  updateRoomDisplayLabel();
+  renderRoomMenu();
   updatePauseResumeState();
   applyRoomFilter();
   // Fetch (or refresh) the selected room's nutshell so the strip updates.
