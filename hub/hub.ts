@@ -18,6 +18,7 @@ const ATTACHMENTS_DIR = (
 ).trim();
 const LEDGER_DB = (process.env.A2A_LEDGER_DB ?? "").trim();
 const HUMAN_NAME = (process.env.A2A_HUMAN_NAME ?? "human").trim();
+const DEFAULT_ROOM = (process.env.A2A_DEFAULT_ROOM ?? "default").trim() || "default";
 const HISTORY_LIMIT = 1000;
 const AGENT_QUEUE_MAX = 500;
 const UI_QUEUE_MAX = 500;
@@ -34,7 +35,7 @@ const HANDOFF_CONTEXT_MAX_BYTES = 1_048_576;
 const HANDOFF_TASK_MAX_CHARS = 500;
 const HANDOFF_REASON_MAX_CHARS = 500;
 const HANDOFF_ID_RE = /^h_[0-9a-f]{16}$/;
-const LEDGER_SCHEMA_VERSION = 5;
+const LEDGER_SCHEMA_VERSION = 6;
 type HandoffStatus = "pending" | "accepted" | "declined" | "cancelled" | "expired";
 // Extension allowlist; env wins over the defaults (which match the Rust shell's defaults).
 const DEFAULT_ALLOWED_EXTENSIONS = ["jpg", "jpeg", "png", "pdf", "md"];
@@ -91,7 +92,12 @@ if (!LEDGER_DB) {
   );
 }
 
-type Agent = { name: string; color: string };
+type Agent = {
+  name: string;
+  color: string;
+  // null = the human, a super-user in every room. Non-null = this agent's room.
+  room: string | null;
+};
 type Entry = {
   id?: number;
   from?: string;
@@ -101,6 +107,8 @@ type Entry = {
   image?: string | null;
   type?: string;
   agents?: Agent[] | Record<string, boolean>;
+  // Sender's room; null for human-originated events and global system events.
+  room?: string | null;
 };
 
 class DropQueue<T> {
@@ -358,6 +366,36 @@ function migrateLedger(db: Database): void {
     })();
     console.log(`[ledger] applied migration v5`);
   }
+  if (current < 6) {
+    // v6 migration: rooms. Add room column to events + handoffs + interrupts + permissions
+    // (existing rows migrate to 'default'). Restructure nutshell from single-row (CHECK id=0)
+    // to per-room keyed by room TEXT PRIMARY KEY — SQLite can't drop a CHECK in place, copy-drop-rename.
+    db.transaction(() => {
+      db.exec(`
+        ALTER TABLE events     ADD COLUMN room TEXT;
+        ALTER TABLE handoffs   ADD COLUMN room TEXT NOT NULL DEFAULT 'default';
+        ALTER TABLE interrupts ADD COLUMN room TEXT NOT NULL DEFAULT 'default';
+        ALTER TABLE permissions ADD COLUMN room TEXT NOT NULL DEFAULT 'default';
+        CREATE INDEX idx_handoffs_room   ON handoffs(room, status, created_at_ms DESC);
+        CREATE INDEX idx_interrupts_room ON interrupts(room, status, created_at_ms DESC);
+        CREATE INDEX idx_permissions_room ON permissions(room, status);
+
+        CREATE TABLE nutshell_new (
+          room          TEXT PRIMARY KEY,
+          text          TEXT    NOT NULL DEFAULT '',
+          version       INTEGER NOT NULL DEFAULT 0,
+          updated_at_ms INTEGER NOT NULL,
+          updated_by    TEXT
+        );
+        INSERT INTO nutshell_new (room, text, version, updated_at_ms, updated_by)
+          SELECT 'default', text, version, updated_at_ms, updated_by FROM nutshell WHERE id = 0;
+        DROP TABLE nutshell;
+        ALTER TABLE nutshell_new RENAME TO nutshell;
+      `);
+      db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '6')");
+    })();
+    console.log(`[ledger] applied migration v6`);
+  }
 }
 
 openLedger();
@@ -376,6 +414,7 @@ type HandoffSnapshot = {
   created_at_ms: number;
   expires_at_ms: number;
   resolved_at_ms: number | null;
+  room: string;
   version: number;
 };
 
@@ -393,6 +432,7 @@ type HandoffRow = {
   created_at_ms: number;
   expires_at_ms: number;
   resolved_at_ms: number | null;
+  room: string;
 };
 
 function mintHandoffId(): string {
@@ -418,6 +458,7 @@ function handoffRowToSnapshot(row: HandoffRow, version: number): HandoffSnapshot
     created_at_ms: row.created_at_ms,
     expires_at_ms: row.expires_at_ms,
     resolved_at_ms: row.resolved_at_ms,
+    room: row.room,
     version,
   };
 }
@@ -463,6 +504,7 @@ type CreateHandoffInput = {
   task: string;
   context?: unknown;
   ttl_seconds?: number;
+  room: string;
 };
 
 type HandoffOutcome =
@@ -499,9 +541,9 @@ function createHandoff(input: CreateHandoffInput): HandoffSnapshot {
     db.run(
       `INSERT INTO handoffs
          (id, from_agent, to_agent, task, context_json, status,
-          created_at_ms, expires_at_ms)
-       VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
-      [id, input.from, input.to, input.task, contextJson, now, expires_at],
+          created_at_ms, expires_at_ms, room)
+       VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+      [id, input.from, input.to, input.task, contextJson, now, expires_at, input.room],
     );
   })();
 
@@ -534,11 +576,23 @@ function acceptHandoff(id: string, by: string, comment?: string): HandoffOutcome
     loaded.row.to_agent === HUMAN_NAME &&
     loaded.row.context_json !== null;
   let nutshellPatch: string | null = null;
+  let nutshellRoom: string = loaded.row.room;
   if (isNutshellEdit) {
     try {
       const ctx = JSON.parse(loaded.row.context_json!);
       if (ctx && typeof ctx === "object" && typeof ctx.patch === "string") {
         nutshellPatch = ctx.patch;
+        // Explicit context.room wins over handoff.room, but only when the sender can speak
+        // for that room (i.e. the sender IS the human, or context.room matches handoff.room).
+        if (typeof ctx.room === "string" && validRoomLabel(ctx.room)) {
+          if (ctx.room === loaded.row.room || loaded.row.from_agent === HUMAN_NAME) {
+            nutshellRoom = ctx.room;
+          } else {
+            // Cross-room edit by a non-human sender — drop the patch rather than 403
+            // here (we're deep inside a transaction and the handoff accept is legit).
+            nutshellPatch = null;
+          }
+        }
       }
     } catch {
       // Malformed context — accept the handoff but skip the nutshell patch.
@@ -551,7 +605,7 @@ function acceptHandoff(id: string, by: string, comment?: string): HandoffOutcome
       [comment ?? null, now, id],
     );
     if (nutshellPatch !== null) {
-      nutshellSnapshot = writeNutshellInTx(db, nutshellPatch, loaded.row.from_agent);
+      nutshellSnapshot = writeNutshellInTx(db, nutshellRoom, nutshellPatch, loaded.row.from_agent);
     }
   })();
   const outcome: HandoffOutcome = { kind: "transition", snapshot: snapshotHandoff(id)! };
@@ -687,6 +741,7 @@ function pendingFor(agent: string): HandoffSnapshot[] {
 }
 
 type NutshellSnapshot = {
+  room: string;
   text: string;
   version: number;
   updated_at_ms: number;
@@ -694,24 +749,29 @@ type NutshellSnapshot = {
 };
 
 type NutshellRow = {
+  room: string;
   text: string;
   version: number;
   updated_at_ms: number;
   updated_by: string | null;
 };
 
-function readNutshell(): NutshellSnapshot {
+function readNutshell(room: string): NutshellSnapshot {
+  const r = resolveRoom(room);
   if (!ledgerDb) {
-    return { text: "", version: 0, updated_at_ms: Date.now(), updated_by: null };
+    return { room: r, text: "", version: 0, updated_at_ms: Date.now(), updated_by: null };
   }
   const row = ledgerDb
-    .query<NutshellRow, []>("SELECT text, version, updated_at_ms, updated_by FROM nutshell WHERE id = 0")
-    .get();
+    .query<NutshellRow, [string]>(
+      "SELECT room, text, version, updated_at_ms, updated_by FROM nutshell WHERE room = ?",
+    )
+    .get(r);
   if (!row) {
-    // Shouldn't happen — v2 migration seeds a row. Fail open.
-    return { text: "", version: 0, updated_at_ms: Date.now(), updated_by: null };
+    // No row yet for this room — return empty sentinel so callers don't need to branch.
+    return { room: r, text: "", version: 0, updated_at_ms: Date.now(), updated_by: null };
   }
   return {
+    room: row.room,
     text: row.text,
     version: row.version,
     updated_at_ms: row.updated_at_ms,
@@ -720,20 +780,32 @@ function readNutshell(): NutshellSnapshot {
 }
 
 // Caller must wrap this in the same transaction as the triggering event (handoff accept).
+// Upserts the nutshell row for the given room; creates it on first edit for that room.
 function writeNutshellInTx(
   db: Database,
+  room: string,
   newText: string,
   updatedBy: string,
 ): NutshellSnapshot {
+  const r = resolveRoom(room);
   const now = Date.now();
   db.run(
-    "UPDATE nutshell SET text = ?, version = version + 1, updated_at_ms = ?, updated_by = ? WHERE id = 0",
-    [newText, now, updatedBy],
+    `INSERT INTO nutshell (room, text, version, updated_at_ms, updated_by)
+     VALUES (?, ?, 1, ?, ?)
+     ON CONFLICT(room) DO UPDATE SET
+       text = excluded.text,
+       version = nutshell.version + 1,
+       updated_at_ms = excluded.updated_at_ms,
+       updated_by = excluded.updated_by`,
+    [r, newText, now, updatedBy],
   );
   const row = db
-    .query<NutshellRow, []>("SELECT text, version, updated_at_ms, updated_by FROM nutshell WHERE id = 0")
-    .get();
+    .query<NutshellRow, [string]>(
+      "SELECT room, text, version, updated_at_ms, updated_by FROM nutshell WHERE room = ?",
+    )
+    .get(r);
   return {
+    room: row?.room ?? r,
     text: row?.text ?? newText,
     version: row?.version ?? 0,
     updated_at_ms: row?.updated_at_ms ?? now,
@@ -752,6 +824,7 @@ type InterruptSnapshot = {
   created_at_ms: number;
   acknowledged_at_ms: number | null;
   acknowledged_by: string | null;
+  room: string;
   version: number;
 };
 
@@ -764,6 +837,7 @@ type InterruptRow = {
   created_at_ms: number;
   acknowledged_at_ms: number | null;
   acknowledged_by: string | null;
+  room: string;
 };
 
 const INTERRUPT_ID_RE = /^i_[0-9a-f]{16}$/;
@@ -786,6 +860,7 @@ function interruptRowToSnapshot(row: InterruptRow, version: number): InterruptSn
     created_at_ms: row.created_at_ms,
     acknowledged_at_ms: row.acknowledged_at_ms,
     acknowledged_by: row.acknowledged_by,
+    room: row.room,
     version,
   };
 }
@@ -809,7 +884,7 @@ function snapshotInterrupt(id: string): InterruptSnapshot | null {
   return loaded ? interruptRowToSnapshot(loaded.row, loaded.version) : null;
 }
 
-type CreateInterruptInput = { from: string; to: string; text: string };
+type CreateInterruptInput = { from: string; to: string; text: string; room: string };
 
 function createInterrupt(input: CreateInterruptInput): InterruptSnapshot {
   if (!ledgerDb) throw new Error("ledger disabled");
@@ -819,9 +894,9 @@ function createInterrupt(input: CreateInterruptInput): InterruptSnapshot {
   db.transaction(() => {
     insertEvent(db, id, "interrupt.new", input.from, { to: input.to, text: input.text }, now);
     db.run(
-      `INSERT INTO interrupts (id, from_agent, to_agent, text, status, created_at_ms)
-       VALUES (?, ?, ?, ?, 'pending', ?)`,
-      [id, input.from, input.to, input.text, now],
+      `INSERT INTO interrupts (id, from_agent, to_agent, text, status, created_at_ms, room)
+       VALUES (?, ?, ?, ?, 'pending', ?, ?)`,
+      [id, input.from, input.to, input.text, now, input.room],
     );
   })();
   return snapshotInterrupt(id)!;
@@ -921,6 +996,7 @@ type PermissionSnapshot = {
   resolved_at_ms: number | null;
   resolved_by: string | null;
   behavior: PermissionBehavior | null;
+  room: string;
   version: number;
 };
 
@@ -935,6 +1011,7 @@ type PermissionRow = {
   resolved_at_ms: number | null;
   resolved_by: string | null;
   behavior: PermissionBehavior | null;
+  room: string;
 };
 
 // claude emits request_ids as 5 lowercase letters a-z excluding 'l'.
@@ -955,6 +1032,7 @@ function permissionRowToSnapshot(row: PermissionRow, version: number): Permissio
     resolved_at_ms: row.resolved_at_ms,
     resolved_by: row.resolved_by,
     behavior: row.behavior,
+    room: row.room,
     version,
   };
 }
@@ -984,6 +1062,7 @@ type CreatePermissionInput = {
   tool_name: string;
   description: string;
   input_preview: string;
+  room: string;
 };
 
 type PermissionCreateOutcome =
@@ -1017,9 +1096,9 @@ function createPermission(input: CreatePermissionInput): PermissionCreateOutcome
     );
     db.run(
       `INSERT INTO permissions
-         (id, agent, tool_name, description, input_preview, status, created_at_ms)
-       VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
-      [input.request_id, input.agent, input.tool_name, input.description, input.input_preview, now],
+         (id, agent, tool_name, description, input_preview, status, created_at_ms, room)
+       VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
+      [input.request_id, input.agent, input.tool_name, input.description, input.input_preview, now, input.room],
     );
   })();
   return { kind: "created", snapshot: snapshotPermission(input.request_id)! };
@@ -1155,6 +1234,19 @@ function validName(name: string): boolean {
   );
 }
 
+// Room labels follow the same charset + length rules as agent names but are not
+// limited to the reserved-name blocklist (reserved names are agent-side, not rooms).
+function validRoomLabel(room: string): boolean {
+  return !!room && AGENT_NAME_RE.test(room);
+}
+
+// Resolve and clean a room value from untrusted input. Returns DEFAULT_ROOM when
+// the input is empty/invalid so callers don't have to branch.
+function resolveRoom(raw: string | null | undefined): string {
+  const s = (raw ?? "").trim();
+  return s && validRoomLabel(s) ? s : DEFAULT_ROOM;
+}
+
 // Constant-time string comparison (length oracle is not a secret leak).
 function ctEquals(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -1165,18 +1257,21 @@ function ctEquals(a: string, b: string): boolean {
   return diff === 0;
 }
 
-function ensureAgent(name: string): Agent | null {
+// `room` is set on first registration and immutable thereafter — reconnects pass a
+// room value but it's ignored once the agent is known. Pass null to register the human.
+function ensureAgent(name: string, room: string | null = DEFAULT_ROOM): Agent | null {
   if (!validName(name)) return null;
   const existing = knownAgents.get(name);
   if (existing) {
     cancelStaleTimer(name);
     return existing;
   }
-  const a: Agent = { name, color: colorFromName(name) };
+  const resolvedRoom = room === null ? null : resolveRoom(room);
+  const a: Agent = { name, color: colorFromName(name), room: resolvedRoom };
   knownAgents.set(name, a);
   agentQueues.set(name, new DropQueue<Entry>(AGENT_QUEUE_MAX));
   agentConnections.set(name, 0);
-  console.log(`[hub] agent joined: ${name} (${a.color})`);
+  console.log(`[hub] agent joined: ${name} (${a.color}) room=${resolvedRoom ?? "*"}`);
   broadcastRoster();
   return a;
 }
@@ -1231,26 +1326,33 @@ function broadcastRoster(): void {
   broadcastBriefingsToConnectedAgents();
 }
 
-// Peer list excludes self. Tool list must stay in sync with channel.ts.
+// Peer list excludes self + non-same-room agents (human always included). Tool list must stay
+// in sync with channel.ts. Briefing.nutshell is room-scoped.
 function buildBriefing(agent: string): Entry & {
   type: string;
+  room: string | null;
   tools: string[];
-  peers: Array<{ name: string; online: boolean }>;
+  peers: Array<{ name: string; online: boolean; room: string | null }>;
   attachments_dir: string;
   human_name: string;
   nutshell: string | null;
 } {
-  const peers: Array<{ name: string; online: boolean }> = [];
-  for (const name of knownAgents.keys()) {
+  const me = knownAgents.get(agent);
+  const myRoom = me?.room ?? DEFAULT_ROOM;
+  const peers: Array<{ name: string; online: boolean; room: string | null }> = [];
+  for (const [name, a] of knownAgents) {
     if (name === agent) continue;
+    // Include same-room peers and all cross-room members (human = room null).
+    if (a.room !== null && a.room !== myRoom) continue;
     peers.push({
       name,
       online: permanentAgents.has(name)
         ? true
         : (agentConnections.get(name) ?? 0) > 0,
+      room: a.room,
     });
   }
-  const nutshell = ledgerEnabled ? readNutshell().text : "";
+  const nutshell = ledgerEnabled ? readNutshell(myRoom).text : "";
   return {
     type: "briefing",
     tools: [
@@ -1269,6 +1371,7 @@ function buildBriefing(agent: string): Entry & {
     human_name: HUMAN_NAME,
     nutshell: nutshell || null,
     ts: ts(),
+    room: myRoom,
   };
 }
 
@@ -1468,6 +1571,10 @@ async function handleSend(req: Request): Promise<Response> {
     image?: string | null;
     target?: string;
     targets?: string[];
+    // Human's UI-selected room. Required when `target`/`targets` includes "all"
+    // (otherwise "all" is ambiguous — every room, or the current view?). For explicit
+    // peer targets the field is ignored.
+    room?: string;
   };
   const text = (body.text ?? "").trim();
   const image = body.image || null;
@@ -1475,6 +1582,12 @@ async function handleSend(req: Request): Promise<Response> {
   if (image && !IMAGE_URL_RE.test(image)) {
     return json({ error: "invalid image url" }, { status: 400 });
   }
+
+  const scopeRoom = body.room && validRoomLabel(body.room) ? body.room : null;
+  // `/send` routes messages from the human. "all" means "everyone in scopeRoom"; explicit
+  // peer targets cross rooms freely (human is super-user).
+  const agentsInRoom = (room: string): string[] =>
+    [...knownAgents.values()].filter((a) => a.room === room).map((a) => a.name);
 
   let targets: string[];
   let broadcast = false;
@@ -1489,7 +1602,12 @@ async function handleSend(req: Request): Promise<Response> {
     const resolved: string[] = [];
     for (const t of body.targets) {
       if (t === "all") {
-        resolved.splice(0, resolved.length, ...knownAgents.keys());
+        if (!scopeRoom) {
+          return json({ error: "room required when targets include 'all'" }, { status: 400 });
+        }
+        for (const name of agentsInRoom(scopeRoom)) {
+          if (!resolved.includes(name)) resolved.push(name);
+        }
         broadcast = true;
         break;
       }
@@ -1497,7 +1615,10 @@ async function handleSend(req: Request): Promise<Response> {
     }
     targets = resolved;
   } else if (!body.target || body.target === "all") {
-    targets = [...knownAgents.keys()];
+    if (!scopeRoom) {
+      return json({ error: "room required for broadcast to 'all'" }, { status: 400 });
+    }
+    targets = agentsInRoom(scopeRoom);
     broadcast = true;
   } else if (knownAgents.has(body.target)) {
     targets = [body.target];
@@ -1518,7 +1639,20 @@ async function handleSend(req: Request): Promise<Response> {
       ? targets[0]
       : targets.join(",");
 
-  const entry: Entry = { from: "you", to: toLabel, text, image, ts: ts() };
+  // entry.room = scopeRoom when broadcasting; for explicit peer targets, use the recipient's
+  // room so the UI can filter correctly. null only when there's no room context at all.
+  const entryRoom =
+    scopeRoom ??
+    (targets.length === 1 ? knownAgents.get(targets[0])?.room ?? null : null);
+
+  const entry: Entry = {
+    from: "you",
+    to: toLabel,
+    text,
+    image,
+    ts: ts(),
+    room: entryRoom,
+  };
   broadcastUI(entry);
   const view = agentEntry(entry);
   for (const t of targets) enqueueTo(t, view);
@@ -1549,19 +1683,33 @@ async function handlePost(req: Request): Promise<Response> {
   if (!ensureAgent(frm)) {
     return json({ error: `invalid from: ${frm}` }, { status: 400 });
   }
+  const sender = knownAgents.get(frm)!;
+  const senderRoom = sender.room; // null = human (super-user, rare for /post but possible)
 
   let targets: string[];
   if (reserved === "you") {
     targets = [];
   } else if (reserved === "all") {
-    targets = [...knownAgents.keys()].filter((a) => a !== frm);
+    // Broadcast from an agent scopes to its own room. Human is always reachable via /stream.
+    targets = [...knownAgents.values()]
+      .filter((a) => a.name !== frm && !permanentAgents.has(a.name))
+      .filter((a) => senderRoom === null || a.room === senderRoom)
+      .map((a) => a.name);
   } else if (knownAgents.has(rawTo)) {
+    // Explicit peer target crosses rooms — sender knows what they're doing.
     targets = [rawTo];
   } else {
     return json({ error: `unknown to: ${rawTo}` }, { status: 400 });
   }
 
-  const entry: Entry = { from: frm, to: rawTo, text, image, ts: ts() };
+  const entry: Entry = {
+    from: frm,
+    to: rawTo,
+    text,
+    image,
+    ts: ts(),
+    room: senderRoom,
+  };
   broadcastUI(entry);
   // Peers get absolute paths (via agentEntry); UI already got URL form via broadcastUI above.
   const view = agentEntry(entry);
@@ -1667,11 +1815,12 @@ function handleStream(req: Request): Response {
   });
 }
 
-function handleAgentStream(agent: string): Response {
+function handleAgentStream(agent: string, room: string | null = null): Response {
   if (!validName(agent)) {
     return json({ error: `invalid agent name: ${agent}` }, { status: 400 });
   }
-  ensureAgent(agent);
+  // First registration captures the agent's room; reconnects ignore the arg (immutable).
+  ensureAgent(agent, room ?? DEFAULT_ROOM);
   const q = agentQueues.get(agent);
   if (!q) {
     return json({ error: "agent queue missing" }, { status: 500 });
@@ -1690,17 +1839,21 @@ function handleAgentStream(agent: string): Response {
     }
 
     // Replay pending handoffs + interrupts (as recipient OR originator). Chat is NOT replayed.
+    // Scope replay by the reconnecting agent's room so cross-room items never leak into
+    // an agent's context on reconnect (channel-bin's gate is the second line of defense).
     if (ledgerEnabled) {
+      const myRoom = knownAgents.get(agent)?.room ?? DEFAULT_ROOM;
       try {
         for (const snapshot of pendingFor(agent)) {
+          if (snapshot.room !== myRoom) continue;
           send(handoffEntry(snapshot, "handoff.new", /* replay */ true));
         }
         for (const snapshot of pendingInterruptsFor(agent)) {
+          if (snapshot.room !== myRoom) continue;
           send(interruptEntry(snapshot, "interrupt.new", /* replay */ true));
         }
-        // Permissions fan out to all peers (not recipient-scoped like handoffs),
-        // so replay every currently-pending permission to the reconnecting agent.
         for (const snapshot of listPermissions({ status: "pending", limit: 1000 })) {
+          if (snapshot.room !== myRoom) continue;
           send(permissionEntry(snapshot, "permission.new", /* replay */ true));
         }
       } catch (e) {
@@ -1754,6 +1907,7 @@ function handoffEntry(
     text: JSON.stringify(snapshot),
     ts: ts(),
     image: null,
+    room: snapshot.room,
     kind: eventKind,
     handoff_id: snapshot.id,
     version: snapshot.version,
@@ -1769,18 +1923,18 @@ function broadcastHandoff(
 ): void {
   const entry = handoffEntry(snapshot, eventKind);
   broadcastUI(entry);
+  // Delivery targets are the two parties to the handoff by name — cross-room is allowed
+  // here because the handoff was already authorized at create-time (the create path rejects
+  // unauthorized cross-room sends with 403).
   const recipients: string[] =
     eventKind === "handoff.new"
       ? [snapshot.to_agent]
       : [snapshot.from_agent, snapshot.to_agent];
   for (const name of new Set(recipients)) {
-    // Permanent members (human) already saw this via broadcastUI.
     if (permanentAgents.has(name)) continue;
     const q = agentQueues.get(name);
     if (!q) continue;
-    // Agents don't need `snapshot` — `text` already carries the JSON; channel.ts forwards meta.
-    const queueEntry = handoffEntry(snapshot, eventKind);
-    q.push(queueEntry);
+    q.push(handoffEntry(snapshot, eventKind));
   }
 }
 
@@ -1801,6 +1955,7 @@ function interruptEntry(
     text: JSON.stringify(snapshot),
     ts: ts(),
     image: null,
+    room: snapshot.room,
     kind: eventKind,
     interrupt_id: snapshot.id,
     version: snapshot.version,
@@ -1844,6 +1999,7 @@ function permissionEntry(
     text: JSON.stringify(snapshot),
     ts: ts(),
     image: null,
+    room: snapshot.room,
     kind: eventKind,
     permission_id: snapshot.id,
     version: snapshot.version,
@@ -1858,13 +2014,13 @@ function broadcastPermission(
 ): void {
   const entry = permissionEntry(snapshot, eventKind);
   broadcastUI(entry);
-  // Fan out to every non-permanent agent queue so peers can autonomously ack
-  // via `ack_permission`. The requesting agent's own chatbridge uses
-  // `permission.resolved` to relay the verdict upstream back to claude, which
-  // de-dupes by request_id, so re-echoing to the requester is harmless.
-  for (const name of agentQueues.keys()) {
-    if (permanentAgents.has(name)) continue;
-    const q = agentQueues.get(name);
+  // Fan out only to same-room non-permanent agents — cross-room peers shouldn't see
+  // another project's approval prompts. The requesting agent gets the resolved/dismissed
+  // event too; claude de-dupes upstream by request_id.
+  for (const a of knownAgents.values()) {
+    if (permanentAgents.has(a.name)) continue;
+    if (a.room !== snapshot.room) continue;
+    const q = agentQueues.get(a.name);
     if (!q) continue;
     q.push(permissionEntry(snapshot, eventKind));
   }
@@ -1878,14 +2034,24 @@ function nutshellEntry(snapshot: NutshellSnapshot): Entry & {
     type: "nutshell.updated",
     text: snapshot.text,
     ts: ts(),
+    room: snapshot.room,
     snapshot,
   } as Entry & { type: string; snapshot: NutshellSnapshot };
 }
 
 function broadcastNutshell(snapshot: NutshellSnapshot): void {
-  // Nutshell is ambient context — UI-only; agents receive it via briefing on reconnect.
   const entry = nutshellEntry(snapshot);
   for (const q of uiSubscribers) q.push(entry);
+  // Live-push to same-room agents so they don't have to wait until next reconnect
+  // to learn the updated project summary. Channel-bin forwards it as a
+  // `[A2AChannel nutshell update]` content line into claude's context.
+  for (const a of knownAgents.values()) {
+    if (permanentAgents.has(a.name)) continue;
+    if (a.room !== snapshot.room) continue;
+    const q = agentQueues.get(a.name);
+    if (!q) continue;
+    q.push(nutshellEntry(snapshot));
+  }
 }
 
 function ledgerGuard(): Response | null {
@@ -1945,7 +2111,21 @@ async function handleCreateHandoff(req: Request): Promise<Response> {
     );
   }
 
-  const snapshot = createHandoff({ from, to, task, context: body.context, ttl_seconds: ttl });
+  const fromAgent = knownAgents.get(from)!;
+  const toAgent = knownAgents.get(to)!;
+  const fromRoom = fromAgent.room;
+  const toRoom = toAgent.room;
+  // Same-room or human bypass. Human (room=null) can create cross-room; agents cannot.
+  if (fromRoom !== null && toRoom !== null && fromRoom !== toRoom) {
+    return json({ error: "cross-room handoff not permitted" }, { status: 403 });
+  }
+  // Room for the handoff is the recipient's room when the sender is the human (the
+  // handoff belongs to the recipient's project), otherwise the sender's room.
+  const handoffRoom = fromRoom ?? toRoom ?? DEFAULT_ROOM;
+
+  const snapshot = createHandoff({
+    from, to, task, context: body.context, ttl_seconds: ttl, room: handoffRoom,
+  });
   broadcastHandoff(snapshot, "handoff.new");
   return json({ id: snapshot.id }, { status: 201 });
 }
@@ -2080,25 +2260,55 @@ async function handleCreateInterrupt(req: Request): Promise<Response> {
     from?: string;
     to?: string;
     text?: string;
+    rooms?: string[];
   };
   const from = (body.from ?? "").trim();
-  const to = (body.to ?? "").trim();
   const text = (body.text ?? "").trim();
   if (!validName(from)) return json({ error: "invalid from" }, { status: 400 });
-  if (!validName(to)) return json({ error: "invalid to" }, { status: 400 });
   if (!text) return json({ error: "text required" }, { status: 400 });
   if (text.length > INTERRUPT_TEXT_MAX_CHARS) {
     return json({ error: `text too long (max ${INTERRUPT_TEXT_MAX_CHARS})` }, { status: 400 });
   }
-  // Same phantom-prevention rule as handoffs.
   ensureAgent(from);
+
+  // Bulk shape: { from, rooms: [...], text } — human-only, fans out one interrupt per
+  // non-human agent in each named room. Response maps room → created interrupt IDs.
+  if (Array.isArray(body.rooms)) {
+    if (from !== HUMAN_NAME) {
+      return json({ error: "bulk interrupt restricted to human" }, { status: 403 });
+    }
+    const created: Array<{ room: string; interrupts: string[] }> = [];
+    for (const roomRaw of body.rooms) {
+      const room = typeof roomRaw === "string" ? roomRaw.trim() : "";
+      if (!validRoomLabel(room)) continue;
+      const ids: string[] = [];
+      for (const a of knownAgents.values()) {
+        if (a.room !== room) continue; // skip human (room=null) and other rooms
+        const snapshot = createInterrupt({ from, to: a.name, text, room });
+        broadcastInterrupt(snapshot, "interrupt.new");
+        ids.push(snapshot.id);
+      }
+      created.push({ room, interrupts: ids });
+    }
+    return json({ created }, { status: 201 });
+  }
+
+  // Single-recipient shape.
+  const to = (body.to ?? "").trim();
+  if (!validName(to)) return json({ error: "invalid to" }, { status: 400 });
   if (!knownAgents.has(to)) {
     return json(
       { error: `unknown recipient: ${to} (must be a currently-registered agent or "${HUMAN_NAME}")` },
       { status: 400 },
     );
   }
-  const snapshot = createInterrupt({ from, to, text });
+  const fromAgent = knownAgents.get(from)!;
+  const toAgent = knownAgents.get(to)!;
+  if (fromAgent.room !== null && toAgent.room !== null && fromAgent.room !== toAgent.room) {
+    return json({ error: "cross-room interrupt not permitted" }, { status: 403 });
+  }
+  const interruptRoom = fromAgent.room ?? toAgent.room ?? DEFAULT_ROOM;
+  const snapshot = createInterrupt({ from, to, text, room: interruptRoom });
   broadcastInterrupt(snapshot, "interrupt.new");
   return json({ id: snapshot.id }, { status: 201 });
 }
@@ -2142,8 +2352,15 @@ function handleListInterrupts(req: Request): Response {
   );
 }
 
-function handleGetNutshell(): Response {
-  return json(readNutshell());
+function handleGetNutshell(url: URL): Response {
+  const room = url.searchParams.get("room");
+  if (room === null) {
+    return json({ error: "room parameter required" }, { status: 400 });
+  }
+  if (!validRoomLabel(room)) {
+    return json({ error: "invalid room" }, { status: 400 });
+  }
+  return json(readNutshell(room));
 }
 
 // -------- Permission routes --------
@@ -2199,8 +2416,11 @@ async function handleCreatePermission(req: Request): Promise<Response> {
   }
   // Requesting agent must be in the roster so orphan records can't accumulate.
   ensureAgent(agent);
+  const requesterRoom = knownAgents.get(agent)?.room ?? DEFAULT_ROOM;
 
-  const outcome = createPermission({ agent, request_id, tool_name, description, input_preview });
+  const outcome = createPermission({
+    agent, request_id, tool_name, description, input_preview, room: requesterRoom,
+  });
   switch (outcome.kind) {
     case "created":
       broadcastPermission(outcome.snapshot, "permission.new");
@@ -2230,6 +2450,15 @@ async function handleResolvePermission(id: string, req: Request): Promise<Respon
   if (!validName(by)) return json({ error: "invalid by" }, { status: 400 });
   if (behavior !== "allow" && behavior !== "deny") {
     return json({ error: "invalid behavior" }, { status: 400 });
+  }
+  // Cross-room verdict rule: voter must be in the requester's room, OR be the human
+  // (super-user). Matches the same-room broadcast rule — peer-ack is a same-room feature.
+  const loaded = loadPermission(id);
+  if (loaded) {
+    const voter = knownAgents.get(by);
+    if (voter && voter.room !== null && voter.room !== loaded.row.room) {
+      return json({ error: "cross-room verdict not permitted" }, { status: 403 });
+    }
   }
   return permissionOutcomeResponse(resolvePermission(id, by, behavior as PermissionBehavior));
 }
@@ -2365,7 +2594,8 @@ const server = Bun.serve({
         const authFail = requireReadAuth(req, url);
         if (authFail) return authFail;
         const agent = url.searchParams.get("agent") ?? "";
-        return handleAgentStream(agent);
+        const room = url.searchParams.get("room");
+        return handleAgentStream(agent, room);
       }
       if (req.method === "GET" && pathname.startsWith("/image/")) {
         const authFail = requireReadAuth(req, url);
@@ -2448,7 +2678,12 @@ const server = Bun.serve({
       // Nutshell read; write path is /handoffs with task prefix "[nutshell]".
       if (req.method === "GET" && pathname === "/nutshell") {
         const authFail = requireReadAuth(req, url);
-        return authFail ?? handleGetNutshell();
+        return authFail ?? handleGetNutshell(url);
+      }
+      // Fallback room for external-spawn agents that lack CHATBRIDGE_ROOM in their env.
+      if (req.method === "GET" && pathname === "/room-default") {
+        const authFail = requireReadAuth(req, url);
+        return authFail ?? json({ room: DEFAULT_ROOM });
       }
       // Claude session capture for the spawn modal's restore flow.
       if (req.method === "POST" && pathname === "/sessions") {
@@ -2471,8 +2706,8 @@ const server = Bun.serve({
 // Register the human as a permanent roster member.
 if (validName(HUMAN_NAME)) {
   permanentAgents.add(HUMAN_NAME);
-  ensureAgent(HUMAN_NAME);
-  console.log(`[hub] human registered as "${HUMAN_NAME}" (permanent)`);
+  ensureAgent(HUMAN_NAME, null);
+  console.log(`[hub] human registered as "${HUMAN_NAME}" (permanent, all rooms)`);
 } else {
   console.error(`[hub] invalid A2A_HUMAN_NAME "${HUMAN_NAME}" — human not registered`);
 }

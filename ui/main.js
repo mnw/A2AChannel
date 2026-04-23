@@ -102,6 +102,129 @@ const EMOJIS = [
 ];
 
 const NAMES = { you: 'You', system: 'System', all: 'All' };
+
+/* ── Rooms: client-side filter + pause/resume control ─────────
+   The hub scopes protocol broadcasts by room; this UI layer is ONLY
+   responsible for filtering what the human sees (the human is a super-
+   user in every room). Selection persisted across launches in localStorage.
+*/
+const SELECTED_ROOM_KEY = 'a2achannel_selected_room';
+const ROOM_ALL = '__ALL__';
+let SELECTED_ROOM = localStorage.getItem(SELECTED_ROOM_KEY) || ROOM_ALL;
+const roomSwitcherEl   = document.getElementById('room-switcher');
+const pauseRoomBtn     = document.getElementById('pause-room-btn');
+const resumeRoomBtn    = document.getElementById('resume-room-btn');
+
+function distinctRooms() {
+  const rooms = new Set();
+  for (const a of ROSTER) {
+    if (a && typeof a.room === 'string' && a.room) rooms.add(a.room);
+  }
+  return [...rooms].sort();
+}
+
+function renderRoomSwitcher() {
+  if (!roomSwitcherEl) return;
+  const rooms = distinctRooms();
+  roomSwitcherEl.innerHTML = '';
+  const allOpt = document.createElement('option');
+  allOpt.value = ROOM_ALL;
+  allOpt.textContent = 'All rooms';
+  roomSwitcherEl.appendChild(allOpt);
+  for (const r of rooms) {
+    const opt = document.createElement('option');
+    opt.value = r;
+    opt.textContent = `# ${r}`;
+    roomSwitcherEl.appendChild(opt);
+  }
+  // Snap to a valid value if the persisted one was removed (e.g. last agent in that room quit).
+  if (SELECTED_ROOM !== ROOM_ALL && !rooms.includes(SELECTED_ROOM)) {
+    SELECTED_ROOM = ROOM_ALL;
+    localStorage.setItem(SELECTED_ROOM_KEY, ROOM_ALL);
+  }
+  roomSwitcherEl.value = SELECTED_ROOM;
+  updatePauseResumeState();
+  applyRoomFilter();
+}
+
+function updatePauseResumeState() {
+  const hasRoom = SELECTED_ROOM !== ROOM_ALL;
+  if (pauseRoomBtn) pauseRoomBtn.disabled = !hasRoom;
+  if (resumeRoomBtn) resumeRoomBtn.disabled = !hasRoom;
+}
+
+function applyRoomFilter() {
+  document.body.dataset.selectedRoom = SELECTED_ROOM;
+  document.body.classList.toggle('room-filtered', SELECTED_ROOM !== ROOM_ALL);
+  // Per-element visibility: each rendered message/card/tab tags its own `data-room`.
+  // CSS handles the hide — see style.css `body.room-filtered .msg:not([data-room="..."])`.
+  // JS does the dynamic attribute selector via a style rule we keep in sync here.
+  let styleEl = document.getElementById('room-filter-style');
+  if (!styleEl) {
+    styleEl = document.createElement('style');
+    styleEl.id = 'room-filter-style';
+    document.head.appendChild(styleEl);
+  }
+  if (SELECTED_ROOM === ROOM_ALL) {
+    styleEl.textContent = '';
+  } else {
+    const r = CSS.escape(SELECTED_ROOM);
+    // Hide messages, handoff/interrupt/permission cards, roster pills, and terminal tabs
+    // whose data-room doesn't match. Elements without data-room (system events, human
+    // messages without a specific room) stay visible in every view.
+    styleEl.textContent = `
+      body.room-filtered .msg[data-room]:not([data-room="${r}"]),
+      body.room-filtered .handoff-card[data-room]:not([data-room="${r}"]),
+      body.room-filtered .interrupt-card[data-room]:not([data-room="${r}"]),
+      body.room-filtered .permission-card[data-room]:not([data-room="${r}"]),
+      body.room-filtered .legend-item[data-room]:not([data-room="${r}"]),
+      body.room-filtered .terminal-tab[data-room]:not([data-room="${r}"]) {
+        display: none;
+      }
+    `;
+  }
+  // Nutshell strip re-render (if the renderer is already defined).
+  if (typeof renderNutshell === 'function') renderNutshell();
+  // Notify terminal pane so it can refocus to a visible tab — hiding the active
+  // tab via CSS alone leaves the wrong xterm pane showing.
+  document.dispatchEvent(new CustomEvent('a2a:room-filter', {
+    detail: { room: SELECTED_ROOM === ROOM_ALL ? null : SELECTED_ROOM },
+  }));
+}
+
+roomSwitcherEl?.addEventListener('change', () => {
+  SELECTED_ROOM = roomSwitcherEl.value || ROOM_ALL;
+  localStorage.setItem(SELECTED_ROOM_KEY, SELECTED_ROOM);
+  updatePauseResumeState();
+  applyRoomFilter();
+  // Fetch (or refresh) the selected room's nutshell so the strip updates.
+  if (SELECTED_ROOM !== ROOM_ALL) {
+    loadNutshell(SELECTED_ROOM);
+  } else {
+    renderNutshell();
+  }
+});
+
+async function fireRoomInterrupt(text) {
+  if (SELECTED_ROOM === ROOM_ALL) return;
+  try {
+    const r = await authedFetch('/interrupts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: HUMAN_NAME, rooms: [SELECTED_ROOM], text }),
+    });
+    if (!r.ok) {
+      const err = await parseErrorBody(r);
+      addMessage({ from: 'system', to: HUMAN_NAME, text: `Bulk interrupt failed: ${err}`, ts: '' });
+    }
+  } catch (e) {
+    addMessage({ from: 'system', to: HUMAN_NAME, text: `Bulk interrupt error: ${e?.message ?? e}`, ts: '' });
+  }
+}
+pauseRoomBtn?.addEventListener('click', () =>
+  fireRoomInterrupt('Pause — stop current task, hold state, await resume.'));
+resumeRoomBtn?.addEventListener('click', () =>
+  fireRoomInterrupt('Resume — continue previous task.'));
 const COLORS = {};   // name -> hex
 let ROSTER = [];     // [{name, color}, ...]
 
@@ -140,6 +263,7 @@ function applyRoster(agents) {
 
   renderLegend();
   renderTargetDropdown();
+  renderRoomSwitcher();
 }
 
 legendEl.addEventListener('click', async (e) => {
@@ -174,6 +298,8 @@ function renderLegend() {
     const legItem = document.createElement('div');
     legItem.className = 'legend-item offline';
     legItem.dataset.agent = a.name;
+    // Room tag for filtering; human stays visible in every room (no data-room attr).
+    if (!isHuman && typeof a.room === 'string' && a.room) legItem.dataset.room = a.room;
     const removeBtn = isHuman
       ? ''
       : `<button type="button" class="legend-remove" title="Remove agent" aria-label="Remove ${a.name}">×</button>`;
@@ -377,14 +503,15 @@ async function loadPendingPermissions() {
   }
 }
 
-async function loadNutshell() {
+async function loadNutshell(room) {
+  if (!room || room === ROOM_ALL) return;
   try {
-    const r = await authedFetch('/nutshell');
+    const r = await authedFetch(`/nutshell?room=${encodeURIComponent(room)}`);
     if (!r.ok) return;
     const snapshot = await r.json();
     applyNutshell(snapshot);
   } catch (e) {
-    console.warn('[nutshell] initial load failed:', e);
+    console.warn('[nutshell] load failed:', e);
   }
 }
 
@@ -408,6 +535,11 @@ function addMessage(data) {
   const div = document.createElement('div');
   const cls = from === 'you' || from === 'system' ? `from-${from}` : `from-${cssName(from)}`;
   div.className = `msg ${cls}`;
+  // Room tag drives client-side filtering. Messages with no room (system/global events or
+  // human-originated chat without a room hint) lack the attribute entirely and stay visible
+  // in every filtered view — the CSS `[data-room]:not([data-room="x"])` only hides tagged
+  // non-matching rows.
+  if (typeof data.room === 'string' && data.room) div.dataset.room = data.room;
 
   const displayName = NAMES[from] || from;
   const avatar = document.createElement('div');
@@ -721,6 +853,12 @@ async function send() {
   } else {
     body.target = mode;
   }
+  // When the human broadcasts to "all", the hub requires the room scope explicitly
+  // (otherwise "all" is ambiguous across projects). Pass the current room filter.
+  if ((body.target === 'all' || (Array.isArray(body.targets) && body.targets.length === 0))
+      && SELECTED_ROOM !== ROOM_ALL) {
+    body.room = SELECTED_ROOM;
+  }
 
   sendBtn.disabled = true;
   input.value = '';
@@ -997,6 +1135,7 @@ function buildHandoffCardDom(snapshot, event) {
   const el = document.createElement('div');
   el.className = 'handoff-card';
   el._handoffId = snapshot.id;
+  if (typeof snapshot.room === 'string' && snapshot.room) el.dataset.room = snapshot.room;
   updateHandoffCardDom(el, snapshot, event);
   return el;
 }
@@ -1140,6 +1279,7 @@ function buildInterruptCardDom(snapshot, event) {
   const el = document.createElement('div');
   el.className = 'interrupt-card';
   el._interruptId = snapshot.id;
+  if (typeof snapshot.room === 'string' && snapshot.room) el.dataset.room = snapshot.room;
   updateInterruptCardDom(el, snapshot, event);
   return el;
 }
@@ -1235,6 +1375,7 @@ function buildPermissionCardDom(snapshot, event) {
   const el = document.createElement('div');
   el.className = 'permission-card';
   el._permissionId = snapshot.id;
+  if (typeof snapshot.room === 'string' && snapshot.room) el.dataset.room = snapshot.room;
   updatePermissionCardDom(el, snapshot, event);
   return el;
 }
@@ -1327,28 +1468,52 @@ const nutshellEditor    = document.getElementById('nutshell-editor');
 const nutshellTextarea  = document.getElementById('nutshell-editor-textarea');
 const nutshellSubmit    = document.getElementById('nutshell-editor-submit');
 const nutshellCancel    = document.getElementById('nutshell-editor-cancel');
-let nutshellCurrent = { text: '', version: 0, updated_at_ms: 0, updated_by: null };
+// Nutshell is per-room. Cache by room label so SSE updates for any room stick;
+// only the currently-selected room renders in the strip.
+const nutshellByRoom = new Map(); // room -> { text, version, updated_at_ms, updated_by }
+const EMPTY_NUTSHELL = { text: '', version: 0, updated_at_ms: 0, updated_by: null };
+
+function currentNutshell() {
+  if (SELECTED_ROOM === ROOM_ALL) return null;
+  return nutshellByRoom.get(SELECTED_ROOM) ?? EMPTY_NUTSHELL;
+}
 
 function applyNutshell(snapshot) {
   if (!snapshot || typeof snapshot !== 'object') return;
-  nutshellCurrent = {
+  // Hub always returns a `room` field in v0.9+. Fall back defensively if missing
+  // (e.g. during a mid-rollout downgrade), storing under "default".
+  const room = (typeof snapshot.room === 'string' && snapshot.room) ? snapshot.room : 'default';
+  nutshellByRoom.set(room, {
     text: snapshot.text ?? '',
     version: snapshot.version ?? 0,
     updated_at_ms: snapshot.updated_at_ms ?? 0,
     updated_by: snapshot.updated_by ?? null,
-  };
-  renderNutshell();
-  nutshellEl.classList.add('flash');
-  setTimeout(() => nutshellEl.classList.remove('flash'), 1400);
+  });
+  // Only re-render if the update is for the currently-viewed room.
+  if (SELECTED_ROOM === room) {
+    renderNutshell();
+    nutshellEl.classList.add('flash');
+    setTimeout(() => nutshellEl.classList.remove('flash'), 1400);
+  }
 }
 
 const NUTSHELL_PREVIEW_MAX = 125;
 
 function renderNutshell() {
   nutshellEl.style.display = 'flex';
-  const txt = nutshellCurrent.text.trim();
+  if (SELECTED_ROOM === ROOM_ALL) {
+    nutshellBodyEl.textContent = 'Select a room to see its summary.';
+    nutshellBodyEl.classList.add('empty');
+    nutshellBodyEl.removeAttribute('title');
+    nutshellMetaEl.textContent = '';
+    if (nutshellEditBtn) nutshellEditBtn.disabled = true;
+    return;
+  }
+  if (nutshellEditBtn) nutshellEditBtn.disabled = false;
+  const snap = nutshellByRoom.get(SELECTED_ROOM) ?? EMPTY_NUTSHELL;
+  const txt = (snap.text ?? '').trim();
   if (!txt) {
-    nutshellBodyEl.textContent = 'No project summary yet — agents or the human can propose one.';
+    nutshellBodyEl.textContent = `No summary for #${SELECTED_ROOM} yet — agents or the human can propose one.`;
     nutshellBodyEl.classList.add('empty');
     nutshellBodyEl.removeAttribute('title');
   } else {
@@ -1359,16 +1524,17 @@ function renderNutshell() {
     nutshellBodyEl.classList.remove('empty');
     nutshellBodyEl.title = txt;
   }
-  if (nutshellCurrent.version > 0) {
-    const who = nutshellCurrent.updated_by || 'system';
-    nutshellMetaEl.textContent = `v${nutshellCurrent.version} · by ${who}`;
+  if (snap.version > 0) {
+    const who = snap.updated_by || 'system';
+    nutshellMetaEl.textContent = `#${SELECTED_ROOM} · v${snap.version} · by ${who}`;
   } else {
-    nutshellMetaEl.textContent = '';
+    nutshellMetaEl.textContent = `#${SELECTED_ROOM}`;
   }
 }
 
 function openNutshellEditor() {
-  nutshellTextarea.value = nutshellCurrent.text || '';
+  const snap = currentNutshell();
+  nutshellTextarea.value = snap?.text || '';
   nutshellEditor.classList.add('open');
   nutshellTextarea.focus();
   nutshellTextarea.select();
@@ -1379,15 +1545,22 @@ function closeNutshellEditor() {
 }
 
 async function submitNutshellProposal() {
+  if (SELECTED_ROOM === ROOM_ALL) {
+    addMessage({ from: 'system', to: HUMAN_NAME, text: 'Select a room before editing its nutshell.', ts: '' });
+    closeNutshellEditor();
+    return;
+  }
   const patch = nutshellTextarea.value.trim();
-  if (patch === (nutshellCurrent.text || '').trim()) {
+  const current = currentNutshell();
+  if (patch === ((current?.text || '').trim())) {
     closeNutshellEditor();
     return;
   }
   nutshellSubmit.disabled = true;
   try {
     // Nutshell edits flow through the handoff primitive — the accept path detects
-    // the "[nutshell]" task prefix and applies context.patch atomically.
+    // the "[nutshell]" task prefix and applies context.patch atomically. `context.room`
+    // tells the hub which room's nutshell to update (human is super-user so any room is ok).
     const r = await authedFetch('/handoffs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1395,7 +1568,7 @@ async function submitNutshellProposal() {
         from: HUMAN_NAME,
         to: HUMAN_NAME,
         task: '[nutshell] human edit',
-        context: { patch },
+        context: { patch, room: SELECTED_ROOM },
         ttl_seconds: 3600,
       }),
     });
@@ -1507,11 +1680,20 @@ async function bootstrap() {
   }
   try {
     await loadRoster();
-    await loadNutshell();
+    // Nutshell is per-room in v0.9+. Fetch the current selection's room (or each
+    // distinct room we know about, so switching rooms is instant post-boot).
+    if (SELECTED_ROOM !== ROOM_ALL) {
+      await loadNutshell(SELECTED_ROOM);
+    } else {
+      for (const r of distinctRooms()) {
+        loadNutshell(r); // fire-and-forget; cache by room
+      }
+    }
     await loadPendingHandoffs();
     await loadPendingInterrupts();
     await loadPendingPermissions();
     connect();
+    renderNutshell();
   } catch (e) {
     statusText.textContent = `roster load failed: ${e}`;
     dot.className = 'dot error';
@@ -1617,8 +1799,10 @@ if (reloadBtn) {
       lastSeenId = 0;
       localStorage.setItem('a2achannel_last_event_id', '0');
       interruptCards.clear();
+      permissionCards.clear();
+      nutshellByRoom.clear();
       connect();
-      await loadNutshell();
+      if (SELECTED_ROOM !== ROOM_ALL) await loadNutshell(SELECTED_ROOM);
       await loadPendingHandoffs();
       await loadPendingInterrupts();
       addMessage({

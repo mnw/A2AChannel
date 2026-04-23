@@ -32,6 +32,8 @@
   const spawnAgentEl  = document.getElementById('spawn-agent-input');
   const spawnCwdEl    = document.getElementById('spawn-cwd-input');
   const spawnCwdPick  = document.getElementById('spawn-cwd-pick');
+  const spawnRoomEl   = document.getElementById('spawn-room-input');
+  const spawnRoomList = document.getElementById('spawn-room-datalist');
   const spawnCancel   = document.getElementById('spawn-cancel');
   const spawnSubmit   = document.getElementById('spawn-submit');
   const spawnSessionContinue = document.getElementById('spawn-session-continue');
@@ -155,11 +157,12 @@
     localStorage.setItem('a2achannel_agent_cwds', JSON.stringify(cwdCache));
   }
 
-  async function ptySpawn(agent, cwd, sessionMode) {
+  async function ptySpawn(agent, cwd, sessionMode, room) {
     const args = { agent, cwd };
     if (sessionMode === 'resume' || sessionMode === 'continue') {
       args.sessionMode = sessionMode;
     }
+    if (room) args.room = room;
     return invoke('pty_spawn', args);
   }
   async function ptyWrite(agent, b64) {
@@ -206,6 +209,12 @@
     tabEl.className = 'terminal-tab';
     tabEl.dataset.agent = agent;
     tabEl.dataset.state = 'external';
+    // Carry the agent's room on the tab so main.js's room filter hides cross-room tabs.
+    // Looked up from the live roster (set by the hub on agent-stream connect).
+    if (typeof ROSTER !== 'undefined' && Array.isArray(ROSTER)) {
+      const ra = ROSTER.find((x) => x && x.name === agent);
+      if (ra && typeof ra.room === 'string' && ra.room) tabEl.dataset.room = ra.room;
+    }
     tabEl.innerHTML =
       '<span class="state-dot"></span>' +
       '<span class="tab-label"></span>' +
@@ -481,7 +490,7 @@
     });
   }
 
-  async function handleLaunch(agent, cwd, sessionMode = null) {
+  async function handleLaunch(agent, cwd, sessionMode = null, room = null) {
     if (!_paneEnabled) {
       _paneEnabled = true;
       applyPaneClass();
@@ -497,7 +506,7 @@
     t._launchStage = stage;
     try {
       stage('invoke pty_spawn');
-      await ptySpawn(agent, cwd, sessionMode);
+      await ptySpawn(agent, cwd, sessionMode, room);
       stage('pty_spawn returned');
       rememberCwd(agent, cwd);
       t.cwd = cwd;
@@ -552,12 +561,57 @@
   function openSpawnModal(prefillAgent = '', prefillCwd = '') {
     spawnAgentEl.value = prefillAgent;
     spawnCwdEl.value = prefillCwd;
+    if (spawnRoomEl) spawnRoomEl.value = '';
+    refreshSpawnRoomDatalist();
     if (spawnSessionContinue) spawnSessionContinue.checked = false;
     if (spawnSessionResume)   spawnSessionResume.checked = false;
     spawnModal.classList.add('open');
     setTimeout(() => spawnAgentEl.focus(), 0);
   }
+
+  // Populate the <datalist> with rooms currently in the roster (minus the human)
+  // for one-click autocomplete in the Room input.
+  function refreshSpawnRoomDatalist() {
+    if (!spawnRoomList) return;
+    const rooms = new Set();
+    if (typeof ROSTER !== 'undefined' && Array.isArray(ROSTER)) {
+      for (const a of ROSTER) {
+        if (a && typeof a.room === 'string' && a.room) rooms.add(a.room);
+      }
+    }
+    spawnRoomList.innerHTML = '';
+    for (const r of [...rooms].sort()) {
+      const opt = document.createElement('option');
+      opt.value = r;
+      spawnRoomList.appendChild(opt);
+    }
+  }
   document.addEventListener('a2a:open-spawn', () => openSpawnModal());
+
+  // Room filter changed — if the currently-active tab is now hidden, swap to the
+  // first tab whose room matches (or any visible tab when the filter is cleared).
+  // CSS `display:none` hides the tab chrome, but the active pane below stays
+  // visible; without a refocus the user sees the wrong xterm contents.
+  document.addEventListener('a2a:room-filter', (e) => {
+    const filterRoom = e?.detail?.room ?? null;
+    const visible = (agentName) => {
+      const t = tabs.get(agentName);
+      if (!t) return false;
+      if (filterRoom === null) return true;
+      const r = t.tabEl.dataset.room;
+      return !r || r === filterRoom;
+    };
+    if (activeAgent && visible(activeAgent)) return;
+    for (const name of tabs.keys()) {
+      if (visible(name)) { focusTab(name); return; }
+    }
+    // No visible tabs: clear active so the empty-state renders instead of a stale pane.
+    if (activeAgent) {
+      const prev = tabs.get(activeAgent);
+      if (prev) prev.paneEl.classList.remove('active');
+      activeAgent = null;
+    }
+  });
   function closeSpawnModal() { spawnModal.classList.remove('open'); }
   spawnCancel?.addEventListener('click', closeSpawnModal);
   spawnModal?.addEventListener('click', (e) => {
@@ -565,22 +619,40 @@
   });
   spawnCwdPick?.addEventListener('click', async () => {
     const dir = await pickDirectory();
-    if (dir) spawnCwdEl.value = dir;
+    if (!dir) return;
+    spawnCwdEl.value = dir;
+    // Pre-fill Room with the git-root basename (walks up looking for .git) so the
+    // common case is one-click. User can still override or blank it.
+    if (spawnRoomEl && !spawnRoomEl.value.trim()) {
+      try {
+        const suggested = await invoke('resolve_default_room', { cwd: dir });
+        if (typeof suggested === 'string' && suggested) {
+          spawnRoomEl.value = suggested;
+        }
+      } catch (e) {
+        console.warn('[terminal] resolve_default_room failed:', e);
+      }
+    }
   });
 
   spawnSubmit?.addEventListener('click', async () => {
     const agent = spawnAgentEl.value.trim();
     const cwd = spawnCwdEl.value.trim();
+    const room = (spawnRoomEl?.value ?? '').trim();
     if (!NAME_RE.test(agent)) {
       alert('Invalid agent name (letters, digits, _.-, spaces in the middle).');
       return;
     }
     if (!cwd) { alert('Pick a working directory.'); return; }
+    if (room && !NAME_RE.test(room)) {
+      alert('Invalid room label (same charset as agent names). Leave blank to auto-detect from cwd.');
+      return;
+    }
     let sessionMode = null;
     if (spawnSessionContinue?.checked) sessionMode = 'continue';
     else if (spawnSessionResume?.checked) sessionMode = 'resume';
     closeSpawnModal();
-    await handleLaunch(agent, cwd, sessionMode);
+    await handleLaunch(agent, cwd, sessionMode, room || null);
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && spawnModal.classList.contains('open')) closeSpawnModal();
@@ -603,6 +675,15 @@
       if (!tabs.has(name)) {
         ensureTab(name);
         setTabState(name, 'external');
+      }
+      // Idempotently refresh the room attr on each tab from the live roster —
+      // handles the race where a tab is created before the roster carries the room.
+      const tab = tabs.get(name);
+      if (tab && typeof ROSTER !== 'undefined' && Array.isArray(ROSTER)) {
+        const ra = ROSTER.find((x) => x && x.name === name);
+        if (ra && typeof ra.room === 'string' && ra.room) {
+          tab.tabEl.dataset.room = ra.room;
+        }
       }
     }
 

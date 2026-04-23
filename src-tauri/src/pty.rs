@@ -91,8 +91,9 @@ fn mcp_configs_dir() -> PathBuf {
 }
 
 // Written (0600) on every spawn so stale values self-heal. Loaded additively via `--mcp-config`;
-// the user's cwd `.mcp.json` is still honored.
-fn write_mcp_config_for(agent: &str) -> Result<PathBuf, String> {
+// the user's cwd `.mcp.json` is still honored. `room` is baked into the env so channel-bin
+// scopes its /agent-stream subscription correctly.
+fn write_mcp_config_for(agent: &str, room: &str) -> Result<PathBuf, String> {
     use std::os::unix::fs::PermissionsExt;
     let dir = mcp_configs_dir();
     std::fs::create_dir_all(&dir)
@@ -107,7 +108,8 @@ fn write_mcp_config_for(agent: &str) -> Result<PathBuf, String> {
                 "args": [],
                 "env": {
                     "A2A_MODE": "channel",
-                    "CHATBRIDGE_AGENT": agent
+                    "CHATBRIDGE_AGENT": agent,
+                    "CHATBRIDGE_ROOM": room
                 }
             }
         }
@@ -121,8 +123,8 @@ fn write_mcp_config_for(agent: &str) -> Result<PathBuf, String> {
 
 // Build the claude invocation. Direct-exec (no shell), so claude_path must be absolute —
 // comes from config.json to avoid paying the .zshrc-loading cost on every spawn.
-fn claude_command(agent: &str, session_mode: Option<&str>) -> Result<String, String> {
-    let cfg_path = write_mcp_config_for(agent)?;
+fn claude_command(agent: &str, room: &str, session_mode: Option<&str>) -> Result<String, String> {
+    let cfg_path = write_mcp_config_for(agent, room)?;
     let path_str = cfg_path.to_string_lossy().replace('\'', r"'\''");
     let mode_part = match session_mode {
         Some("continue") => "--continue ",
@@ -137,6 +139,42 @@ fn claude_command(agent: &str, session_mode: Option<&str>) -> Result<String, Str
     ))
 }
 
+// Validate a room label: 1..=64 chars, [A-Za-z0-9_.-] + spaces, no leading/trailing space.
+// Mirrors hub.ts validRoomLabel so the two ends agree.
+fn valid_room_label(room: &str) -> bool {
+    let n = room.chars().count();
+    if !(1..=64).contains(&n) {
+        return false;
+    }
+    if matches!(room.chars().next(), Some(' ')) || matches!(room.chars().last(), Some(' ')) {
+        return false;
+    }
+    room.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' || c == ' ')
+}
+
+// Walk up from `cwd` looking for a `.git` directory; return that directory's basename.
+// Falls back to the cwd basename when no git root is found. Empty string only if both
+// paths have no filename component (pathological). Used as the spawn-modal's Room default.
+pub fn default_room_for_cwd(cwd: &std::path::Path) -> String {
+    let mut p = cwd;
+    loop {
+        if p.join(".git").exists() {
+            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                return name.to_string();
+            }
+        }
+        match p.parent() {
+            Some(parent) => p = parent,
+            None => break,
+        }
+    }
+    cwd.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("default")
+        .to_string()
+}
+
 #[tauri::command]
 pub fn pty_spawn(
     app: AppHandle,
@@ -144,10 +182,18 @@ pub fn pty_spawn(
     agent: String,
     cwd: String,
     session_mode: Option<String>,
+    room: Option<String>,
 ) -> Result<(), String> {
     if !valid_agent_name(&agent) {
         return Err(format!("invalid agent name: {agent}"));
     }
+
+    // Resolve room: explicit arg → validated; empty/missing → git-root basename fallback.
+    let resolved_room = match room.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(r) if valid_room_label(r) => r.to_string(),
+        Some(r) => return Err(format!("invalid room: {r}")),
+        None => default_room_for_cwd(std::path::Path::new(&cwd)),
+    };
 
     {
         let map = state.0.lock().unwrap();
@@ -156,7 +202,7 @@ pub fn pty_spawn(
         }
     }
 
-    let spawn_cmd = claude_command(&agent, session_mode.as_deref())?;
+    let spawn_cmd = claude_command(&agent, &resolved_room, session_mode.as_deref())?;
     let api_key = resolve_anthropic_api_key();
 
     // UTF-8 locale for the session. GUI launches under launchd inherit
@@ -363,4 +409,11 @@ pub fn pty_list() -> Result<Vec<String>, String> {
         .filter(|l| valid_agent_name(l))
         .collect();
     Ok(names)
+}
+
+// Spawn-modal prefill: given a cwd string, return the git-root basename (or cwd basename).
+// Stays a pure function of the filesystem; no hub round-trip needed.
+#[tauri::command]
+pub fn resolve_default_room(cwd: String) -> String {
+    default_room_for_cwd(std::path::Path::new(&cwd))
 }

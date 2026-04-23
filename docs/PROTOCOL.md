@@ -448,6 +448,99 @@ No direct POST/PUT; use the handoff flow above.
 
 ---
 
+## Rooms (v0.9)
+
+A **room** is a first-class routing dimension that lets one hub host multiple
+isolated projects in a single window without cross-project context pollution.
+Every agent is registered in exactly one room; the human is a super-user in
+every room.
+
+### Identity
+
+- Agent room is captured on first `/agent-stream` connect for that agent
+  (`&room=<label>` query param, mirrored into each MCP config as
+  `CHATBRIDGE_ROOM=<label>`). Room is **immutable** for the lifetime of the
+  agent's presence in the hub — reconnects with a different room arg are
+  ignored.
+- The human's room is `null` in the roster record, which the broadcast layer
+  treats as "every room". There is no `CHATBRIDGE_ROOM` equivalent for the
+  webview.
+- Room labels follow the same charset + length rules as agent names
+  (`[A-Za-z0-9_.-]` plus internal spaces, 1..=64 chars).
+
+### Routing scope
+
+For any event from sender `S` targeting room `R`:
+
+```
+recipients(event) =
+    agents whose room == R           // same-room peers
+  ∪ {human}                          // super-user
+  ∪ ({event.to} if named peer)       // explicit cross-room
+```
+
+`target: "all"` from an agent expands to same-room peers + human. `target: "all"`
+from the human requires an explicit `room` in the request body (otherwise "all"
+is ambiguous across projects). Explicit `to: "<name>"` always delivers,
+crossing rooms when needed — useful for pulling in a reviewer from another
+project.
+
+### Per-kind rules
+
+| Kind | Same-room only? | Notes |
+|---|---|---|
+| `chat` (`/post`, `/send`) | Yes for `target: "all"`; No for named target | Sender's room tagged on entry. |
+| `handoff` | Yes (from non-human) | 403 `cross-room handoff not permitted` otherwise. Human is super-user. |
+| `interrupt` (single) | Yes (from non-human) | 403 `cross-room interrupt not permitted`. |
+| `interrupt` (bulk) | Human-only | `{ from: <human>, rooms: [<labels>], text }`. Fans out one interrupt per non-human agent in each listed room. |
+| `permission` request | Fan-out scoped to same room | Peers in other rooms never see the prompt. |
+| `permission` verdict | Voter must be same-room or human | 403 `cross-room verdict not permitted` otherwise. |
+| `nutshell` | One row per room | Edits propagate to same-room agents live + included in briefing on connect. |
+
+### Nutshell per room
+
+- Table schema: `nutshell(room TEXT PRIMARY KEY, text, version, updated_at_ms, updated_by)`.
+- `GET /nutshell?room=<label>` is now required; no-arg returns 400.
+- Empty sentinel returned when a room has no row: `{ room, text: "", version: 0, ... }`.
+- Edit handoff: `context = { patch: "<text>", room: "<label>" }`. The accept
+  path keys the write by that room (the human can target any room;
+  non-human senders are restricted to their own).
+- `nutshell.updated` SSE carries `room`; channel-bin forwards the update to
+  same-room agents live (not just on next reconnect).
+
+### Wire format
+
+Every `/stream` payload and every `<channel>` tag forwarded by channel-bin
+now includes a `room` field. The value is:
+
+- The sender's room for agent-originated events.
+- The target room for human-originated broadcasts (`/send` `room` body field).
+- `null` for strictly global events (roster snapshots, presence).
+
+Channel-bin re-validates `meta.room` against its configured `CHATBRIDGE_ROOM`
+on every inbound event, dropping mismatches as defense-in-depth (mirrors the
+upstream ["Gate inbound messages"](https://code.claude.com/docs/en/channels-reference#gate-inbound-messages)
+pattern). Dropped events hit stderr with an explicit mismatch log so a hub
+routing bug would show up as a surge, not silent context pollution.
+
+### HTTP
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/room-default` | Returns `{ room: <A2A_DEFAULT_ROOM> }`; read-auth. Used as fallback when an external-spawn channel-bin has no `CHATBRIDGE_ROOM`. |
+
+### Pause / Resume
+
+A UI affordance on top of the existing `interrupt` primitive — not a new
+kind. The Pause button POSTs `/interrupts` with the bulk shape targeting
+the selected room, canned text `"Pause — stop current task, hold state,
+await resume."`. Resume does the same with the Resume text. Cooperative,
+not preemptive — agents finish their current tool call before reading the
+card. See [CLAUDE.md → hard rules](../CLAUDE.md) for why bulk targeting is
+human-only.
+
+---
+
 ## The briefing (onboarding notification)
 
 When an agent's channel sidecar connects to `/agent-stream` for the first

@@ -10,6 +10,14 @@ Claude Code sub-agents share their parent's context. Separate Claude Code sessio
 
 The coordination is a protocol, not a chat app. Every message is a typed primitive with durable state, logged to an append-only SQLite ledger. You're in the room too. Handoffs and interrupts persist across restarts; pending work replays to the right agent on reconnect.
 
+## Rooms
+
+Every agent is registered in exactly one **room**; the human is a super-user visible in every room. `target: "all"` broadcasts, same-room agent-to-agent handoffs, and per-room nutshells all fan out within a room — no cross-project context pollution. Explicit peer targeting (`to: "<name>"`) still crosses rooms when you want it to.
+
+The spawn modal's **Room** field defaults to the git-root basename of the chosen cwd (walks up looking for `.git`; falls back to cwd basename). A datalist suggests rooms already in use. External-spawn agents without `CHATBRIDGE_ROOM` fall back to `default`.
+
+A **Pause / Resume** pair of buttons next to the room switcher fans out canned interrupts to every agent in the currently-selected room — cooperative stop-and-re-read, not preemption.
+
 ## Four primitives
 
 ### Messages — `post`, `post_file`

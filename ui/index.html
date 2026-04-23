@@ -26,6 +26,15 @@
     </div>
 
     <div class="status-cluster">
+      <div class="room-controls" id="room-controls" title="Filter the view to a single room">
+        <select id="room-switcher" aria-label="Room filter"></select>
+        <button type="button" class="icon-btn" id="pause-room-btn" title="Pause all agents in the selected room" aria-label="Pause room" disabled>
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+        </button>
+        <button type="button" class="icon-btn" id="resume-room-btn" title="Resume all agents in the selected room" aria-label="Resume room" disabled>
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+        </button>
+      </div>
       <div class="status-pill" id="status-pill">
         <div class="dot" id="dot"></div>
         <span id="status-text">connecting…</span>
@@ -122,6 +131,9 @@
       <input id="spawn-cwd-input" spellcheck="false" autocomplete="off" placeholder="/Users/you/project" style="flex:1;" readonly />
       <button type="button" id="spawn-cwd-pick">Pick…</button>
     </div>
+    <label>Room</label>
+    <input id="spawn-room-input" list="spawn-room-datalist" spellcheck="false" autocomplete="off" placeholder="defaults to git-root basename" style="width:100%;" />
+    <datalist id="spawn-room-datalist"></datalist>
     <div id="spawn-session-row" style="margin-top:6px;">
       <label style="text-transform:uppercase; letter-spacing:0.1em; font-family:var(--mono); font-size:10px; color:var(--text-dim);">Session</label>
       <div style="display:flex; flex-direction:column; gap:6px; margin-top:4px; font-family:var(--sans); font-size:12px; color:var(--text-muted);">
