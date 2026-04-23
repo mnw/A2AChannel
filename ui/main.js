@@ -111,6 +111,84 @@ const NAMES = { you: 'You', system: 'System', all: 'All' };
 const SELECTED_ROOM_KEY = 'a2achannel_selected_room';
 const ROOM_ALL = '__ALL__';
 let SELECTED_ROOM = localStorage.getItem(SELECTED_ROOM_KEY) || ROOM_ALL;
+
+/* ── Usage pill: session + weekly plan limits ──────────────────────
+   Populated passively by terminal.js when any agent's output includes
+   the Claude Code usage banner. Reset deltas are stored as absolute
+   epoch ms so the header ticks down correctly without any further
+   source events. Stale > 15 min dims the chip; expired resets read "now". */
+const USAGE_STORAGE_KEY = 'a2achannel_usage';
+const USAGE_STALE_MS = 15 * 60 * 1000;
+const usage = { session: null, weekly: null };
+try {
+  const raw = localStorage.getItem(USAGE_STORAGE_KEY);
+  if (raw) Object.assign(usage, JSON.parse(raw));
+} catch {}
+
+function usageLevel(pct) {
+  if (pct >= 90) return 'danger';
+  if (pct >= 75) return 'warn';
+  return 'ok';
+}
+function formatResetDelta(resetAtMs) {
+  const remaining = resetAtMs - Date.now();
+  if (remaining <= 0) return 'resets now';
+  const mins = Math.floor(remaining / 60_000);
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return h > 0 ? `resets ${h}h ${m}m` : `resets ${m}m`;
+}
+function renderUsageChip(kind, snap) {
+  const el = document.getElementById(kind === 'session' ? 'usage-session' : 'usage-weekly');
+  if (!el) return;
+  const pctEl = el.querySelector('.usage-pct');
+  const resetEl = el.querySelector('.usage-reset');
+  if (!snap) {
+    el.dataset.empty = '1';
+    delete el.dataset.level;
+    delete el.dataset.stale;
+    pctEl.textContent = '—';
+    resetEl.textContent = 'no data';
+    el.title = `Run /cost in any agent to populate ${kind}.`;
+    return;
+  }
+  delete el.dataset.empty;
+  el.dataset.level = usageLevel(snap.pct);
+  const age = Date.now() - snap.capturedAtMs;
+  if (age > USAGE_STALE_MS) el.dataset.stale = '1'; else delete el.dataset.stale;
+  pctEl.textContent = `${snap.pct}%`;
+  resetEl.textContent = formatResetDelta(snap.resetAtMs);
+  const capturedFrom = snap.sourceAgent || 'unknown';
+  const capturedAt = new Date(snap.capturedAtMs).toLocaleTimeString();
+  el.title = `${kind === 'session' ? 'Current session' : 'Weekly limits (all models)'}: ${snap.pct}% used\nlast seen from ${capturedFrom} at ${capturedAt}`;
+}
+function renderUsage() {
+  renderUsageChip('session', usage.session);
+  renderUsageChip('weekly', usage.weekly);
+}
+function persistUsage() {
+  try { localStorage.setItem(USAGE_STORAGE_KEY, JSON.stringify(usage)); } catch {}
+}
+document.addEventListener('a2a:usage', (e) => {
+  const snap = e?.detail;
+  if (!snap || (snap.kind !== 'session' && snap.kind !== 'weekly')) return;
+  usage[snap.kind] = snap;
+  persistUsage();
+  renderUsage();
+});
+// Tick once a minute so "resets in 3h 51m" drifts down without a source event.
+setInterval(renderUsage, 60_000);
+// Click-to-copy the reset delta.
+for (const id of ['usage-session', 'usage-weekly']) {
+  document.getElementById(id)?.addEventListener('click', () => {
+    const kind = id === 'usage-session' ? 'session' : 'weekly';
+    const snap = usage[kind];
+    if (!snap) return;
+    navigator.clipboard?.writeText(`${snap.pct}% used · ${formatResetDelta(snap.resetAtMs)}`);
+  });
+}
+// Initial paint (picks up last-session values from localStorage).
+renderUsage();
 const roomSwitcherEl   = document.getElementById('room-switcher');
 const roomDisplayBtn   = document.getElementById('room-display');
 const roomDisplayText  = roomDisplayBtn?.querySelector('.room-display-text');

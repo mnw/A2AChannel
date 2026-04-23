@@ -16,9 +16,16 @@ use crate::{
     resolve_tmux_bin,
 };
 
+// Reserved tmux session name for the human's pinned shell. Kept separate from agent
+// sessions so it survives room filters and can't be confused with an agent entry.
+pub const SHELL_SESSION_NAME: &str = "shell";
+
 // Mirrors hub.ts AGENT_NAME_RE — re-enforced here so a bypassed UI validator can't
-// smuggle shell metacharacters into tmux argv.
+// smuggle shell metacharacters into tmux argv. Also rejects the reserved shell name.
 pub fn valid_agent_name(name: &str) -> bool {
+    if name == SHELL_SESSION_NAME {
+        return false;
+    }
     let n = name.chars().count();
     if !(1..=64).contains(&n) {
         return false;
@@ -386,6 +393,146 @@ pub fn pty_kill(agent: String) -> Result<(), String> {
     }
     tmux_run(&["kill-session", "-t", &agent])?;
     Ok(())
+}
+
+// Spawn (or idempotently attach to) the pinned "shell" tmux session — the human's
+// own scratch shell for cd / ls / git etc. No claude, no MCP, no room. Key `shell`
+// in the PTY registry. Outputs stream via `pty://output/shell`. Survives app
+// restart like agent sessions. Cross-room / cross-project by design.
+#[tauri::command]
+pub fn pty_spawn_shell(
+    app: AppHandle,
+    state: State<'_, PtyRegistry>,
+) -> Result<(), String> {
+    let name = SHELL_SESSION_NAME;
+    {
+        let map = state.0.lock().unwrap();
+        if map.contains_key(name) {
+            return Ok(()); // already attached
+        }
+    }
+
+    // Reuse the agent-session locale rule — claude isn't spawned here, but user shells
+    // in a GUI-launched process inherit a blank locale from launchd and end up with "C".
+    let lang = std::env::var("LANG")
+        .ok()
+        .filter(|v| v.to_lowercase().contains("utf"))
+        .unwrap_or_else(|| "en_US.UTF-8".to_string());
+    let lang_env = format!("LANG={lang}");
+    let lc_all_env = format!("LC_ALL={lang}");
+
+    let user_shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    // -i + -l for parity with Terminal.app: explicit interactive + login. Without -i, zsh
+    // still auto-enables interactive mode when stdin is a PTY, but some plugins' guards
+    // (`[[ -o interactive ]]`) fire more reliably with the flag set explicitly.
+    let shell_cmd = format!("'{}' -il", user_shell.replace('\'', r"'\''"));
+
+    if session_exists(name) {
+        let _ = tmux_run(&["set-option", "-t", name, "remain-on-exit", "off"]);
+        let _ = tmux_run(&["set-option", "-t", name, "status", "off"]);
+        let _ = tmux_run(&["set-environment", "-t", name, "TERM", "xterm-256color"]);
+        let _ = tmux_run(&["set-environment", "-t", name, "LANG", &lang]);
+        let _ = tmux_run(&["set-environment", "-t", name, "LC_ALL", &lang]);
+    } else {
+        let args: Vec<&str> = vec![
+            "new-session", "-d", "-s", name,
+            "-e", "TERM=xterm-256color",
+            "-e", &lang_env,
+            "-e", &lc_all_env,
+            "-x", "80",
+            "-y", "24",
+            "-c", &home,
+            &shell_cmd,
+        ];
+        tmux_run(&args)?;
+        let _ = tmux_run(&["set-option", "-t", name, "status", "off"]);
+    }
+
+    let tmux = resolve_tmux_bin()?;
+    let sock = tmux_socket_path();
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| format!("openpty: {e}"))?;
+
+    let mut builder = CommandBuilder::new(tmux);
+    builder.arg("-S");
+    builder.arg(sock);
+    builder.arg("attach-session");
+    builder.arg("-t");
+    builder.arg(name);
+    builder.env("TERM", "xterm-256color");
+    builder.env("LANG", &lang);
+    builder.env("LC_ALL", &lang);
+
+    let child = pair
+        .slave
+        .spawn_command(builder)
+        .map_err(|e| format!("spawn attach-session: {e}"))?;
+    drop(pair.slave);
+
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| format!("take_writer: {e}"))?;
+    let reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| format!("clone_reader: {e}"))?;
+
+    {
+        let mut map = state.0.lock().unwrap();
+        map.insert(
+            name.to_string(),
+            Arc::new(Mutex::new(PtyHandle {
+                master: pair.master,
+                writer,
+                _child: child,
+            })),
+        );
+    }
+
+    let app_clone = app.clone();
+    let name_clone = name.to_string();
+    let registry = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut reader = reader;
+        let mut buf = [0u8; 8192];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let b64 = B64.encode(&buf[..n]);
+                    let _ = app_clone.emit(
+                        &format!("pty://output/{}", name_clone),
+                        OutputPayload {
+                            agent: name_clone.clone(),
+                            b64,
+                        },
+                    );
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = app_clone.emit(&format!("pty://exit/{}", name_clone), &name_clone);
+        let mut map = registry.lock().unwrap();
+        map.remove(&name_clone);
+    });
+
+    Ok(())
+}
+
+// Is the shell tmux session currently live on our socket? Used by the UI to decide
+// whether to auto-spawn on first pane-open.
+#[tauri::command]
+pub fn pty_shell_exists() -> Result<bool, String> {
+    Ok(session_exists(SHELL_SESSION_NAME))
 }
 
 #[tauri::command]

@@ -18,6 +18,12 @@ The spawn modal's **Room** field defaults to the git-root basename of the chosen
 
 A **Pause / Resume** pair of buttons next to the room switcher fans out canned interrupts to every agent in the currently-selected room — cooperative stop-and-re-read, not preemption.
 
+## Human affordances
+
+**Shell tab** — pinned to the top of the terminal pane, cross-room, cross-project. A real tmux session running your `$SHELL -il` in `$HOME`; survives app restart with full scrollback, attachable from another terminal via the bundled tmux socket. Runs whatever you want — nvim, lazygit, fzf, docker, your dev server. Separate from agent tabs; `claude` belongs in an `+ agent` tab, not here.
+
+**Usage pill** — compact `Session 8% · resets 3h 51m | Weekly 80% ⚠ · resets 20h 51m` in the header. Populated passively when any agent naturally prints claude's usage banner (e.g. on `/cost`). No polling, no API calls, no effect on your sessions. Ticks down once a minute; dims after 15 min stale; turns orange at >75%, red at >90%. Click a chip to copy the reset delta.
+
 ## Four primitives
 
 ### Messages — `post`, `post_file`

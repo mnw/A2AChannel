@@ -94,7 +94,10 @@
   toggleBtn?.addEventListener('click', () => {
     _paneEnabled = !_paneEnabled;
     applyPaneClass();
-    if (_paneEnabled) reconcile();
+    if (_paneEnabled) {
+      reconcile();
+      ensureShellAttached();
+    }
     for (const t of tabs.values()) if (t.term) t.fitAddon?.fit();
   });
 
@@ -203,7 +206,75 @@
     brightCyan: '#83c9b9', brightWhite: '#f5ede2',
   };
 
+  // Reserved name for the human's pinned shell tmux session. Matches Rust's
+  // SHELL_SESSION_NAME. Never filtered by room, never closed from the UI.
+  const SHELL_NAME = 'shell';
+  function isShell(agent) { return agent === SHELL_NAME; }
+
+  function ensureAgentsHeading() {
+    if (tabsEl.querySelector('.terminal-tabs-heading')) return;
+    const h = document.createElement('div');
+    h.className = 'terminal-tabs-heading';
+    h.setAttribute('aria-hidden', 'true');
+    h.innerHTML = '<span>agents</span>';
+    h.title = 'Agent tabs below. Launch a new one with the + button — don\'t start claude from the shell tab.';
+    // Pinned right after the shell tab. reconcile never removes non-tab children.
+    const shellEl = tabsEl.querySelector('.terminal-tab-shell');
+    if (shellEl && shellEl.nextSibling) {
+      tabsEl.insertBefore(h, shellEl.nextSibling);
+    } else {
+      tabsEl.appendChild(h);
+    }
+  }
+
+  function ensureShellTab() {
+    let t = tabs.get(SHELL_NAME);
+    if (t) { ensureAgentsHeading(); return t; }
+    const tabEl = document.createElement('div');
+    tabEl.className = 'terminal-tab terminal-tab-shell';
+    tabEl.dataset.agent = SHELL_NAME;
+    tabEl.dataset.state = 'external';
+    // Deliberately NO data-room — the shell is cross-room and survives every filter.
+    tabEl.innerHTML =
+      '<span class="state-dot"></span>' +
+      '<svg viewBox="0 0 24 24" class="tab-icon" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>' +
+      '<span class="tab-label"></span>';
+    tabEl.querySelector('.tab-label').textContent = 'shell';
+    tabEl.title = 'Your scratch shell — cross-room, cross-project';
+    tabEl.addEventListener('click', () => focusTab(SHELL_NAME));
+    // Pinned at the very top of the tab rail — insertBefore the first child.
+    tabsEl.insertBefore(tabEl, tabsEl.firstChild);
+
+    const paneEl = document.createElement('div');
+    paneEl.className = 'terminal-pane';
+    paneEl.dataset.agent = SHELL_NAME;
+    bodyEl.appendChild(paneEl);
+
+    t = { state: 'external', tabEl, paneEl, term: null, fitAddon: null,
+          outputUnlisten: null, exitUnlisten: null, cwd: null, external: true };
+    tabs.set(SHELL_NAME, t);
+    ensureAgentsHeading();
+    return t;
+  }
+
+  async function ensureShellAttached() {
+    const t = ensureShellTab();
+    if (t.state === 'live' || t.state === 'launching') return;
+    setTabState(SHELL_NAME, 'launching');
+    try {
+      await invoke('pty_spawn_shell');
+      setTabState(SHELL_NAME, 'live');
+      await attachOutputListener(SHELL_NAME);
+      const tt = tabs.get(SHELL_NAME);
+      if (tt) sendResize(tt);
+    } catch (e) {
+      console.warn('[terminal] shell spawn failed', e);
+      setTabState(SHELL_NAME, 'external');
+    }
+  }
+
   function ensureTab(agent) {
+    if (isShell(agent)) return ensureShellTab();
     let t = tabs.get(agent);
     if (t) return t;
     const tabEl = document.createElement('div');
@@ -409,6 +480,54 @@
   const ATTENTION_MARKER = 'Doyouwantto';
   const ATTN_TAIL_MAX = 2048;
 
+  // ── Usage-banner scrape ─────────────────────────────────────────────
+  // Claude prints plan limits at /cost and on some session events. We
+  // capture the Current-session + Weekly percentages and reset deltas and
+  // push them to main.js via a custom event. Passive — never types into the
+  // agent's session. Fragile to copy changes in claude CLI.
+  const usageDecoder = new TextDecoder('utf-8', { fatal: false });
+  const USAGE_TAIL_MAX = 16_384;
+  // Matches: "Current session\n  Resets in 3 hr 51 min" then later "8% used".
+  // We strip ANSI first so layout escapes between the label and the number
+  // don't break the anchor.
+  const USAGE_SESSION_RE =
+    /Current\s+session[\s\S]{0,200}?Resets\s+in\s+(?:(\d+)\s*hr\s*)?(?:(\d+)\s*min)?[\s\S]{0,400}?(\d{1,3})\s*%\s*used/i;
+  const USAGE_WEEKLY_RE =
+    /Weekly\s+limits[\s\S]{0,600}?All\s+models[\s\S]{0,200}?Resets\s+in\s+(?:(\d+)\s*hr\s*)?(?:(\d+)\s*min)?[\s\S]{0,400}?(\d{1,3})\s*%\s*used/i;
+
+  function pushUsage(kind, hr, min, pct, agent) {
+    const h = hr ? Number(hr) : 0;
+    const m = min ? Number(min) : 0;
+    const secs = h * 3600 + m * 60;
+    const snapshot = {
+      kind,
+      pct: Number(pct),
+      resetAtMs: Date.now() + secs * 1000,
+      sourceAgent: agent,
+      capturedAtMs: Date.now(),
+    };
+    document.dispatchEvent(new CustomEvent('a2a:usage', { detail: snapshot }));
+  }
+
+  function maybeCaptureUsage(t, agent, chunkBytes) {
+    t.usageTail = (t.usageTail || '') + usageDecoder.decode(chunkBytes, { stream: true });
+    if (t.usageTail.length > USAGE_TAIL_MAX) {
+      t.usageTail = t.usageTail.slice(-USAGE_TAIL_MAX);
+    }
+    // Strip ANSI for robust matching across alt-screen rewrites.
+    const clean = t.usageTail.replace(ANSI_ESCAPE_RE, '');
+    const sm = USAGE_SESSION_RE.exec(clean);
+    if (sm) pushUsage('session', sm[1], sm[2], sm[3], agent);
+    const wm = USAGE_WEEKLY_RE.exec(clean);
+    if (wm) pushUsage('weekly', wm[1], wm[2], wm[3], agent);
+    // Rewind the tail past the last match so we don't re-fire on every new byte.
+    if (sm || wm) {
+      const furthest = Math.max(sm ? sm.index + sm[0].length : 0,
+                                wm ? wm.index + wm[0].length : 0);
+      if (furthest > 0) t.usageTail = t.usageTail.slice(furthest);
+    }
+  }
+
   function maybeFlagAttention(t, agent, chunkBytes) {
     t.attnTail = (t.attnTail || '') + attnDecoder.decode(chunkBytes, { stream: true });
     if (t.attnTail.length > ATTN_TAIL_MAX) {
@@ -484,6 +603,7 @@
       t.term?.write(bytes);
       maybeAutoDismissDevChannels(t, agent, bytes);
       maybeFlagAttention(t, agent, bytes);
+      maybeCaptureUsage(t, agent, bytes);
     });
     t.exitUnlisten = await listen(`pty://exit/${agent}`, () => {
       removeTab(agent);
@@ -704,6 +824,8 @@
     const want = new Set([...rosterNames, ...sessionNames]);
 
     for (const [name, t] of Array.from(tabs)) {
+      // The shell tab is pinned and cross-room — never remove it from reconcile.
+      if (isShell(name)) continue;
       if (!want.has(name) && t.state !== 'live' && t.state !== 'launching') {
         removeTab(name);
       }
@@ -779,12 +901,17 @@
   (async () => {
     try {
       const names = await ptyList();
-      if (names.length && !_paneEnabled) {
+      // Also consider a live shell session as "has state" — pty_list filters it out
+      // since it's not an agent, so check it separately.
+      let shellLive = false;
+      try { shellLive = await invoke('pty_shell_exists'); } catch {}
+      if ((names.length || shellLive) && !_paneEnabled) {
         _paneEnabled = true;
         applyPaneClass();
         reconcile();
         for (const t of tabs.values()) if (t.term) t.fitAddon?.fit();
       }
+      if (_paneEnabled) ensureShellAttached();
     } catch (e) {}
   })();
 

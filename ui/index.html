@@ -42,6 +42,21 @@
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
         </button>
       </div>
+      <div class="usage-pill" id="usage-pill" title="Populated from the usage banner claude prints (e.g. on /cost). Click any chip to copy the reset delta.">
+        <span class="usage-chip" id="usage-session" data-empty="1">
+          <span class="usage-label">Session</span>
+          <span class="usage-pct">—</span>
+          <span class="usage-sep">·</span>
+          <span class="usage-reset">no data</span>
+        </span>
+        <span class="usage-divider">|</span>
+        <span class="usage-chip" id="usage-weekly" data-empty="1">
+          <span class="usage-label">Weekly</span>
+          <span class="usage-pct">—</span>
+          <span class="usage-sep">·</span>
+          <span class="usage-reset">no data</span>
+        </span>
+      </div>
       <div class="status-pill" id="status-pill">
         <div class="dot" id="dot"></div>
         <span id="status-text">connecting…</span>
