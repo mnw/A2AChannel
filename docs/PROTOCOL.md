@@ -324,6 +324,77 @@ collaboration-oriented tool.
 
 ---
 
+## The `permission` kind
+
+Claude Code tool-use approvals relayed through the chat. Lifecycle:
+`pending → allowed | denied | dismissed` (terminal). No TTL — Claude
+Code's local dialog owns the effective timeout. `dismissed` is for
+user-acknowledged ghosts (xterm answered first, channel never notified).
+Requires Claude Code 2.1.81+ which ships the `claude/channel/permission`
+capability; older versions ignore the capability and fall back to the
+xterm-only flow.
+
+### Snapshot schema
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | `string` | Claude-generated request_id. Format `[a-km-z]{5}` (5 lowercase letters a–z excluding `l`). |
+| `agent` | `string` | The agent whose session produced the approval prompt. |
+| `tool_name` | `string` | e.g. `Bash`, `Write`, `Edit`. 1–120 chars. |
+| `description` | `string` | Claude's single-line summary (≤2000 chars). |
+| `input_preview` | `string` | Truncated tool input (≤8000 chars). |
+| `status` | `"pending" \| "allowed" \| "denied" \| "dismissed"` | `dismissed` = ghost card cleared by the human after an xterm-first answer. |
+| `created_at_ms` | `number` | |
+| `resolved_at_ms` | `number \| null` | Set on verdict. |
+| `resolved_by` | `string \| null` | Who answered (human or any agent). |
+| `behavior` | `"allow" \| "deny" \| null` | Mirrors `status` in the resolved state. |
+| `version` | `number` | `MAX(events.seq)` for this permission's id. |
+
+### HTTP
+
+| Method | Path | Auth | Body cap | Purpose |
+|---|---|---|---|---|
+| POST | `/permissions` | Bearer | 16 KiB | Create pending. Body `{agent, request_id, tool_name, description, input_preview}`. Same-id replay while pending → idempotent 200; same id already resolved → 409. |
+| POST | `/permissions/{id}/verdict` | Bearer | 16 KiB | Submit verdict. Body `{by, behavior: "allow"\|"deny"}`. Same-status retry → idempotent 200; different status → 409; missing id → 404. |
+| POST | `/permissions/{id}/dismiss` | Bearer | 16 KiB | Clear a ghost pending card. Body `{by}`. Pending → `dismissed`; same-status retry → idempotent; non-pending non-dismissed → 409. |
+| GET | `/permissions?status=&for=&limit=` | Bearer header OR `?token=` | — | List snapshots. Default `status=pending`. |
+
+### MCP tools
+
+- `ack_permission({request_id, behavior})` — any agent may ack any pending permission. First verdict wins; later arrivals are idempotent (same behavior) or rejected with 409 (different behavior).
+
+### MCP capability
+
+chatbridge declares `capabilities.experimental["claude/channel/permission"] = {}`. Claude Code 2.1.81+ forwards `notifications/claude/channel/permission_request` to chatbridge, which POSTs them to `/permissions`. When the hub emits `permission.resolved`, chatbridge emits `notifications/claude/channel/permission` upstream so Claude Code applies the verdict and closes its local xterm dialog.
+
+### Terminal-state policy
+
+| Arrival | Current status | Result |
+|---|---|---|
+| `allow` | `pending` | Transition to `allowed` (200). |
+| `deny` | `pending` | Transition to `denied` (200). |
+| same behavior | `allowed`/`denied` | Idempotent (200 with `idempotent: true`). |
+| different behavior | already resolved | Conflict (409 with current snapshot). |
+
+### SSE events
+
+- `permission.new` — once, at creation. Replayed as `replay=true` on `/agent-stream` reconnect for every currently-pending permission.
+- `permission.resolved` — once, on verdict (`allowed` or `denied`).
+- `permission.dismissed` — once, on user dismiss of a ghost card.
+
+Reconciliation follows the same `(id, version)` contract as handoffs.
+
+### Trust semantics
+
+The local xterm dialog stays live. Path behavior diverges by who answers first:
+
+- **Chat-first** — chatbridge emits `notifications/claude/channel/permission` upstream, Claude Code applies the verdict, the local xterm dialog closes. Clean bidirectional.
+- **Xterm-first** — Claude Code applies the verdict locally and runs the tool. It does NOT emit a reciprocal notification. The hub's permission row would stay `pending` forever; the chat card blinks until the human clicks the `×` dismiss button (or Allow/Deny if they want a verdict audit record, noting that the tool already ran either way). Dismiss records `status="dismissed"` with `behavior=NULL` — distinct from allow/deny so the audit log stays truthful. No TTL, so ghosts persist across reconnect until manually dismissed.
+
+No cryptographic identity binding on `by` — same trust-on-self-assertion model as handoff/interrupt routes. The `claude/channel/permission` capability MUST NOT be declared without bearer-token auth on `/permissions/*`; see the CLAUDE.md hard rule.
+
+---
+
 ## The `nutshell` kind
 
 A single-row living document — the project's working reference point.

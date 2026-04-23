@@ -24,6 +24,7 @@ const UI_QUEUE_MAX = 500;
 const IMAGE_MAX_BYTES = 8 * 1024 * 1024;
 const JSON_BODY_MAX = 262_144;         // 256 KiB (default for JSON routes)
 const HANDOFF_BODY_MAX = 1_048_576;    // 1 MiB (only POST /handoffs)
+const PERMISSION_BODY_MAX = 16_384;    // 16 KiB (POST /permissions — bounded fields)
 const STALE_AGENT_MS = 15_000;
 const SWEEP_INTERVAL_MS = 5_000;
 const HANDOFF_TTL_MIN_SECONDS = 1;
@@ -33,7 +34,7 @@ const HANDOFF_CONTEXT_MAX_BYTES = 1_048_576;
 const HANDOFF_TASK_MAX_CHARS = 500;
 const HANDOFF_REASON_MAX_CHARS = 500;
 const HANDOFF_ID_RE = /^h_[0-9a-f]{16}$/;
-const LEDGER_SCHEMA_VERSION = 3;
+const LEDGER_SCHEMA_VERSION = 5;
 type HandoffStatus = "pending" | "accepted" | "declined" | "cancelled" | "expired";
 // Extension allowlist; env wins over the defaults (which match the Rust shell's defaults).
 const DEFAULT_ALLOWED_EXTENSIONS = ["jpg", "jpeg", "png", "pdf", "md"];
@@ -302,6 +303,60 @@ function migrateLedger(db: Database): void {
       db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '3')");
     })();
     console.log(`[ledger] applied migration v3`);
+  }
+  if (current < 4) {
+    // v4 migration: Claude Code permission-relay. Pending approvals re-enter the room.
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE permissions (
+          id              TEXT PRIMARY KEY,
+          agent           TEXT    NOT NULL,
+          tool_name       TEXT    NOT NULL,
+          description     TEXT    NOT NULL,
+          input_preview   TEXT    NOT NULL,
+          status          TEXT    NOT NULL
+                            CHECK(status IN ('pending','allowed','denied')),
+          created_at_ms   INTEGER NOT NULL,
+          resolved_at_ms  INTEGER,
+          resolved_by     TEXT,
+          behavior        TEXT CHECK(behavior IS NULL OR behavior IN ('allow','deny'))
+        );
+        CREATE INDEX idx_permissions_status ON permissions(status, created_at_ms);
+        CREATE INDEX idx_permissions_agent  ON permissions(agent, status);
+      `);
+      db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '4')");
+    })();
+    console.log(`[ledger] applied migration v4`);
+  }
+  if (current < 5) {
+    // v5 migration: add 'dismissed' terminal state to permissions.status so users
+    // can clear xterm-first ghost cards (claude answered the approval locally and
+    // never notified the channel, so the row would otherwise stay pending forever).
+    // SQLite can't ALTER a CHECK constraint in place — copy-drop-rename.
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE permissions_new (
+          id              TEXT PRIMARY KEY,
+          agent           TEXT    NOT NULL,
+          tool_name       TEXT    NOT NULL,
+          description     TEXT    NOT NULL,
+          input_preview   TEXT    NOT NULL,
+          status          TEXT    NOT NULL
+                            CHECK(status IN ('pending','allowed','denied','dismissed')),
+          created_at_ms   INTEGER NOT NULL,
+          resolved_at_ms  INTEGER,
+          resolved_by     TEXT,
+          behavior        TEXT CHECK(behavior IS NULL OR behavior IN ('allow','deny'))
+        );
+        INSERT INTO permissions_new SELECT * FROM permissions;
+        DROP TABLE permissions;
+        ALTER TABLE permissions_new RENAME TO permissions;
+        CREATE INDEX idx_permissions_status ON permissions(status, created_at_ms);
+        CREATE INDEX idx_permissions_agent  ON permissions(agent, status);
+      `);
+      db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '5')");
+    })();
+    console.log(`[ledger] applied migration v5`);
   }
 }
 
@@ -850,6 +905,226 @@ function pendingInterruptsFor(agent: string): InterruptSnapshot[] {
   return listInterrupts({ status: "pending", for: agent, limit: 1000 });
 }
 
+// -------- Permissions (Claude Code permission-relay) --------
+
+type PermissionStatus = "pending" | "allowed" | "denied" | "dismissed";
+type PermissionBehavior = "allow" | "deny";
+
+type PermissionSnapshot = {
+  id: string;
+  agent: string;
+  tool_name: string;
+  description: string;
+  input_preview: string;
+  status: PermissionStatus;
+  created_at_ms: number;
+  resolved_at_ms: number | null;
+  resolved_by: string | null;
+  behavior: PermissionBehavior | null;
+  version: number;
+};
+
+type PermissionRow = {
+  id: string;
+  agent: string;
+  tool_name: string;
+  description: string;
+  input_preview: string;
+  status: PermissionStatus;
+  created_at_ms: number;
+  resolved_at_ms: number | null;
+  resolved_by: string | null;
+  behavior: PermissionBehavior | null;
+};
+
+// claude emits request_ids as 5 lowercase letters a-z excluding 'l'.
+const PERMISSION_ID_RE = /^[a-km-z]{5}$/i;
+const PERMISSION_TOOL_NAME_MAX_CHARS = 120;
+const PERMISSION_DESCRIPTION_MAX_CHARS = 2_000;
+const PERMISSION_INPUT_PREVIEW_MAX_CHARS = 8_000;
+
+function permissionRowToSnapshot(row: PermissionRow, version: number): PermissionSnapshot {
+  return {
+    id: row.id,
+    agent: row.agent,
+    tool_name: row.tool_name,
+    description: row.description,
+    input_preview: row.input_preview,
+    status: row.status,
+    created_at_ms: row.created_at_ms,
+    resolved_at_ms: row.resolved_at_ms,
+    resolved_by: row.resolved_by,
+    behavior: row.behavior,
+    version,
+  };
+}
+
+function loadPermission(id: string): { row: PermissionRow; version: number } | null {
+  if (!ledgerDb) return null;
+  const row = ledgerDb
+    .query<PermissionRow, [string]>("SELECT * FROM permissions WHERE id = ?")
+    .get(id);
+  if (!row) return null;
+  const verRow = ledgerDb
+    .query<{ max_seq: number | null }, [string]>(
+      "SELECT MAX(seq) AS max_seq FROM events WHERE handoff_id = ?",
+    )
+    .get(id);
+  return { row, version: verRow?.max_seq ?? 0 };
+}
+
+function snapshotPermission(id: string): PermissionSnapshot | null {
+  const loaded = loadPermission(id);
+  return loaded ? permissionRowToSnapshot(loaded.row, loaded.version) : null;
+}
+
+type CreatePermissionInput = {
+  agent: string;
+  request_id: string;
+  tool_name: string;
+  description: string;
+  input_preview: string;
+};
+
+type PermissionCreateOutcome =
+  | { kind: "created"; snapshot: PermissionSnapshot }
+  | { kind: "idempotent"; snapshot: PermissionSnapshot }  // same-id replay while still pending
+  | { kind: "conflict"; snapshot: PermissionSnapshot };   // id already resolved
+
+function createPermission(input: CreatePermissionInput): PermissionCreateOutcome {
+  if (!ledgerDb) throw new Error("ledger disabled");
+  const existing = loadPermission(input.request_id);
+  if (existing) {
+    const snap = permissionRowToSnapshot(existing.row, existing.version);
+    return existing.row.status === "pending"
+      ? { kind: "idempotent", snapshot: snap }
+      : { kind: "conflict", snapshot: snap };
+  }
+  const now = Date.now();
+  const db = ledgerDb;
+  db.transaction(() => {
+    insertEvent(
+      db,
+      input.request_id,
+      "permission.new",
+      input.agent,
+      {
+        tool_name: input.tool_name,
+        description: input.description,
+        input_preview: input.input_preview,
+      },
+      now,
+    );
+    db.run(
+      `INSERT INTO permissions
+         (id, agent, tool_name, description, input_preview, status, created_at_ms)
+       VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+      [input.request_id, input.agent, input.tool_name, input.description, input.input_preview, now],
+    );
+  })();
+  return { kind: "created", snapshot: snapshotPermission(input.request_id)! };
+}
+
+type PermissionOutcome =
+  | { kind: "transition"; snapshot: PermissionSnapshot }
+  | { kind: "idempotent"; snapshot: PermissionSnapshot }
+  | { kind: "conflict"; current_status: PermissionStatus; snapshot: PermissionSnapshot }
+  | { kind: "not_found" };
+
+function resolvePermission(id: string, by: string, behavior: PermissionBehavior): PermissionOutcome {
+  if (!ledgerDb) throw new Error("ledger disabled");
+  const loaded = loadPermission(id);
+  if (!loaded) return { kind: "not_found" };
+  const targetStatus: PermissionStatus = behavior === "allow" ? "allowed" : "denied";
+  if (loaded.row.status === targetStatus) {
+    return { kind: "idempotent", snapshot: permissionRowToSnapshot(loaded.row, loaded.version) };
+  }
+  if (loaded.row.status !== "pending") {
+    return {
+      kind: "conflict",
+      current_status: loaded.row.status,
+      snapshot: permissionRowToSnapshot(loaded.row, loaded.version),
+    };
+  }
+  const now = Date.now();
+  const db = ledgerDb;
+  db.transaction(() => {
+    insertEvent(db, id, "permission.resolved", by, { behavior }, now);
+    db.run(
+      "UPDATE permissions SET status=?, behavior=?, resolved_at_ms=?, resolved_by=? WHERE id=?",
+      [targetStatus, behavior, now, by, id],
+    );
+  })();
+  return { kind: "transition", snapshot: snapshotPermission(id)! };
+}
+
+type ListPermissionsFilter = {
+  status?: PermissionStatus | "all";
+  for?: string;
+  limit?: number;
+};
+
+function listPermissions(filter: ListPermissionsFilter = {}): PermissionSnapshot[] {
+  if (!ledgerDb) return [];
+  const status = filter.status ?? "pending";
+  const limit = Math.max(1, Math.min(1000, filter.limit ?? 100));
+  const clauses: string[] = [];
+  const params: (string | number)[] = [];
+  if (status !== "all") {
+    clauses.push("status = ?");
+    params.push(status);
+  }
+  if (filter.for) {
+    clauses.push("agent = ?");
+    params.push(filter.for);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  params.push(limit);
+  const rows = ledgerDb
+    .query<PermissionRow, typeof params>(
+      `SELECT * FROM permissions ${where} ORDER BY created_at_ms DESC LIMIT ?`,
+    )
+    .all(...params);
+  return rows.map((row) => {
+    const ver = ledgerDb!
+      .query<{ max_seq: number | null }, [string]>(
+        "SELECT MAX(seq) AS max_seq FROM events WHERE handoff_id = ?",
+      )
+      .get(row.id);
+    return permissionRowToSnapshot(row, ver?.max_seq ?? 0);
+  });
+}
+
+function pendingPermissionsFor(agent: string): PermissionSnapshot[] {
+  return listPermissions({ status: "pending", for: agent, limit: 1000 });
+}
+
+function dismissPermission(id: string, by: string): PermissionOutcome {
+  if (!ledgerDb) throw new Error("ledger disabled");
+  const loaded = loadPermission(id);
+  if (!loaded) return { kind: "not_found" };
+  if (loaded.row.status === "dismissed") {
+    return { kind: "idempotent", snapshot: permissionRowToSnapshot(loaded.row, loaded.version) };
+  }
+  if (loaded.row.status !== "pending") {
+    return {
+      kind: "conflict",
+      current_status: loaded.row.status,
+      snapshot: permissionRowToSnapshot(loaded.row, loaded.version),
+    };
+  }
+  const now = Date.now();
+  const db = ledgerDb;
+  db.transaction(() => {
+    insertEvent(db, id, "permission.dismissed", by, {}, now);
+    db.run(
+      "UPDATE permissions SET status='dismissed', resolved_at_ms=?, resolved_by=? WHERE id=?",
+      [now, by, id],
+    );
+  })();
+  return { kind: "transition", snapshot: snapshotPermission(id)! };
+}
+
 function ts(): string {
   return new Date().toTimeString().slice(0, 8);
 }
@@ -987,6 +1262,7 @@ function buildBriefing(agent: string): Entry & {
       "cancel_handoff",
       "send_interrupt",
       "ack_interrupt",
+      "ack_permission",
     ],
     peers,
     attachments_dir: ATTACHMENTS_DIR,
@@ -1422,6 +1698,11 @@ function handleAgentStream(agent: string): Response {
         for (const snapshot of pendingInterruptsFor(agent)) {
           send(interruptEntry(snapshot, "interrupt.new", /* replay */ true));
         }
+        // Permissions fan out to all peers (not recipient-scoped like handoffs),
+        // so replay every currently-pending permission to the reconnecting agent.
+        for (const snapshot of listPermissions({ status: "pending", limit: 1000 })) {
+          send(permissionEntry(snapshot, "permission.new", /* replay */ true));
+        }
       } catch (e) {
         console.error("[replay]", e);
       }
@@ -1543,6 +1824,49 @@ function broadcastInterrupt(
     const q = agentQueues.get(name);
     if (!q) continue;
     q.push(interruptEntry(snapshot, eventKind));
+  }
+}
+
+function permissionEntry(
+  snapshot: PermissionSnapshot,
+  eventKind: "permission.new" | "permission.resolved" | "permission.dismissed",
+  replay = false,
+): Entry & {
+  kind: string;
+  permission_id: string;
+  version: number;
+  replay: boolean;
+  snapshot: PermissionSnapshot;
+} {
+  return {
+    from: snapshot.agent,
+    to: "all",
+    text: JSON.stringify(snapshot),
+    ts: ts(),
+    image: null,
+    kind: eventKind,
+    permission_id: snapshot.id,
+    version: snapshot.version,
+    replay,
+    snapshot,
+  };
+}
+
+function broadcastPermission(
+  snapshot: PermissionSnapshot,
+  eventKind: "permission.new" | "permission.resolved" | "permission.dismissed",
+): void {
+  const entry = permissionEntry(snapshot, eventKind);
+  broadcastUI(entry);
+  // Fan out to every non-permanent agent queue so peers can autonomously ack
+  // via `ack_permission`. The requesting agent's own chatbridge uses
+  // `permission.resolved` to relay the verdict upstream back to claude, which
+  // de-dupes by request_id, so re-echoing to the requester is harmless.
+  for (const name of agentQueues.keys()) {
+    if (permanentAgents.has(name)) continue;
+    const q = agentQueues.get(name);
+    if (!q) continue;
+    q.push(permissionEntry(snapshot, eventKind));
   }
 }
 
@@ -1822,6 +2146,148 @@ function handleGetNutshell(): Response {
   return json(readNutshell());
 }
 
+// -------- Permission routes --------
+
+function permissionOutcomeResponse(outcome: PermissionOutcome): Response {
+  switch (outcome.kind) {
+    case "not_found":
+      return json({ error: "not found" }, { status: 404 });
+    case "conflict":
+      return json(
+        { error: `permission already ${outcome.current_status}`, snapshot: outcome.snapshot },
+        { status: 409 },
+      );
+    case "idempotent":
+      return json({ snapshot: outcome.snapshot, idempotent: true }, { status: 200 });
+    case "transition":
+      broadcastPermission(outcome.snapshot, "permission.resolved");
+      return json({ snapshot: outcome.snapshot }, { status: 200 });
+  }
+}
+
+async function handleCreatePermission(req: Request): Promise<Response> {
+  const guard = ledgerGuard();
+  if (guard) return guard;
+  const sizeCheck = requireJsonBody(req, PERMISSION_BODY_MAX);
+  if (sizeCheck) return sizeCheck;
+
+  const body = (await req.json().catch(() => ({}))) as {
+    agent?: string;
+    request_id?: string;
+    tool_name?: string;
+    description?: string;
+    input_preview?: string;
+  };
+  const agent = (body.agent ?? "").trim();
+  const request_id = (body.request_id ?? "").trim();
+  const tool_name = (body.tool_name ?? "").trim();
+  const description = body.description ?? "";
+  const input_preview = body.input_preview ?? "";
+
+  if (!validName(agent)) return json({ error: "invalid agent" }, { status: 400 });
+  if (!PERMISSION_ID_RE.test(request_id)) {
+    return json({ error: "invalid request_id" }, { status: 400 });
+  }
+  if (!tool_name || tool_name.length > PERMISSION_TOOL_NAME_MAX_CHARS) {
+    return json({ error: "invalid tool_name" }, { status: 400 });
+  }
+  if (typeof description !== "string" || description.length > PERMISSION_DESCRIPTION_MAX_CHARS) {
+    return json({ error: "invalid description" }, { status: 400 });
+  }
+  if (typeof input_preview !== "string" || input_preview.length > PERMISSION_INPUT_PREVIEW_MAX_CHARS) {
+    return json({ error: "invalid input_preview" }, { status: 400 });
+  }
+  // Requesting agent must be in the roster so orphan records can't accumulate.
+  ensureAgent(agent);
+
+  const outcome = createPermission({ agent, request_id, tool_name, description, input_preview });
+  switch (outcome.kind) {
+    case "created":
+      broadcastPermission(outcome.snapshot, "permission.new");
+      return json({ id: outcome.snapshot.id, snapshot: outcome.snapshot }, { status: 201 });
+    case "idempotent":
+      return json({ id: outcome.snapshot.id, snapshot: outcome.snapshot, idempotent: true }, { status: 200 });
+    case "conflict":
+      return json(
+        { error: `permission already ${outcome.snapshot.status}`, snapshot: outcome.snapshot },
+        { status: 409 },
+      );
+  }
+}
+
+async function handleResolvePermission(id: string, req: Request): Promise<Response> {
+  const guard = ledgerGuard();
+  if (guard) return guard;
+  if (!PERMISSION_ID_RE.test(id)) {
+    return json({ error: "invalid request_id" }, { status: 400 });
+  }
+  const sizeCheck = requireJsonBody(req, PERMISSION_BODY_MAX);
+  if (sizeCheck) return sizeCheck;
+
+  const body = (await req.json().catch(() => ({}))) as { by?: string; behavior?: string };
+  const by = (body.by ?? "").trim();
+  const behavior = (body.behavior ?? "").trim();
+  if (!validName(by)) return json({ error: "invalid by" }, { status: 400 });
+  if (behavior !== "allow" && behavior !== "deny") {
+    return json({ error: "invalid behavior" }, { status: 400 });
+  }
+  return permissionOutcomeResponse(resolvePermission(id, by, behavior as PermissionBehavior));
+}
+
+async function handleDismissPermission(id: string, req: Request): Promise<Response> {
+  const guard = ledgerGuard();
+  if (guard) return guard;
+  if (!PERMISSION_ID_RE.test(id)) {
+    return json({ error: "invalid request_id" }, { status: 400 });
+  }
+  const sizeCheck = requireJsonBody(req, PERMISSION_BODY_MAX);
+  if (sizeCheck) return sizeCheck;
+
+  const body = (await req.json().catch(() => ({}))) as { by?: string };
+  const by = (body.by ?? "").trim();
+  if (!validName(by)) return json({ error: "invalid by" }, { status: 400 });
+
+  const outcome = dismissPermission(id, by);
+  switch (outcome.kind) {
+    case "not_found":
+      return json({ error: "not found" }, { status: 404 });
+    case "conflict":
+      return json(
+        { error: `permission already ${outcome.current_status}`, snapshot: outcome.snapshot },
+        { status: 409 },
+      );
+    case "idempotent":
+      return json({ snapshot: outcome.snapshot, idempotent: true }, { status: 200 });
+    case "transition":
+      broadcastPermission(outcome.snapshot, "permission.dismissed");
+      return json({ snapshot: outcome.snapshot }, { status: 200 });
+  }
+}
+
+function handleListPermissions(req: Request): Response {
+  const guard = ledgerGuard();
+  if (guard) return guard;
+  const url = new URL(req.url);
+  const statusParam = url.searchParams.get("status") ?? "pending";
+  const forParam = url.searchParams.get("for") ?? undefined;
+  const limitRaw = url.searchParams.get("limit");
+  const limit = limitRaw ? Number(limitRaw) : 100;
+
+  const validStatus = new Set(["pending", "allowed", "denied", "dismissed", "all"]);
+  if (!validStatus.has(statusParam)) {
+    return json({ error: `invalid status: ${statusParam}` }, { status: 400 });
+  }
+  if (forParam !== undefined && !validName(forParam)) {
+    return json({ error: `invalid for: ${forParam}` }, { status: 400 });
+  }
+  if (!Number.isFinite(limit) || limit < 1 || limit > 1000) {
+    return json({ error: "invalid limit" }, { status: 400 });
+  }
+  return json(
+    listPermissions({ status: statusParam as PermissionStatus | "all", for: forParam, limit }),
+  );
+}
+
 // PTY-side: UI POSTs { agent, cwd, resume_flag }; spawn modal GETs for restore prefill.
 const RESUME_FLAG_RE = /^[A-Za-z0-9_.:/\-]{1,256}$/;
 
@@ -1956,6 +2422,28 @@ const server = Bun.serve({
       if (req.method === "GET" && pathname === "/interrupts") {
         const authFail = requireReadAuth(req, url);
         return authFail ?? handleListInterrupts(req);
+      }
+      if (req.method === "POST" && pathname === "/permissions") {
+        const authFail = requireAuth(req);
+        return authFail ?? (await handleCreatePermission(req));
+      }
+      if (req.method === "POST" && pathname.startsWith("/permissions/")) {
+        const verdictMatch = pathname.match(/^\/permissions\/([^/]+)\/verdict$/);
+        if (verdictMatch) {
+          const authFail = requireAuth(req);
+          if (authFail) return authFail;
+          return await handleResolvePermission(verdictMatch[1], req);
+        }
+        const dismissMatch = pathname.match(/^\/permissions\/([^/]+)\/dismiss$/);
+        if (dismissMatch) {
+          const authFail = requireAuth(req);
+          if (authFail) return authFail;
+          return await handleDismissPermission(dismissMatch[1], req);
+        }
+      }
+      if (req.method === "GET" && pathname === "/permissions") {
+        const authFail = requireReadAuth(req, url);
+        return authFail ?? handleListPermissions(req);
       }
       // Nutshell read; write path is /handoffs with task prefix "[nutshell]".
       if (req.method === "GET" && pathname === "/nutshell") {

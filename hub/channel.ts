@@ -31,7 +31,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  NotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { z } from "zod";
 
 const AGENT = process.env.CHATBRIDGE_AGENT ?? process.argv[2] ?? "";
 const HUB_ENV = (process.env.CHATBRIDGE_HUB ?? "").trim();
@@ -69,10 +71,16 @@ function resolveHub(): HubInfo | null {
 }
 
 const mcp = new Server(
-  { name: "chatbridge", version: "0.7.1" },
+  { name: "chatbridge", version: "0.8.0" },
   {
     capabilities: {
-      experimental: { "claude/channel": {} },
+      experimental: {
+        "claude/channel": {},
+        // Claude Code 2.1.81+ forwards permission prompts to channels that declare this.
+        // Pre-2.1.81 ignores the capability — feature is additive.
+        // Declaring this is gated on hub bearer-token auth; see CLAUDE.md hard rule.
+        "claude/channel/permission": {},
+      },
       tools: {},
     },
     instructions:
@@ -103,6 +111,11 @@ const mcp = new Server(
       `point), use "send_handoff" targeting the human (see the briefing for their name), task starting with "[nutshell]", ` +
       `and context={ "patch": "<new full text>" }. The human accepts or declines; accepted edits update the nutshell ` +
       `atomically and broadcast to all participants.\n\n` +
+      `When Claude Code asks for tool-use approval (Bash, Write, Edit, …), the hub ` +
+      `broadcasts a <channel kind="permission.new" ...> event. Anyone in the room can ` +
+      `relay a verdict using "ack_permission" with the request_id and behavior ("allow" ` +
+      `or "deny"). First verdict wins; later ones are either idempotent or rejected. ` +
+      `Acking another agent's permission is valid — useful for reviewer-style flows.\n\n` +
       `Keep free-text messages concise; large artifacts belong in files. ` +
       `Attachments arrive as [attachment: <absolute-path>] — inspect the file's ` +
       `extension to choose your tool: Read for text/markdown/code/JSON, Read with pages= ` +
@@ -264,6 +277,27 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           interrupt_id: { type: "string", pattern: "^i_[0-9a-f]{16}$" },
         },
         required: ["interrupt_id"],
+      },
+    },
+    {
+      name: "ack_permission",
+      description:
+        "Submit a verdict on a pending Claude Code permission request. Any agent may ack any request (the hub accepts the first verdict; later ones are idempotent or rejected with 409).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          request_id: {
+            type: "string",
+            pattern: "^[a-km-zA-KM-Z]{5}$",
+            description: "The claude-assigned request_id (5 letters a-z excluding l).",
+          },
+          behavior: {
+            type: "string",
+            enum: ["allow", "deny"],
+            description: "Verdict. 'allow' lets claude proceed; 'deny' blocks the tool call.",
+          },
+        },
+        required: ["request_id", "behavior"],
       },
     },
   ],
@@ -466,7 +500,52 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     return { content: [{ type: "text", text: "acknowledged" }] };
   }
 
+  if (req.params.name === "ack_permission") {
+    const id = String(args.request_id ?? "");
+    const behavior = String(args.behavior ?? "");
+    if (!/^[a-km-z]{5}$/i.test(id)) throw new Error("ack_permission: invalid request_id");
+    if (behavior !== "allow" && behavior !== "deny") {
+      throw new Error("ack_permission: behavior must be 'allow' or 'deny'");
+    }
+    const resp = await authedPost(`/permissions/${id}/verdict`, { by: AGENT, behavior });
+    if (resp.status !== 200) toolError(resp, "ack_permission");
+    return { content: [{ type: "text", text: `${behavior}ed` }] };
+  }
+
   throw new Error(`unknown tool: ${req.params.name}`);
+});
+
+// -------- Claude Code permission-relay: forward permission_request to hub --------
+
+const PermissionRequestSchema = NotificationSchema.extend({
+  method: z.literal("notifications/claude/channel/permission_request"),
+  params: z.object({
+    request_id: z.string().regex(/^[a-km-z]{5}$/i),
+    tool_name: z.string().min(1).max(120),
+    description: z.string().max(2_000),
+    input_preview: z.string().max(8_000),
+  }).passthrough(),
+});
+
+mcp.setNotificationHandler(PermissionRequestSchema, async (notification) => {
+  const { request_id, tool_name, description, input_preview } = notification.params;
+  try {
+    const resp = await authedPost("/permissions", {
+      agent: AGENT,
+      request_id,
+      tool_name,
+      description: description ?? "",
+      input_preview: input_preview ?? "",
+    });
+    if (resp.status < 200 || resp.status >= 300) {
+      // Don't retry — upstream keeps the local dialog open, human can still answer there.
+      console.error(
+        `[channel] permission_request ${request_id} POST failed: ${resp.status} ${resp.body}`,
+      );
+    }
+  } catch (e) {
+    console.error(`[channel] permission_request ${request_id} relay error:`, e);
+  }
 });
 
 await mcp.connect(new StdioServerTransport());
@@ -526,10 +605,16 @@ async function tailHub(): Promise<void> {
             kind?: string;
             handoff_id?: string;
             interrupt_id?: string;
+            permission_id?: string;
             version?: number;
             expires_at_ms?: number;
             status?: string;
             replay?: boolean;
+            snapshot?: {
+              id?: string;
+              behavior?: "allow" | "deny" | null;
+              status?: string;
+            };
             tools?: string[];
             peers?: Array<{ name: string; online: boolean }>;
             attachments_dir?: string;
@@ -597,6 +682,7 @@ async function tailHub(): Promise<void> {
               meta.kind = evt.kind;
               if (evt.handoff_id) meta.handoff_id = evt.handoff_id;
               if (evt.interrupt_id) meta.interrupt_id = evt.interrupt_id;
+              if (evt.permission_id) meta.permission_id = evt.permission_id;
               if (evt.version !== undefined) meta.version = String(evt.version);
               if (evt.expires_at_ms !== undefined) meta.expires_at_ms = String(evt.expires_at_ms);
               if (evt.status) meta.status = evt.status;
@@ -609,6 +695,24 @@ async function tailHub(): Promise<void> {
                 meta,
               },
             });
+            // Relay permission verdicts back upstream so claude's local dialog closes.
+            // Claude dedupes by request_id, so re-emitting after a local-first answer is safe.
+            if (evt.kind === "permission.resolved" && evt.permission_id) {
+              const behavior = evt.snapshot?.behavior;
+              if (behavior === "allow" || behavior === "deny") {
+                try {
+                  await mcp.notification({
+                    method: "notifications/claude/channel/permission",
+                    params: {
+                      request_id: evt.permission_id,
+                      behavior,
+                    },
+                  });
+                } catch (e) {
+                  console.error("[channel] permission verdict upstream failed:", e);
+                }
+              }
+            }
           } catch (e) {
             console.error("[channel] notification failed:", e);
           }

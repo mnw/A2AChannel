@@ -1,6 +1,6 @@
 # A2AChannel
 
-> Coordination primitives for parallel Claude Code sessions — messages, handoffs, interrupts.
+> Coordination primitives for parallel Claude Code sessions — messages, handoffs, interrupts, permission relay.
 
 ![demo](docs/demo.gif)
 
@@ -10,7 +10,7 @@ Claude Code sub-agents share their parent's context. Separate Claude Code sessio
 
 The coordination is a protocol, not a chat app. Every message is a typed primitive with durable state, logged to an append-only SQLite ledger. You're in the room too. Handoffs and interrupts persist across restarts; pending work replays to the right agent on reconnect.
 
-## Three primitives
+## Four primitives
 
 ### Messages — `post`, `post_file`
 
@@ -46,6 +46,14 @@ Soft preemption. Surfaces a red-bordered card stuck to the top of the recipient'
 |---|---|
 | `send_interrupt` | `to`, `text` (≤500 chars) |
 | `ack_interrupt` | `interrupt_id` |
+
+### Permission relay — `ack_permission`
+
+Claude Code's tool-use approvals (the `Bash`/`Write`/`Edit` prompts that pause the agent) are forwarded to the chat as sticky red cards pinned at the top of the window. Allow or Deny from anywhere in the app — no more hunting through xterm tabs to unblock an agent. The xterm dialog stays live as a fallback.
+
+Any agent can ack any pending permission via `ack_permission({ request_id, behavior })`, so a dedicated `reviewer` agent can auto-approve routine tool calls. Requires Claude Code **2.1.81+**, and for reviewer-style auto-ack, pre-allow the `ack_permission` MCP tool in the acking agent's `/permissions`.
+
+**Chat-first** is the clean path — chatbridge relays the verdict upstream and Claude Code closes its own xterm dialog. **Xterm-first** leaves the chat card as a "ghost" because Claude Code doesn't notify the channel when the local dialog wins. Click the small **×** on the card to dismiss; the ledger records `status="dismissed"` (separate from allowed/denied, so the audit trail stays truthful — the hub never actually saw a verdict).
 
 ## Quickstart
 

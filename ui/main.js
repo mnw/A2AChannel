@@ -2,6 +2,7 @@ let BUS = 'http://127.0.0.1:8011';       // overridden at bootstrap via Tauri in
 let AUTH_TOKEN = '';                     // filled by bootstrap(); bearer token for mutating routes
 let HUMAN_NAME = 'you';                  // filled by bootstrap(); the human's identity in the roster
 const handoffCards = new Map();          // handoff_id → { element, version, status, snapshot }
+const permissionCards = new Map();       // request_id → { element, version, status, snapshot }
 const MESSAGE_DOM_LIMIT = 2000;          // trim #messages to this many nodes
 const ATTACHMENT_URL_RE = /^\/image\/[A-Za-z0-9_-]+\.[a-z0-9]{1,10}$/i;
 const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp)$/i;
@@ -355,6 +356,27 @@ async function loadPendingInterrupts() {
   }
 }
 
+async function loadPendingPermissions() {
+  try {
+    const r = await authedFetch('/permissions?status=pending&limit=500');
+    if (!r.ok) return;
+    const snapshots = await r.json();
+    if (!Array.isArray(snapshots)) return;
+    for (const snapshot of snapshots) {
+      if (!snapshot || !snapshot.id) continue;
+      renderPermissionCard({
+        permission_id: snapshot.id,
+        kind: 'permission.new',
+        version: snapshot.version,
+        snapshot,
+        replay: true,
+      });
+    }
+  } catch (e) {
+    console.warn('[permissions] initial load failed:', e);
+  }
+}
+
 async function loadNutshell() {
   try {
     const r = await authedFetch('/nutshell');
@@ -615,6 +637,10 @@ function handleEvent(data) {
   }
   if (typeof data.kind === 'string' && data.kind.startsWith('interrupt.')) {
     renderInterruptCard(data);
+    return;
+  }
+  if (typeof data.kind === 'string' && data.kind.startsWith('permission.')) {
+    renderPermissionCard(data);
     return;
   }
   addMessage(data);
@@ -958,6 +984,8 @@ function renderHandoffCard(event) {
     });
     while (messagesEl.childElementCount > MESSAGE_DOM_LIMIT) {
       const first = messagesEl.firstChild;
+      if (first && first._permissionId) permissionCards.delete(first._permissionId);
+      if (first && first._interruptId) interruptCards.delete(first._interruptId);
       if (first && first._handoffId) handoffCards.delete(first._handoffId);
       messagesEl.removeChild(first);
     }
@@ -1099,6 +1127,7 @@ function renderInterruptCard(event) {
     });
     while (messagesEl.childElementCount > MESSAGE_DOM_LIMIT) {
       const first = messagesEl.firstChild;
+      if (first && first._permissionId) permissionCards.delete(first._permissionId);
       if (first && first._interruptId) interruptCards.delete(first._interruptId);
       if (first && first._handoffId) handoffCards.delete(first._handoffId);
       messagesEl.removeChild(first);
@@ -1154,6 +1183,138 @@ async function handleInterruptAction(id) {
     }
   } catch (e) {
     addMessage({ from: 'system', to: HUMAN_NAME, text: `Interrupt ack error: ${e?.message ?? e}`, ts: '' });
+  }
+}
+
+/* ── Permission cards ─────────────────────────────────────── */
+
+function renderPermissionCard(event) {
+  const snapshot = event.snapshot || (() => {
+    try { return JSON.parse(event.text || '{}'); } catch { return null; }
+  })();
+  if (!snapshot || !event.permission_id) return;
+
+  const existing = permissionCards.get(event.permission_id);
+  const incomingVersion = Number(event.version ?? snapshot.version ?? 0);
+  if (existing && existing.version >= incomingVersion) return;
+
+  if (existing) {
+    updatePermissionCardDom(existing.element, snapshot, event);
+    // Pending → resolved: unsticky from the top and move to chronological slot.
+    if (existing.status === 'pending' && snapshot.status !== 'pending') {
+      if (existing.element.parentNode === messagesEl) {
+        messagesEl.removeChild(existing.element);
+      }
+      messagesEl.appendChild(existing.element);
+    }
+    existing.version = incomingVersion;
+    existing.status = snapshot.status;
+    existing.snapshot = snapshot;
+  } else {
+    const el = buildPermissionCardDom(snapshot, event);
+    if (snapshot.status === 'pending') {
+      messagesEl.insertBefore(el, messagesEl.firstChild);
+    } else {
+      messagesEl.appendChild(el);
+    }
+    permissionCards.set(event.permission_id, {
+      element: el, version: incomingVersion, status: snapshot.status, snapshot,
+    });
+    while (messagesEl.childElementCount > MESSAGE_DOM_LIMIT) {
+      const first = messagesEl.firstChild;
+      if (first && first._permissionId) permissionCards.delete(first._permissionId);
+      if (first && first._interruptId) interruptCards.delete(first._interruptId);
+      if (first && first._handoffId) handoffCards.delete(first._handoffId);
+      messagesEl.removeChild(first);
+    }
+    if (snapshot.status !== 'pending') messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+}
+
+function buildPermissionCardDom(snapshot, event) {
+  const el = document.createElement('div');
+  el.className = 'permission-card';
+  el._permissionId = snapshot.id;
+  updatePermissionCardDom(el, snapshot, event);
+  return el;
+}
+
+function updatePermissionCardDom(el, snapshot, event) {
+  el.className = 'permission-card';
+  el.classList.add(`status-${snapshot.status}`);
+  const replayBadge = event.replay === true || event.replay === 'true'
+    ? `<span class="permission-replay-badge">(replay)</span>` : '';
+  const preview = String(snapshot.input_preview ?? '');
+  const previewHtml = preview
+    ? `<details class="permission-preview-details">
+         <summary>input</summary>
+         <pre class="permission-input-preview">${escHtml(preview)}</pre>
+       </details>`
+    : '';
+  const metaSuffix = snapshot.resolved_by
+    ? ` · ${escHtml(snapshot.behavior === 'allow' ? 'allowed' : 'denied')} by ${escHtml(snapshot.resolved_by)}`
+    : '';
+  const showActions = snapshot.status === 'pending';
+  const actionsHtml = showActions
+    ? `<div class="permission-actions">
+         <button type="button" class="allow" data-action="allow">Allow</button>
+         <button type="button" class="deny"  data-action="deny">Deny</button>
+       </div>`
+    : '';
+  const dismissHtml = showActions
+    ? `<button type="button" class="permission-dismiss" title="Dismiss — clears the card without recording an allow/deny verdict. Use when the xterm already answered this prompt." aria-label="Dismiss">×</button>`
+    : '';
+  el.innerHTML = `
+    <div class="permission-header">
+      <span class="route">⛔ Approval — ${escHtml(snapshot.agent)} · ${escHtml(snapshot.tool_name)}</span>
+      <span class="status-badge">${escHtml(snapshot.status)}</span>
+      ${replayBadge}
+      ${dismissHtml}
+    </div>
+    <div class="permission-description">${escHtml(snapshot.description || '(no description)')}</div>
+    ${previewHtml}
+    <div class="permission-meta">${escHtml(snapshot.id)}${metaSuffix}</div>
+    ${actionsHtml}
+  `;
+  el.querySelectorAll('.permission-actions button').forEach((btn) => {
+    btn.addEventListener('click', () => handlePermissionAction(snapshot.id, btn.dataset.action));
+  });
+  const dismissBtn = el.querySelector('.permission-dismiss');
+  if (dismissBtn) {
+    dismissBtn.addEventListener('click', () => handlePermissionDismiss(snapshot.id));
+  }
+}
+
+async function handlePermissionAction(id, behavior) {
+  if (behavior !== 'allow' && behavior !== 'deny') return;
+  try {
+    const r = await authedFetch(`/permissions/${encodeURIComponent(id)}/verdict`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ by: HUMAN_NAME, behavior }),
+    });
+    if (!r.ok) {
+      const err = await parseErrorBody(r);
+      addMessage({ from: 'system', to: HUMAN_NAME, text: `Permission ${behavior} failed: ${err}`, ts: '' });
+    }
+  } catch (e) {
+    addMessage({ from: 'system', to: HUMAN_NAME, text: `Permission ${behavior} error: ${e?.message ?? e}`, ts: '' });
+  }
+}
+
+async function handlePermissionDismiss(id) {
+  try {
+    const r = await authedFetch(`/permissions/${encodeURIComponent(id)}/dismiss`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ by: HUMAN_NAME }),
+    });
+    if (!r.ok) {
+      const err = await parseErrorBody(r);
+      addMessage({ from: 'system', to: HUMAN_NAME, text: `Permission dismiss failed: ${err}`, ts: '' });
+    }
+  } catch (e) {
+    addMessage({ from: 'system', to: HUMAN_NAME, text: `Permission dismiss error: ${e?.message ?? e}`, ts: '' });
   }
 }
 
@@ -1349,6 +1510,7 @@ async function bootstrap() {
     await loadNutshell();
     await loadPendingHandoffs();
     await loadPendingInterrupts();
+    await loadPendingPermissions();
     connect();
   } catch (e) {
     statusText.textContent = `roster load failed: ${e}`;
