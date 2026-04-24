@@ -24,6 +24,13 @@ import {
 
 export type HandoffStatus = "pending" | "accepted" | "declined" | "cancelled" | "expired";
 
+const HANDOFF_STATUS_FILTERS = new Set<HandoffStatus | "all">([
+  "pending", "accepted", "declined", "cancelled", "expired", "all",
+]);
+function isHandoffStatusFilter(s: string): s is HandoffStatus | "all" {
+  return (HANDOFF_STATUS_FILTERS as Set<string>).has(s);
+}
+
 export type HandoffSnapshot = {
   id: string;
   from_agent: string;
@@ -561,8 +568,7 @@ const routes: RouteDef[] = [
       const limitRaw = url.searchParams.get("limit");
       const limit = limitRaw ? Number(limitRaw) : 100;
 
-      const validStatus = new Set(["pending", "accepted", "declined", "cancelled", "expired", "all"]);
-      if (!validStatus.has(statusParam)) {
+      if (!isHandoffStatusFilter(statusParam)) {
         return Response.json({ error: `invalid status: ${statusParam}` }, { status: 400 });
       }
       if (forParam !== undefined && !validName(forParam)) {
@@ -573,7 +579,7 @@ const routes: RouteDef[] = [
       }
       return Response.json(
         listHandoffs(cap.db, {
-          status: statusParam as HandoffStatus | "all",
+          status: statusParam,
           for: forParam,
           limit,
         }),

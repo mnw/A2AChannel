@@ -23,6 +23,13 @@ import { mintInterruptId, ts, validName, validRoomLabel } from "../core/ids";
 
 export type InterruptStatus = "pending" | "acknowledged";
 
+const INTERRUPT_STATUS_FILTERS = new Set<InterruptStatus | "all">([
+  "pending", "acknowledged", "all",
+]);
+function isInterruptStatusFilter(s: string): s is InterruptStatus | "all" {
+  return (INTERRUPT_STATUS_FILTERS as Set<string>).has(s);
+}
+
 export type InterruptSnapshot = {
   id: string;
   from_agent: string;
@@ -328,8 +335,7 @@ const routes: RouteDef[] = [
       const limitRaw = url.searchParams.get("limit");
       const limit = limitRaw ? Number(limitRaw) : 100;
 
-      const validStatus = new Set(["pending", "acknowledged", "all"]);
-      if (!validStatus.has(statusParam)) {
+      if (!isInterruptStatusFilter(statusParam)) {
         return Response.json({ error: `invalid status: ${statusParam}` }, { status: 400 });
       }
       if (forParam !== undefined && !validName(forParam)) {
@@ -340,7 +346,7 @@ const routes: RouteDef[] = [
       }
       return Response.json(
         listInterrupts(cap.db, {
-          status: statusParam as InterruptStatus | "all",
+          status: statusParam,
           for: forParam,
           limit,
         }),

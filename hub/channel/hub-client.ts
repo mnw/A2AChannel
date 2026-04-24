@@ -37,11 +37,13 @@ export function resolveHub(hubEnv: string): HubInfo | null {
   return { url, token };
 }
 
-// Auto-retries once with a fresh token on 401.
-export async function authedPost(
+// Shared auth shell: resolve hub → call buildRequest → retry once on 401 after
+// re-reading the token → parse response. `buildRequest` returns a per-call
+// fetch init minus the Authorization header (which this helper injects).
+async function authedRequest(
   hubEnv: string,
   path: string,
-  body: unknown,
+  buildRequest: () => RequestInit,
 ): Promise<HubResponse> {
   let hub = resolveHub(hubEnv);
   if (!hub) {
@@ -49,16 +51,12 @@ export async function authedPost(
       `hub not found (need ${URL_PATH} and ${TOKEN_PATH}, or CHATBRIDGE_HUB env)`,
     );
   }
-  const bodyStr = typeof body === "string" ? body : JSON.stringify(body);
-  const send = (h: HubInfo) =>
-    fetch(`${h.url}${path}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${h.token}`,
-      },
-      body: bodyStr,
-    });
+  const send = (h: HubInfo) => {
+    const init = buildRequest();
+    const headers = new Headers(init.headers);
+    headers.set("Authorization", `Bearer ${h.token}`);
+    return fetch(`${h.url}${path}`, { ...init, headers });
+  };
   let r = await send(hub);
   if (r.status === 401) {
     const refreshed = resolveHub(hubEnv);
@@ -75,16 +73,24 @@ export async function authedPost(
   return { status: r.status, body: text, json: parsed };
 }
 
+// Auto-retries once with a fresh token on 401.
+export function authedPost(
+  hubEnv: string,
+  path: string,
+  body: unknown,
+): Promise<HubResponse> {
+  const bodyStr = typeof body === "string" ? body : JSON.stringify(body);
+  return authedRequest(hubEnv, path, () => ({
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: bodyStr,
+  }));
+}
+
 export async function authedUpload(
   hubEnv: string,
   filePath: string,
 ): Promise<HubResponse> {
-  let hub = resolveHub(hubEnv);
-  if (!hub) {
-    throw new Error(
-      `hub not found (need ${URL_PATH} and ${TOKEN_PATH}, or CHATBRIDGE_HUB env)`,
-    );
-  }
   const { readFileSync: readBytes, statSync } = await import("node:fs");
   const { basename } = await import("node:path");
   const filename = basename(filePath);
@@ -101,29 +107,11 @@ export async function authedUpload(
   } catch (e) {
     throw new Error(`could not read ${filePath}: ${(e as Error).message ?? e}`);
   }
-  const send = async (h: HubInfo) => {
+  return authedRequest(hubEnv, "/upload", () => {
     const form = new FormData();
     form.append("file", new Blob([bytes as unknown as BlobPart]), filename);
-    return fetch(`${h.url}/upload`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${h.token}` },
-      body: form,
-    });
-  };
-  let r = await send(hub);
-  if (r.status === 401) {
-    const refreshed = resolveHub(hubEnv);
-    if (refreshed && refreshed.token !== hub.token) {
-      hub = refreshed;
-      r = await send(hub);
-    }
-  }
-  const text = await r.text();
-  let parsed: unknown = null;
-  try {
-    parsed = text ? JSON.parse(text) : null;
-  } catch {}
-  return { status: r.status, body: text, json: parsed };
+    return { method: "POST", body: form };
+  });
 }
 
 // Map an error response from the hub into an Error with the hub-side message.

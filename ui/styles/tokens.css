@@ -34,33 +34,5 @@
   --serif: 'Fraunces', Georgia, 'Times New Roman', serif;
   --sans:  'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
 
-  /* Legacy Catppuccin aliases — kept so any unmigrated rule still
-     resolves. TODO: remove once no --ctp-* reference remains. */
-  --ctp-rosewater: var(--text);
-  --ctp-flamingo:  var(--text);
-  --ctp-pink:      var(--pink);
-  --ctp-mauve:     var(--purple);
-  --ctp-red:       var(--red);
-  --ctp-maroon:    var(--red);
-  --ctp-peach:     var(--orange);
-  --ctp-yellow:    var(--amber);
-  --ctp-green:     var(--green);
-  --ctp-teal:      var(--teal);
-  --ctp-sky:       var(--blue);
-  --ctp-sapphire:  var(--blue);
-  --ctp-blue:      var(--blue);
-  --ctp-lavender:  var(--purple);
-  --ctp-text:      var(--text);
-  --ctp-subtext1:  var(--text-muted);
-  --ctp-subtext0:  var(--text-muted);
-  --ctp-overlay2:  var(--text-muted);
-  --ctp-overlay1:  var(--text-dim);
-  --ctp-overlay0:  var(--text-dim);
-  --ctp-surface2:  var(--line);
-  --ctp-surface1:  var(--line);
-  --ctp-surface0:  var(--bg-elev);
-  --ctp-base:      var(--bg);
-  --ctp-mantle:    var(--bg-raised);
-  --ctp-crust:     var(--bg-inset);
 }
 

@@ -109,7 +109,4 @@
   letter-spacing: 0.02em;
 }
 
-/* Compact ledger variant: smaller footprint, no full handoff-id line */
-.handoff-card.compact .handoff-meta { display: none; }
-.handoff-card.compact .handoff-context { display: none; }
 

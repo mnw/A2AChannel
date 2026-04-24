@@ -23,6 +23,16 @@ import { ts, validName } from "../core/ids";
 export type PermissionStatus = "pending" | "allowed" | "denied" | "dismissed";
 export type PermissionBehavior = "allow" | "deny";
 
+const PERMISSION_STATUS_FILTERS = new Set<PermissionStatus | "all">([
+  "pending", "allowed", "denied", "dismissed", "all",
+]);
+function isPermissionStatusFilter(s: string): s is PermissionStatus | "all" {
+  return (PERMISSION_STATUS_FILTERS as Set<string>).has(s);
+}
+function isPermissionBehavior(s: string): s is PermissionBehavior {
+  return s === "allow" || s === "deny";
+}
+
 export type PermissionSnapshot = {
   id: string;
   agent: string;
@@ -356,7 +366,7 @@ const routes: RouteDef[] = [
       const by = (body.by ?? "").trim();
       const behavior = (body.behavior ?? "").trim();
       if (!validName(by)) return Response.json({ error: "invalid by" }, { status: 400 });
-      if (behavior !== "allow" && behavior !== "deny") {
+      if (!isPermissionBehavior(behavior)) {
         return Response.json({ error: "invalid behavior" }, { status: 400 });
       }
       // Cross-room verdict rule: voter must be in the requester's room, OR be human.
@@ -367,7 +377,7 @@ const routes: RouteDef[] = [
           return Response.json({ error: "cross-room verdict not permitted" }, { status: 403 });
         }
       }
-      return resolvedResponse(cap, resolvePermission(cap.db, id, by, behavior as PermissionBehavior));
+      return resolvedResponse(cap, resolvePermission(cap.db, id, by, behavior));
     },
   },
 
@@ -417,8 +427,7 @@ const routes: RouteDef[] = [
       const limitRaw = url.searchParams.get("limit");
       const limit = limitRaw ? Number(limitRaw) : 100;
 
-      const validStatus = new Set(["pending", "allowed", "denied", "dismissed", "all"]);
-      if (!validStatus.has(statusParam)) {
+      if (!isPermissionStatusFilter(statusParam)) {
         return Response.json({ error: `invalid status: ${statusParam}` }, { status: 400 });
       }
       if (forParam !== undefined && !validName(forParam)) {
@@ -429,7 +438,7 @@ const routes: RouteDef[] = [
       }
       return Response.json(
         listPermissions(cap.db, {
-          status: statusParam as PermissionStatus | "all",
+          status: statusParam,
           for: forParam,
           limit,
         }),

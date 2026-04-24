@@ -39,9 +39,8 @@ export const EXT_TO_MIME: Record<string, string> = {
   yml: "text/yaml; charset=utf-8",
 };
 
-export const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp"]);
 export const IMAGE_URL_RE = /^\/image\/[A-Za-z0-9_-]+\.[a-z0-9]{1,10}$/i;
-export const IMAGE_PATH_SEGMENT_RE = /^[A-Za-z0-9_-]+\.[a-z0-9]{1,10}$/i;
+const IMAGE_PATH_SEGMENT_RE = /^[A-Za-z0-9_-]+\.[a-z0-9]{1,10}$/i;
 
 // Build the runtime allowlist from A2A_ALLOWED_EXTENSIONS env; falls back to the
 // defaults. Validation mirrors the Rust shell's (lowercase alnum, ≤10 chars, no dots).

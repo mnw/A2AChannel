@@ -24,7 +24,6 @@ const TOKEN_BYTES: usize = 32;
 struct HubState {
     child: Mutex<Option<CommandChild>>,
     info: Mutex<Option<HubInfo>>,
-    attachments_dir: Mutex<Option<PathBuf>>,
     human_name: Mutex<Option<String>>,
 }
 
@@ -436,15 +435,6 @@ fn get_hub_url(state: State<HubState>) -> Result<HubInfo, String> {
 }
 
 #[tauri::command]
-fn get_attachments_dir(state: State<HubState>) -> Result<String, String> {
-    let guard = state.attachments_dir.lock().unwrap_or_else(|e| e.into_inner());
-    guard
-        .clone()
-        .map(|p| p.to_string_lossy().to_string())
-        .ok_or_else(|| "attachments dir not yet initialized".to_string())
-}
-
-#[tauri::command]
 fn get_human_name(state: State<HubState>) -> Result<String, String> {
     let guard = state.human_name.lock().unwrap_or_else(|e| e.into_inner());
     guard
@@ -516,7 +506,6 @@ fn reload_settings(
     {
         *state.child.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
         *state.info.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_info.clone());
-        *state.attachments_dir.lock().unwrap_or_else(|e| e.into_inner()) = Some(attachments_dir);
         *state.human_name.lock().unwrap_or_else(|e| e.into_inner()) = Some(human_name);
     }
 
@@ -567,7 +556,6 @@ pub fn run() {
         .manage(HubState {
             child: Mutex::new(None),
             info: Mutex::new(None),
-            attachments_dir: Mutex::new(None),
             human_name: Mutex::new(None),
         })
         .manage(pty::PtyRegistry::default())
@@ -575,7 +563,6 @@ pub fn run() {
             get_hub_url,
             get_app_version,
             get_mcp_template,
-            get_attachments_dir,
             get_human_name,
             open_config_file,
             reload_settings,
@@ -649,10 +636,6 @@ pub fn run() {
                     .info
                     .lock()
                     .unwrap_or_else(|e| e.into_inner()) = Some(HubInfo { url, token });
-                *state
-                    .attachments_dir
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = Some(attachments_dir);
                 *state
                     .human_name
                     .lock()

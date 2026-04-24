@@ -662,66 +662,27 @@ async function loadRoster() {
 }
 
 // /stream doesn't replay handoffs the way /agent-stream does, so load pending ones explicitly.
-async function loadPendingHandoffs() {
+// Shared loader for the three /<kind>s?status=pending endpoints. Each kind
+// maps a snapshot onto the event shape its renderer expects (handoff_id /
+// interrupt_id / permission_id; permission also tags kind="permission.new").
+async function loadPending(path, toEvent, renderFn) {
   try {
-    const r = await authedFetch('/handoffs?status=pending&limit=500');
+    const r = await authedFetch(`${path}?status=pending&limit=500`);
     if (!r.ok) return;
     const snapshots = await r.json();
     if (!Array.isArray(snapshots)) return;
     for (const snapshot of snapshots) {
       if (!snapshot || !snapshot.id) continue;
-      renderHandoffCard({
-        handoff_id: snapshot.id,
-        version: snapshot.version,
-        snapshot,
-        replay: true,
-      });
+      renderFn(toEvent(snapshot));
     }
   } catch (e) {
-    console.warn('[handoffs] initial load failed:', e);
+    console.warn(`[${path}] initial load failed:`, e);
   }
 }
 
-async function loadPendingInterrupts() {
-  try {
-    const r = await authedFetch('/interrupts?status=pending&limit=500');
-    if (!r.ok) return;
-    const snapshots = await r.json();
-    if (!Array.isArray(snapshots)) return;
-    for (const snapshot of snapshots) {
-      if (!snapshot || !snapshot.id) continue;
-      renderInterruptCard({
-        interrupt_id: snapshot.id,
-        version: snapshot.version,
-        snapshot,
-        replay: true,
-      });
-    }
-  } catch (e) {
-    console.warn('[interrupts] initial load failed:', e);
-  }
-}
-
-async function loadPendingPermissions() {
-  try {
-    const r = await authedFetch('/permissions?status=pending&limit=500');
-    if (!r.ok) return;
-    const snapshots = await r.json();
-    if (!Array.isArray(snapshots)) return;
-    for (const snapshot of snapshots) {
-      if (!snapshot || !snapshot.id) continue;
-      renderPermissionCard({
-        permission_id: snapshot.id,
-        kind: 'permission.new',
-        version: snapshot.version,
-        snapshot,
-        replay: true,
-      });
-    }
-  } catch (e) {
-    console.warn('[permissions] initial load failed:', e);
-  }
-}
+const loadPendingHandoffs    = () => loadPending('/handoffs', (s) => ({ handoff_id: s.id, version: s.version, snapshot: s, replay: true }), renderHandoffCard);
+const loadPendingInterrupts  = () => loadPending('/interrupts', (s) => ({ interrupt_id: s.id, version: s.version, snapshot: s, replay: true }), renderInterruptCard);
+const loadPendingPermissions = () => loadPending('/permissions', (s) => ({ permission_id: s.id, kind: 'permission.new', version: s.version, snapshot: s, replay: true }), renderPermissionCard);
 
 async function loadNutshell(room) {
   if (!room || room === ROOM_ALL) return;
