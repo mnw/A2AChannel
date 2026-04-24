@@ -1,6 +1,6 @@
 ## Context
 
-v0.8 shipped permission-relay as the fourth persistent state-machine primitive on top of the v0.5 handoff scaffolding. The cumulative weight of five such primitives (handoff, interrupt, permission, plus per-kind UI renderers and migrations) compounded into a 2507-line `hub/hub.ts` with 118 top-level declarations. v0.9 rooms adds a cross-cutting routing dimension to every kind's broadcast and replay; post-v0.9 the monolith is ~2800 lines.
+v0.8 shipped permission-relay as the fourth persistent state-machine primitive on top of the v0.5 handoff scaffolding. The cumulative weight of five such primitives (handoff, interrupt, permission, plus per-kind UI renderers and migrations) compounded into a 2742-line `hub/hub.ts` (post-v0.9.1) with 118+ top-level declarations. v0.9.0 shipped rooms — the cross-cutting routing dimension that touches every kind's broadcast and replay. v0.9.1 added the Shell tab and Usage pill human-affordances.
 
 The operational pain surfaced during v0.8: adding `permission` required finding and touching 20 scattered edit sites across `hub.ts`, `channel.ts`, `main.js`, and `style.css`. Worse, each new kind had to rediscover the implicit contract the others share — version calculation via `MAX(events.seq)`, SSE fan-out to UI and agent queues, replay on `/agent-stream` reconnect, briefing tool aggregation, terminal-state idempotency. None of it was written down; all of it had to hold.
 
@@ -8,10 +8,11 @@ v0.9.5 formalizes that implicit contract. It is not a code-reuse exercise — ha
 
 Current constraints:
 - macOS ARM64 only; bun compile as the sidecar toolchain; no UI bundler.
-- Ledger schema is versioned; migrations must be idempotent and additive.
+- Ledger schema is versioned (currently v6); migrations must be idempotent and additive.
 - `ui/main.js` is vanilla JS loaded as a plain `<script>`; no existing module system.
-- No test suite exists prior to this change.
-- v0.9 rooms is in-flight as a separate change; its landed state is a prerequisite.
+- No test suite exists yet — the `tests/` directory planned for v0.9 did not land and is now scoped into v0.9.5 step 0.
+- v0.9.0 rooms has shipped; the Kind contract can be designed against real room semantics rather than speculation.
+- v0.9.1 additions (Shell tab, Usage pill) are human-affordances, not kinds; they stay in `ui/main.js` and are explicitly out of the per-kind split.
 
 ## Goals / Non-Goals
 
@@ -164,11 +165,11 @@ An optional `priority?: number` field exists as an escape hatch for future kinds
 
 **Why include `priority` now if nothing uses it?** Adding the field later is a breaking type change for all kind implementations. Adding it now with a default is free insurance.
 
-### 7. Ledger schema v5 → v6 — rename `handoff_id` → `entity_id`
+### 7. Ledger schema v6 → v7 — rename `handoff_id` → `entity_id`
 
 **Anchor invariant:** "Each kind owns its schema evolution via migrate(db); migrations must be idempotent."
 
-**Decision:** The `events.handoff_id` column has been a misnomer since the v0.6 interrupt migration — it carries handoff ids, interrupt ids, permission ids, and nutshell event ids (the last keyed by `"nutshell"` literal). v0.9.5's first migration step renames it:
+**Decision:** The `events.handoff_id` column has been a misnomer since the v0.6 interrupt migration — it carries handoff ids, interrupt ids, permission ids, and nutshell event ids (the last keyed by `"nutshell"` literal). v0.9.5's schema work renames it:
 
 ```sql
 BEGIN;
@@ -181,7 +182,7 @@ COMMIT;
 
 (SQLite supports `RENAME COLUMN` since 3.25; Bun's SQLite is modern enough. Fallback to copy-drop-rename if the target runtime proves otherwise.)
 
-The rename is additive from a data perspective — no rows change. It is a schema-v6 migration wrapped in one transaction.
+The rename is additive from a data perspective — no rows change. It is a schema-v7 migration wrapped in one transaction. Prior versions: v5 (permission-dismiss, v0.8), v6 (rooms columns + per-room nutshell, v0.9.0).
 
 **Why bundle it here and not as a standalone change:** Every kind in this refactor already touches its migration helper. Renaming once, in the same release that formalizes how kinds express migrations, means future kinds reference the honest name from day one.
 
@@ -216,16 +217,21 @@ Per-kind CSS co-located at `ui/kinds/<kind>.css`, loaded via `<link>` or CSS `@i
 
 **Module migration:** `<script>` → `<script type="module">` in `index.html`. The codebase already uses `addEventListener` exclusively (no inline `onclick=`), so the migration is a mechanical tag change plus `import`/`export` statements in the extracted files.
 
-### 10. Sequencing — v0.9 prep + rooms first, v0.9.5 extract after
+### 10. Sequencing — v0.9 done, v0.9.5 absorbs the skipped prep work
 
-**Decision:**
+**Original plan:** v0.9 lands rooms + prep extractions (`hub/core/auth.ts`, `hub/core/sse.ts`) + Bun test scaffolding. v0.9.5 does the kind extraction with the prep already in place.
 
-- **v0.9 (rooms-and-controls)** lands rooms monolithically into the existing `hub.ts`. Adds (as new tasks on that change) two low-risk prep extractions: `hub/core/auth.ts` (auth + body-cap helpers) and `hub/core/sse.ts` (DropQueue + makeSSE + heartbeat). Adds the Bun test scaffolding — ~20 tests covering the pre-extraction invariants. hub.ts ends up ~2800 lines; ugly but sound.
-- **v0.9.5** does the actual kind extraction with rooms already present. The Kind contract is designed against a post-rooms world, so the broadcast scope enum includes `room` from day one and the replay hook handles room filtering correctly.
+**Actual outcome:** v0.9.0 shipped rooms (✅) and v0.9.1 added Shell tab + Usage pill. The prep extractions (`hub/core`) and the test suite did **not** land — those scopes grew and were deferred.
 
-**Why not extract first?** Designing the Kind contract before rooms ships means the scope enum misses `room`, the SSE layer doesn't know how to fan out to a room, and the contract gets redesigned the week rooms lands. Rooms is the first true cross-cutting stress test of the abstraction — use it to shape the abstraction, don't fight it.
+**Updated sequencing for v0.9.5:**
 
-**Why not combine rooms + extraction into one v0.9?** Doubles the risk surface, doubles the review burden, doubles the chance of a rollback eating a week of feature work. Two landings separated by a test suite is safer than one heroic PR.
+1. **Step 0 — Test scaffolding against the monolith.** Write the ~20 tests against today's `hub/hub.ts`. Green baseline. Commit.
+2. **Step 1 — Prep extractions.** Move auth + sse helpers to `hub/core/auth.ts` and `hub/core/sse.ts`. Mechanical; test suite catches regressions.
+3. **Step 2+ — Kind extraction.** The original v0.9.5 body (schema v7 rename, types/ledger/agents extractions, per-kind modules, per-kind UI modules, hub orchestrator reduction).
+
+**Why not split steps 0 + 1 into a separate v0.9.2?** That was the original plan and it didn't happen for scoping reasons. Bundling tests + prep into v0.9.5 keeps the refactor intellectually coherent as one unit of work, lets the test suite prove the entire sequence as it's written, and removes the "wait for prep release" gate that stalled v0.9.5 to begin with.
+
+**Why the original "rooms first, extract after" order was still correct:** Designing the Kind contract before rooms ships means the scope enum misses `room`, the SSE layer doesn't know how to fan out to a room, and the contract gets redesigned the week rooms lands. Rooms shipped as the first true cross-cutting stress test — the contract is now designed against v0.9's real behavior, not speculation.
 
 ### 11. Test scaffolding — Bun test, real SQLite, real HTTP
 
@@ -237,9 +243,10 @@ Test shape:
 - `integration/<kind>-lifecycle.test.ts` — create → list → transition → broadcast, per kind.
 - `integration/auth-contract.test.ts` — 401 without bearer, 413 over body cap, 411 without content-length (once per mutating route).
 - `integration/sse-broadcast.test.ts` — pending replay on reconnect, scope fan-out.
-- `integration/migration-forward.test.ts` — seed a v4 ledger, open under v6 code, verify schema version + row preservation + `entity_id` column.
+- `integration/rooms.test.ts` — same-room broadcasts arrive, cross-room leak is blocked, human sees everything.
+- `integration/migration-forward.test.ts` — seed a v5 ledger (pre-rooms) and a v6 ledger (post-rooms), open under v7 code, verify schema version + row preservation + `entity_id` column rename.
 
-~20 tests total. Committed in v0.9 (against the monolith) so v0.9.5 inherits a green baseline.
+~20 tests total. Was originally planned for v0.9 against the monolith; now lands as **Step 0 of v0.9.5**, against today's `hub.ts`. The suite gates every extraction step that follows.
 
 ## Risks / Trade-offs
 
@@ -255,8 +262,8 @@ Test shape:
 **[Risk] UI module migration breaks something in the webview.** `<script type="module">` changes loading timing; module scope closes over variables differently than global scope.
 **Mitigation:** Incremental — migrate one kind's UI module first, ship it, verify in the Tauri webview, then migrate the others. The in-browser console (v0.6's devtools-on-in-release accepted risk) makes this fast to debug.
 
-**[Risk] Schema v5 → v6 rename breaks an unnoticed query.** Any code reading `events.handoff_id` that isn't updated.
-**Mitigation:** Grep for `handoff_id` across the repo as part of the migration task. There should be exactly one legitimate consumer (the generic event-insert helper). Tests assert the rename is effective and queries work against the new name.
+**[Risk] Schema v6 → v7 rename breaks an unnoticed query.** Any code reading `events.handoff_id` that isn't updated. Post-v0.9.1 the column is referenced by all four kind `load*` helpers and (now) the room-aware event inserts.
+**Mitigation:** Grep for `handoff_id` across the repo as part of the migration task. Expect ~6-8 call sites to update (generic event insert + each kind's `load*` + any list helpers). Tests assert the rename is effective and queries work against the new name.
 
 **[Risk] Test suite becomes flaky on hub-port collision or file-system races.**
 **Mitigation:** Each test mints a fresh temp dir + fresh dynamic port. Use Bun's `Bun.serve({ port: 0 })` pattern for OS-assigned ports. Close hubs in `afterEach`. The v0.8 install.sh pattern already proves this works.
@@ -269,25 +276,26 @@ Test shape:
 
 ## Migration Plan
 
-**Pre-v0.9.5 prerequisites (land in v0.9):**
-1. Extract `hub/core/auth.ts` — move `requireAuth`, `requireReadAuth`, `requireJsonBody`, `ctEquals`, `ALLOWED_ORIGINS`. No behavior change.
-2. Extract `hub/core/sse.ts` — move `DropQueue`, `makeSSE`, heartbeat. No behavior change.
-3. Commit Bun test scaffolding. ~20 tests green against the monolith.
-4. v0.9 rooms feature complete.
+**Landed state at v0.9.5 kickoff:**
+- v0.9.0 rooms shipped (schema v6; `room` column on agents/events/handoffs/interrupts/permissions; per-room nutshell).
+- v0.9.1 added Shell tab + Usage pill + permission verdict room-check.
+- Originally-planned v0.9 prep (`hub/core/auth.ts`, `hub/core/sse.ts`, test suite) **did not land**. Absorbed into v0.9.5 below.
 
-**v0.9.5 implementation order (derived from actual code post-v0.9, not speculated):**
-1. Ledger v5 → v6 migration (rename `handoff_id` → `entity_id`). Land standalone first so the refactor builds on the new name.
-2. Extract `hub/core/ledger.ts`, `hub/core/events.ts`, `hub/core/agents.ts`, `hub/core/types.ts`.
-3. Define `KindModule`, `HubCapabilities`, `Scope`, `RouteDef` interfaces.
-4. Implement the SSE layer's scope resolver in `hub/core/sse.ts`.
-5. Extract `hub/kinds/interrupt.ts` first — simplest state machine, one verb. Smoke with tests.
-6. Extract `hub/kinds/handoff.ts`.
-7. Extract `hub/kinds/permission.ts`.
-8. Move `hub/nutshell.ts` as standalone module.
-9. Reduce `hub.ts` to orchestrator: registry iteration, Bun.serve shell, startup/shutdown.
-10. Migrate UI: per-kind modules, `<script type="module">`, co-located CSS.
-11. Run full test suite; smoke against installed build.
-12. Ship.
+**v0.9.5 implementation order (derived from actual post-v0.9.1 code):**
+1. **Test scaffolding.** Write ~20 Bun tests against today's monolithic `hub.ts`. Green baseline. No production code changes.
+2. **Prep extractions.** Move auth + sse helpers into `hub/core/auth.ts` and `hub/core/sse.ts`. Test suite gates.
+3. **Ledger v6 → v7 migration.** Rename `handoff_id` → `entity_id`. Land standalone so subsequent extractions reference the honest name.
+4. Extract `hub/core/ledger.ts`, `hub/core/events.ts`, `hub/core/agents.ts`, `hub/core/types.ts`.
+5. Define `KindModule`, `HubCapabilities`, `Scope`, `RouteDef` interfaces.
+6. Implement the SSE layer's scope resolver (including the `{ kind: "room", room }` branch that already exists in the monolith's broadcast logic) in `hub/core/sse.ts`.
+7. Extract `hub/kinds/interrupt.ts` first — simplest state machine, one verb. Smoke with tests.
+8. Extract `hub/kinds/handoff.ts`.
+9. Extract `hub/kinds/permission.ts`.
+10. Move `hub/nutshell.ts` as standalone module.
+11. Reduce `hub.ts` to orchestrator: registry iteration, Bun.serve shell, startup/shutdown.
+12. Migrate UI: per-kind modules for handoff / interrupt / permission, `<script type="module">`, co-located CSS. Shell tab + Usage pill stay in `ui/main.js`.
+13. Run full test suite; smoke against installed build.
+14. Ship.
 
 **Rollback:**
 - If a regression surfaces post-ship, the whole v0.9.5 refactor reverts atomically (it's one PR). User-facing behavior is unchanged, so a revert doesn't require data migration other than the schema-version bump-down — caught by the downgrade-refuse guard.

@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>A2AChannel</title>
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="kinds/handoff.css">
+<link rel="stylesheet" href="kinds/interrupt.css">
+<link rel="stylesheet" href="kinds/permission.css">
 <link rel="stylesheet" href="vendor/xterm/xterm.css">
 </head>
 <body class="no-terminal">
@@ -42,7 +45,7 @@
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
         </button>
       </div>
-      <div class="usage-pill" id="usage-pill" title="Populated from the usage banner claude prints (e.g. on /cost). Click any chip to copy the reset delta.">
+      <div class="usage-pill" id="usage-pill" title="Token counts across all claudes on this machine. Session = current 5-hour block. Weekly = rolling 7 days. Click any chip to copy.">
         <span class="usage-chip" id="usage-session" data-empty="1">
           <span class="usage-label">Session</span>
           <span class="usage-pct">—</span>

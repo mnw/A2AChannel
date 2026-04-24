@@ -6,12 +6,43 @@ state beyond the in-memory chat log. **Typed protocol messages** have a
 `kind`, a typed payload, a lifecycle, and persist in a SQLite ledger so
 in-flight work survives app restarts.
 
-v0.6 implements three structured kinds: **`handoff`** (typed work transfer
-with an explicit state machine), **`interrupt`** (high-visibility attention
-flag), and **`nutshell`** (single-row living project summary). Additional
-kinds (`proposal`, `question`, `review_request`, `status`, `decision`, …)
-can be added without schema migration — every kind writes to the same
-`events` table and keeps its derived state in a kind-specific projection.
+Today's structured kinds: **`handoff`** (typed work transfer with an explicit
+state machine), **`interrupt`** (high-visibility attention flag), **`permission`**
+(Claude Code tool-use approval relay, v0.8+). **`nutshell`** is a single-row
+per-room living project summary — not a kind (no lifecycle) but uses the
+same event ledger for audit. Additional kinds can be added without schema
+migration; every kind writes to the same `events` table and keeps its derived
+state in a kind-specific projection.
+
+## Kind runtime (v0.9.5+)
+
+Every state-machine kind implements the `KindModule` contract from
+`hub/core/types.ts`:
+
+```ts
+type KindModule = {
+  kind: string;                                                // "handoff", "interrupt", "permission"
+  migrate(db: Database): void;                                 // idempotent schema migration
+  routes: RouteDef[];                                          // static HTTP route declarations
+  pendingFor(agent: AgentCtx, cap: HubCapabilities): Entry[];  // reconnect replay
+  toolNames: string[];                                         // briefing aggregates these
+  priority?: number;                                           // optional replay-ordering hint
+};
+```
+
+The hub orchestrator (`hub/hub.ts`) is kind-agnostic. At startup it iterates
+the `KINDS` array, calls `migrate(db)` on each, precompiles their `routes[]`
+into a dispatch table, and on agent reconnect gathers `pendingFor(agent, cap)`
+from every kind to replay. Briefing tool list is aggregated from each kind's
+`toolNames`.
+
+Route handlers receive `HubCapabilities` — the sole access path for DB, scoped
+agent accessors, SSE emit with typed `Scope` (`broadcast | to-agents | ui-only
+| room`), auth helpers, and event-log insert. Kinds never touch hub-level
+globals; the orchestrator owns the state.
+
+Adding a kind: drop a file at `hub/kinds/<kind>.ts` implementing the contract,
+add it to the `KINDS` array in `hub/hub.ts`. That's it. No other edits required.
 
 ---
 
@@ -162,6 +193,12 @@ same CSP, same allowlist.
 Behavior: reads the file, multipart-POSTs to `/upload`, then calls `/post`
 with `image = <returned URL>`. Peers receive `[attachment: <abs path>]` in
 their channel notifications — same convention as human uploads.
+
+The tool's return value is the **absolute filesystem path** (same path the
+recipient sees via `[attachment: ]`). The hub's `/upload` route also
+returns a `path` field alongside the `url` field; callers composing a
+subsequent `send_handoff.context` should reference the fs path, not the
+`/image/<id>.<ext>` URL (the URL is for the UI viewer only).
 
 Constraints (enforced hub-side):
 - Filename extension must be in `config.json::attachment_extensions`
@@ -362,6 +399,10 @@ xterm-only flow.
 ### MCP tools
 
 - `ack_permission({request_id, behavior})` — any agent may ack any pending permission. First verdict wins; later arrivals are idempotent (same behavior) or rejected with 409 (different behavior).
+
+  Tool return value: `verdict_applied=<allow|deny> resolved_by=<agent> your_verdict_won=<true|false>` (plus `already_resolved=true` suffix when the race was lost). Delegation-minded callers (four-eyes, peer-quorum) must read `your_verdict_won` — a `200` alone means the state is resolved, not that the caller's verdict was the transitioning one.
+
+  **Design note:** `ack_permission` is itself an MCP tool call, so Claude Code's local permission UI gates it for the acking agent unless `chatbridge__ack_permission` is in that agent's allowlist. For delegation to race the human's manual click on the original prompt, pre-allowlist the tool in the delegator's Claude Code config (`"permissions": { "allow": ["mcp__chatbridge__ack_permission"] }` or equivalent). Without pre-allowlist, the human typically wins the race and the peer-ack becomes a signal channel, not an actual delegation mechanism.
 
 ### MCP capability
 
@@ -630,6 +671,57 @@ derived-state table alongside `handoffs`.
 | `decision` | Pinnable, searchable outcome of a discussion. |
 
 None are implemented yet. The handoff pilot proves the pattern.
+
+---
+
+## Wire semantics (clarifications)
+
+These are observable properties of the protocol that consumers often
+assume something else about. Stated once here rather than sprinkled through
+each kind:
+
+- **Unicode canonicalization.** JSON string escapes in inbound payloads
+  (`\uXXXX` form) are canonicalized to literal UTF-8 codepoints before the
+  hub persists and broadcasts them. Semantic equality is preserved
+  byte-for-byte at the codepoint level; byte-for-byte equality against the
+  sender's pre-serialization wire form is not. Consumers wanting
+  cross-agent hash integrity must re-serialize with an agreed canonical
+  form (e.g. `json.dumps(..., ensure_ascii=False, separators=(",", ":"),
+  sort_keys=True)`) before hashing. The hub does not compute or expose a
+  canonical hash.
+- **Handoff TTL clock.** `expires_at_ms` is set at hub-side creation time
+  (when `POST /handoffs` commits), not at the agent's tool-call issuance.
+  Permission-prompt latency between the tool call and the hub receiving the
+  request does not eat into the TTL budget — which is correct for
+  agent-driven senders where human gate latency is outside their control,
+  but subtle enough to call out.
+- **Race arbitration return shape.** Competing transitions against an
+  already-terminal entity (e.g. `cancel_handoff` after `accept_handoff`
+  won) return `MCP -32603 / 409 handoff already <status>`. Race loss is
+  distinguishable from wire latency via the 409 — consumers can treat 409
+  as "peer transitioned first" rather than retrying blindly.
+- **Permission-gate serialization of parallel tool calls.** Claude Code's
+  local permission UI queues tool-call approvals strictly serially.
+  Multiple `send_handoff` calls emitted from a single turn are approved
+  one at a time; the sender-side "burst" intent is lost even though the
+  hub handles the eventual fan-out concurrently. Not a hub property —
+  upstream behavior.
+- **Effective `send_handoff.context` ceiling.** The hub enforces a 1 MiB
+  JSON-body cap on `/handoffs`. Agent-side, the practical ceiling is well
+  below that because the sender must Read the payload into context
+  (Read tool: 256 KiB file-size cap AND 25k-token content cap) and re-emit
+  it inline as a tool-call argument (bounded by output-token budget).
+  Expect ~200 KiB ASCII / ~50 KiB unicode-heavy JSON as the effective
+  sender ceiling. To ship payloads at the hub's nominal cap, a
+  `context_file_ref` parameter would be needed (not implemented).
+- **Pending-entity replay on reconnect.** When an agent connects to
+  `/agent-stream`, the hub emits a briefing frame followed by every
+  currently-pending `handoff.new`, `interrupt.new`, and `permission.new`
+  addressed to or involving the agent (respecting room scope) with
+  `meta.replay="true"`. Fresh sessions with no prior conversation context
+  can discover their inbox this way — no `list_pending_*` query tool is
+  needed. Reconciliation follows the `(id, version)` contract, so replay
+  is idempotent.
 
 ---
 

@@ -50,9 +50,53 @@ reasonModalInput?.addEventListener('keydown', (e) => {
 });
 
 async function authedFetch(path, init = {}) {
-  const headers = { ...(init.headers || {}) };
-  if (AUTH_TOKEN) headers['Authorization'] = `Bearer ${AUTH_TOKEN}`;
-  return fetch(`${BUS}${path}`, { ...init, headers });
+  const build = () => {
+    const h = { ...(init.headers || {}) };
+    if (AUTH_TOKEN) h['Authorization'] = `Bearer ${AUTH_TOKEN}`;
+    return { url: `${BUS}${path}`, opts: { ...init, headers: h } };
+  };
+  const first = build();
+  try {
+    return await fetch(first.url, first.opts);
+  } catch (err) {
+    // Transport-level failure. Refresh hub info from Rust + retry once.
+    const firstMsg = err?.message ?? String(err);
+    const invoke =
+      window.__TAURI_INTERNALS__?.invoke ||
+      window.__TAURI__?.core?.invoke ||
+      window.__TAURI__?.invoke;
+    if (!invoke) {
+      const e = new Error(`transport fail on ${first.url} (${firstMsg}); Tauri invoke unavailable`);
+      throw e;
+    }
+    let refreshed = false;
+    const oldBus = BUS;
+    try {
+      const info = await invoke('get_hub_url');
+      if (info && typeof info === 'object') {
+        if (typeof info.url === 'string' && info.url) BUS = info.url;
+        if (typeof info.token === 'string') AUTH_TOKEN = info.token;
+      } else if (typeof info === 'string' && info) {
+        BUS = info;
+      }
+      refreshed = BUS !== oldBus;
+    } catch (invokeErr) {
+      const e = new Error(
+        `transport fail on ${first.url} (${firstMsg}); get_hub_url failed: ${invokeErr?.message ?? invokeErr}`,
+      );
+      throw e;
+    }
+    const second = build();
+    try {
+      return await fetch(second.url, second.opts);
+    } catch (retryErr) {
+      const retryMsg = retryErr?.message ?? String(retryErr);
+      const detail = refreshed
+        ? `transport fail on ${first.url}; refreshed to ${BUS} and retry also failed (${retryMsg})`
+        : `transport fail on ${first.url} (${firstMsg}); retry on ${BUS} also failed (${retryMsg})`;
+      throw new Error(detail);
+    }
+  }
 }
 
 async function parseErrorBody(r) {
@@ -112,83 +156,95 @@ const SELECTED_ROOM_KEY = 'a2achannel_selected_room';
 const ROOM_ALL = '__ALL__';
 let SELECTED_ROOM = localStorage.getItem(SELECTED_ROOM_KEY) || ROOM_ALL;
 
-/* ── Usage pill: session + weekly plan limits ──────────────────────
-   Populated passively by terminal.js when any agent's output includes
-   the Claude Code usage banner. Reset deltas are stored as absolute
-   epoch ms so the header ticks down correctly without any further
-   source events. Stale > 15 min dims the chip; expired resets read "now". */
-const USAGE_STORAGE_KEY = 'a2achannel_usage';
-const USAGE_STALE_MS = 15 * 60 * 1000;
-const usage = { session: null, weekly: null };
-try {
-  const raw = localStorage.getItem(USAGE_STORAGE_KEY);
-  if (raw) Object.assign(usage, JSON.parse(raw));
-} catch {}
+/* ── Usage pill: session + weekly token counts ─────────────────────
+   Polls GET /usage every 60s. The hub scans ~/.claude/projects/*.jsonl
+   transcripts (ccusage-style) to derive a 5-hour session block + rolling
+   7-day total. No % of plan — the per-tier caps aren't public and the
+   plan tier isn't in the transcripts. We show absolute tokens instead.
+   This covers every claude on the machine, not just embedded panes. */
+const USAGE_POLL_MS = 60_000;
+let usageSnapshot = null;
 
-function usageLevel(pct) {
-  if (pct >= 90) return 'danger';
-  if (pct >= 75) return 'warn';
-  return 'ok';
+function formatTokens(n) {
+  if (!Number.isFinite(n) || n <= 0) return '0';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}k`;
+  return String(n);
 }
-function formatResetDelta(resetAtMs) {
-  const remaining = resetAtMs - Date.now();
+function formatCountdown(targetMs) {
+  const remaining = targetMs - Date.now();
   if (remaining <= 0) return 'resets now';
   const mins = Math.floor(remaining / 60_000);
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   return h > 0 ? `resets ${h}h ${m}m` : `resets ${m}m`;
 }
-function renderUsageChip(kind, snap) {
-  const el = document.getElementById(kind === 'session' ? 'usage-session' : 'usage-weekly');
-  if (!el) return;
-  const pctEl = el.querySelector('.usage-pct');
-  const resetEl = el.querySelector('.usage-reset');
+function renderUsage() {
+  const sessionEl = document.getElementById('usage-session');
+  const weeklyEl = document.getElementById('usage-weekly');
+  if (!sessionEl || !weeklyEl) return;
+  const snap = usageSnapshot;
+  const sessionPct = sessionEl.querySelector('.usage-pct');
+  const sessionReset = sessionEl.querySelector('.usage-reset');
+  const weeklyPct = weeklyEl.querySelector('.usage-pct');
+  const weeklyReset = weeklyEl.querySelector('.usage-reset');
+
   if (!snap) {
-    el.dataset.empty = '1';
-    delete el.dataset.level;
-    delete el.dataset.stale;
-    pctEl.textContent = '—';
-    resetEl.textContent = 'no data';
-    el.title = `Run /cost in any agent to populate ${kind}.`;
+    sessionEl.dataset.empty = '1';
+    weeklyEl.dataset.empty = '1';
+    sessionPct.textContent = '—';
+    sessionReset.textContent = 'no data';
+    weeklyPct.textContent = '—';
+    weeklyReset.textContent = 'no data';
+    sessionEl.title = weeklyEl.title = 'Use any claude session on this machine to populate.';
     return;
   }
-  delete el.dataset.empty;
-  el.dataset.level = usageLevel(snap.pct);
-  const age = Date.now() - snap.capturedAtMs;
-  if (age > USAGE_STALE_MS) el.dataset.stale = '1'; else delete el.dataset.stale;
-  pctEl.textContent = `${snap.pct}%`;
-  resetEl.textContent = formatResetDelta(snap.resetAtMs);
-  const capturedFrom = snap.sourceAgent || 'unknown';
-  const capturedAt = new Date(snap.capturedAtMs).toLocaleTimeString();
-  el.title = `${kind === 'session' ? 'Current session' : 'Weekly limits (all models)'}: ${snap.pct}% used\nlast seen from ${capturedFrom} at ${capturedAt}`;
+
+  if (snap.session.blockEndMs && snap.session.active) {
+    delete sessionEl.dataset.empty;
+    sessionPct.textContent = formatTokens(snap.session.totalTokens);
+    sessionReset.textContent = formatCountdown(snap.session.blockEndMs);
+    const startedAt = new Date(snap.session.blockStartMs).toLocaleTimeString();
+    sessionEl.title = `Active 5-hour block: ${snap.session.totalTokens.toLocaleString()} tokens across all claudes on this machine. Block started ${startedAt}.`;
+  } else {
+    sessionEl.dataset.empty = '1';
+    sessionPct.textContent = '—';
+    sessionReset.textContent = 'idle';
+    sessionEl.title = 'No active session block. A new 5-hour window starts on your next claude message.';
+  }
+
+  delete weeklyEl.dataset.empty;
+  weeklyPct.textContent = formatTokens(snap.weekly.totalTokens);
+  weeklyReset.textContent = 'last 7d';
+  weeklyEl.title = `Rolling 7-day total: ${snap.weekly.totalTokens.toLocaleString()} tokens across all claudes on this machine.`;
 }
-function renderUsage() {
-  renderUsageChip('session', usage.session);
-  renderUsageChip('weekly', usage.weekly);
+async function refreshUsage() {
+  try {
+    const r = await authedFetch('/usage');
+    if (!r.ok) return;
+    usageSnapshot = await r.json();
+    renderUsage();
+  } catch {
+    // Transport hiccups are silent — the pill just stays on its last paint.
+  }
 }
-function persistUsage() {
-  try { localStorage.setItem(USAGE_STORAGE_KEY, JSON.stringify(usage)); } catch {}
-}
-document.addEventListener('a2a:usage', (e) => {
-  const snap = e?.detail;
-  if (!snap || (snap.kind !== 'session' && snap.kind !== 'weekly')) return;
-  usage[snap.kind] = snap;
-  persistUsage();
-  renderUsage();
-});
-// Tick once a minute so "resets in 3h 51m" drifts down without a source event.
+// Tick once a minute to drift the "resets in 3h 51m" label without a fresh fetch.
 setInterval(renderUsage, 60_000);
-// Click-to-copy the reset delta.
+setInterval(refreshUsage, USAGE_POLL_MS);
+// Click-to-copy the current reading.
 for (const id of ['usage-session', 'usage-weekly']) {
   document.getElementById(id)?.addEventListener('click', () => {
+    if (!usageSnapshot) return;
     const kind = id === 'usage-session' ? 'session' : 'weekly';
-    const snap = usage[kind];
-    if (!snap) return;
-    navigator.clipboard?.writeText(`${snap.pct}% used · ${formatResetDelta(snap.resetAtMs)}`);
+    const tokens = kind === 'session' ? usageSnapshot.session.totalTokens : usageSnapshot.weekly.totalTokens;
+    const tail = kind === 'session' && usageSnapshot.session.blockEndMs
+      ? formatCountdown(usageSnapshot.session.blockEndMs)
+      : 'last 7d';
+    navigator.clipboard?.writeText(`${formatTokens(tokens)} tokens · ${tail}`);
   });
 }
-// Initial paint (picks up last-session values from localStorage).
 renderUsage();
+refreshUsage();
 const roomSwitcherEl   = document.getElementById('room-switcher');
 const roomDisplayBtn   = document.getElementById('room-display');
 const roomDisplayText  = roomDisplayBtn?.querySelector('.room-display-text');
@@ -341,6 +397,10 @@ roomSwitcherEl?.addEventListener('change', () => {
   renderRoomMenu();
   updatePauseResumeState();
   applyRoomFilter();
+  // Room change re-filters the target dropdown + menu so we don't surface
+  // out-of-room agents in the composer. Mention autocomplete uses SELECTED_ROOM
+  // live and doesn't need a re-render.
+  renderTargetDropdown();
   // Fetch (or refresh) the selected room's nutshell so the strip updates.
   if (SELECTED_ROOM !== ROOM_ALL) {
     loadNutshell(SELECTED_ROOM);
@@ -468,17 +528,21 @@ function renderLegend() {
 function renderTargetDropdown() {
   const prev = targetEl.value || 'auto';
   targetEl.innerHTML = '';
+  // Room-scoped roster. In ALL view, show everyone (human's god view).
+  const visibleRoster = SELECTED_ROOM === ROOM_ALL
+    ? ROSTER
+    : ROSTER.filter((a) => a.room === null || a.room === SELECTED_ROOM);
   const optAuto = document.createElement('option');
   optAuto.value = 'auto';
   optAuto.textContent = '@ mentions';
   targetEl.appendChild(optAuto);
-  for (const a of ROSTER) {
+  for (const a of visibleRoster) {
     const opt = document.createElement('option');
     opt.value = a.name;
     opt.textContent = `→ ${cap(a.name)}`;
     targetEl.appendChild(opt);
   }
-  if (ROSTER.length > 1) {
+  if (visibleRoster.length > 1) {
     const optAll = document.createElement('option');
     optAll.value = 'all';
     optAll.textContent = '→ All';
@@ -489,7 +553,7 @@ function renderTargetDropdown() {
   sep.disabled = true;
   sep.textContent = '──────────';
   targetEl.appendChild(sep);
-  for (const a of ROSTER) {
+  for (const a of visibleRoster) {
     if (a.name === HUMAN_NAME) continue;
     const opt = document.createElement('option');
     opt.value = `!${a.name}`;
@@ -521,15 +585,21 @@ function renderTargetMenu() {
     return el;
   };
 
+  // Same-room roster (plus human, always visible as super-user). In ALL view,
+  // show everyone — the human's god view lets them address any agent by name.
+  const visibleRoster = SELECTED_ROOM === ROOM_ALL
+    ? ROSTER
+    : ROSTER.filter((a) => a.room === null || a.room === SELECTED_ROOM);
+
   targetMenu.appendChild(build('auto', '@ mentions'));
-  for (const a of ROSTER) {
+  for (const a of visibleRoster) {
     targetMenu.appendChild(build(a.name, `→ ${cap(a.name)}`));
   }
-  if (ROSTER.length > 1) {
+  if (visibleRoster.length > 1) {
     targetMenu.appendChild(build('all', '→ All'));
   }
 
-  const interruptAgents = ROSTER.filter((a) => a.name !== HUMAN_NAME);
+  const interruptAgents = visibleRoster.filter((a) => a.name !== HUMAN_NAME);
   if (interruptAgents.length) {
     const divider = document.createElement('div');
     divider.className = 'target-menu-divider';
@@ -728,9 +798,7 @@ function addMessage(data) {
 
   div.appendChild(content);
   messagesEl.appendChild(div);
-  while (messagesEl.childElementCount > MESSAGE_DOM_LIMIT) {
-    messagesEl.removeChild(messagesEl.firstChild);
-  }
+  trimMessages();
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
@@ -1066,9 +1134,16 @@ function currentMentionContext() {
 function updateMentionPopover() {
   const ctx = currentMentionContext();
   if (!ctx) { hideMentionPopover(); return; }
-  const names = ROSTER.map(a => a.name);
+  // Filter roster by SELECTED_ROOM so the autocomplete doesn't surface peers
+  // from other projects. The human (room=null) is always visible (super-user;
+  // implicitly in every room). When SELECTED_ROOM === ROOM_ALL the filter is
+  // a pass-through (god view).
+  const visibleRoster = SELECTED_ROOM === ROOM_ALL
+    ? ROSTER
+    : ROSTER.filter((a) => a.room === null || a.room === SELECTED_ROOM);
+  const names = visibleRoster.map(a => a.name);
   mentionMatches = names.filter(n => n.toLowerCase().startsWith(ctx.query));
-  if (ROSTER.length > 1 && 'all'.startsWith(ctx.query)) mentionMatches.push('all');
+  if (visibleRoster.length > 1 && 'all'.startsWith(ctx.query)) mentionMatches.push('all');
   if (!mentionMatches.length) { hideMentionPopover(); return; }
   if (mentionActive >= mentionMatches.length) mentionActive = 0;
   renderMentionPopover();
@@ -1264,13 +1339,7 @@ function renderHandoffCard(event) {
       status: snapshot.status,
       snapshot,
     });
-    while (messagesEl.childElementCount > MESSAGE_DOM_LIMIT) {
-      const first = messagesEl.firstChild;
-      if (first && first._permissionId) permissionCards.delete(first._permissionId);
-      if (first && first._interruptId) interruptCards.delete(first._interruptId);
-      if (first && first._handoffId) handoffCards.delete(first._handoffId);
-      messagesEl.removeChild(first);
-    }
+    trimMessages();
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 }
@@ -1408,13 +1477,7 @@ function renderInterruptCard(event) {
     interruptCards.set(event.interrupt_id, {
       element: el, version: incomingVersion, status: snapshot.status, snapshot,
     });
-    while (messagesEl.childElementCount > MESSAGE_DOM_LIMIT) {
-      const first = messagesEl.firstChild;
-      if (first && first._permissionId) permissionCards.delete(first._permissionId);
-      if (first && first._interruptId) interruptCards.delete(first._interruptId);
-      if (first && first._handoffId) handoffCards.delete(first._handoffId);
-      messagesEl.removeChild(first);
-    }
+    trimMessages();
     if (snapshot.status !== 'pending') messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 }
@@ -1472,6 +1535,38 @@ async function handleInterruptAction(id) {
 
 /* ── Permission cards ─────────────────────────────────────── */
 
+// Single sticky container that holds every currently-pending permission card.
+// Only this element is position:sticky — individual cards inside it are plain
+// flow children so they stack vertically instead of piling at top:0.
+function getPermissionStack() {
+  let stack = document.getElementById('permission-stack');
+  if (!stack) {
+    stack = document.createElement('div');
+    stack.id = 'permission-stack';
+    messagesEl.insertBefore(stack, messagesEl.firstChild);
+  } else if (stack !== messagesEl.firstChild) {
+    // Keep it pinned as the first child so sticky anchors to the top edge.
+    messagesEl.insertBefore(stack, messagesEl.firstChild);
+  }
+  return stack;
+}
+
+// DOM-limit trim that skips the persistent #permission-stack (which is always
+// firstChild when present). Without the skip, trim deletes the stack itself,
+// breaking every subsequent pending card.
+function trimMessages() {
+  const stack = document.getElementById('permission-stack');
+  while (messagesEl.childElementCount > MESSAGE_DOM_LIMIT) {
+    let target = messagesEl.firstChild;
+    if (target === stack) target = stack.nextSibling;
+    if (!target) break;
+    if (target._permissionId) permissionCards.delete(target._permissionId);
+    if (target._interruptId) interruptCards.delete(target._interruptId);
+    if (target._handoffId) handoffCards.delete(target._handoffId);
+    messagesEl.removeChild(target);
+  }
+}
+
 function renderPermissionCard(event) {
   const snapshot = event.snapshot || (() => {
     try { return JSON.parse(event.text || '{}'); } catch { return null; }
@@ -1484,11 +1579,9 @@ function renderPermissionCard(event) {
 
   if (existing) {
     updatePermissionCardDom(existing.element, snapshot, event);
-    // Pending → resolved: unsticky from the top and move to chronological slot.
+    // Pending → resolved: leave the sticky stack, drop into chronological slot.
     if (existing.status === 'pending' && snapshot.status !== 'pending') {
-      if (existing.element.parentNode === messagesEl) {
-        messagesEl.removeChild(existing.element);
-      }
+      existing.element.remove();
       messagesEl.appendChild(existing.element);
     }
     existing.version = incomingVersion;
@@ -1497,20 +1590,14 @@ function renderPermissionCard(event) {
   } else {
     const el = buildPermissionCardDom(snapshot, event);
     if (snapshot.status === 'pending') {
-      messagesEl.insertBefore(el, messagesEl.firstChild);
+      getPermissionStack().appendChild(el);
     } else {
       messagesEl.appendChild(el);
     }
     permissionCards.set(event.permission_id, {
       element: el, version: incomingVersion, status: snapshot.status, snapshot,
     });
-    while (messagesEl.childElementCount > MESSAGE_DOM_LIMIT) {
-      const first = messagesEl.firstChild;
-      if (first && first._permissionId) permissionCards.delete(first._permissionId);
-      if (first && first._interruptId) interruptCards.delete(first._interruptId);
-      if (first && first._handoffId) handoffCards.delete(first._handoffId);
-      messagesEl.removeChild(first);
-    }
+    trimMessages();
     if (snapshot.status !== 'pending') messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 }

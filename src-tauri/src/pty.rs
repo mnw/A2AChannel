@@ -141,8 +141,11 @@ fn claude_command(agent: &str, room: &str, session_mode: Option<&str>) -> Result
     };
     let claude_path = resolve_claude_path();
     let claude_escaped = claude_path.to_string_lossy().replace('\'', r"'\''");
+    // Pre-allow ack_permission so peer verdicts don't trigger a local permission
+    // prompt on the acker — required for the peer-vote design in permission-relay.
+    // Without this the feature is broken: a human would have to ack the ack.
     Ok(format!(
-        "'{claude_escaped}' {mode_part}--mcp-config '{path_str}' --dangerously-load-development-channels server:chatbridge"
+        "'{claude_escaped}' {mode_part}--mcp-config '{path_str}' --allowed-tools 'mcp__chatbridge__ack_permission' --dangerously-load-development-channels server:chatbridge"
     ))
 }
 
@@ -229,6 +232,7 @@ pub fn pty_spawn(
         let _ = tmux_run(&["set-option", "-t", &agent, "remain-on-exit", "off"]);
         let _ = tmux_run(&["set-option", "-t", &agent, "status", "off"]);
         let _ = tmux_run(&["set-environment", "-t", &agent, "TERM", "xterm-256color"]);
+        let _ = tmux_run(&["set-environment", "-t", &agent, "COLORTERM", "truecolor"]);
         let _ = tmux_run(&["set-environment", "-t", &agent, "LANG", &lang]);
         let _ = tmux_run(&["set-environment", "-t", &agent, "LC_ALL", &lang]);
     } else {
@@ -240,6 +244,8 @@ pub fn pty_spawn(
         let mut args: Vec<&str> = vec!["new-session", "-d", "-s", &agent];
         args.push("-e");
         args.push("TERM=xterm-256color");
+        args.push("-e");
+        args.push("COLORTERM=truecolor");
         args.push("-e");
         args.push(&lang_env);
         args.push("-e");
@@ -277,6 +283,7 @@ pub fn pty_spawn(
     builder.arg("-t");
     builder.arg(&agent);
     builder.env("TERM", "xterm-256color");
+    builder.env("COLORTERM", "truecolor");
     builder.env("LANG", &lang);
     builder.env("LC_ALL", &lang);
 
@@ -428,18 +435,30 @@ pub fn pty_spawn_shell(
     // (`[[ -o interactive ]]`) fire more reliably with the flag set explicitly.
     let shell_cmd = format!("'{}' -il", user_shell.replace('\'', r"'\''"));
 
+    // Marker env var — .zshrc checks $A2ACHANNEL_SHELL to scope A2AChannel-only
+    // theming (fzf/starship/yazi palettes) without affecting the user's regular shell.
+    let a2a_marker_env = "A2ACHANNEL_SHELL=1";
+
     if session_exists(name) {
         let _ = tmux_run(&["set-option", "-t", name, "remain-on-exit", "off"]);
         let _ = tmux_run(&["set-option", "-t", name, "status", "off"]);
+        // allow-passthrough lets DA1/DSR escapes (yazi's terminal-capability probe)
+        // reach xterm.js directly rather than getting swallowed by tmux. Silences
+        // yazi's "Terminal response timeout" startup warning.
+        let _ = tmux_run(&["set-option", "-t", name, "allow-passthrough", "on"]);
         let _ = tmux_run(&["set-environment", "-t", name, "TERM", "xterm-256color"]);
+        let _ = tmux_run(&["set-environment", "-t", name, "COLORTERM", "truecolor"]);
         let _ = tmux_run(&["set-environment", "-t", name, "LANG", &lang]);
         let _ = tmux_run(&["set-environment", "-t", name, "LC_ALL", &lang]);
+        let _ = tmux_run(&["set-environment", "-t", name, "A2ACHANNEL_SHELL", "1"]);
     } else {
         let args: Vec<&str> = vec![
             "new-session", "-d", "-s", name,
             "-e", "TERM=xterm-256color",
+            "-e", "COLORTERM=truecolor",
             "-e", &lang_env,
             "-e", &lc_all_env,
+            "-e", a2a_marker_env,
             "-x", "80",
             "-y", "24",
             "-c", &home,
@@ -447,6 +466,7 @@ pub fn pty_spawn_shell(
         ];
         tmux_run(&args)?;
         let _ = tmux_run(&["set-option", "-t", name, "status", "off"]);
+        let _ = tmux_run(&["set-option", "-t", name, "allow-passthrough", "on"]);
     }
 
     let tmux = resolve_tmux_bin()?;
@@ -468,6 +488,7 @@ pub fn pty_spawn_shell(
     builder.arg("-t");
     builder.arg(name);
     builder.env("TERM", "xterm-256color");
+    builder.env("COLORTERM", "truecolor");
     builder.env("LANG", &lang);
     builder.env("LC_ALL", &lang);
 

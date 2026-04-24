@@ -480,53 +480,9 @@
   const ATTENTION_MARKER = 'Doyouwantto';
   const ATTN_TAIL_MAX = 2048;
 
-  // ── Usage-banner scrape ─────────────────────────────────────────────
-  // Claude prints plan limits at /cost and on some session events. We
-  // capture the Current-session + Weekly percentages and reset deltas and
-  // push them to main.js via a custom event. Passive — never types into the
-  // agent's session. Fragile to copy changes in claude CLI.
-  const usageDecoder = new TextDecoder('utf-8', { fatal: false });
-  const USAGE_TAIL_MAX = 16_384;
-  // Matches: "Current session\n  Resets in 3 hr 51 min" then later "8% used".
-  // We strip ANSI first so layout escapes between the label and the number
-  // don't break the anchor.
-  const USAGE_SESSION_RE =
-    /Current\s+session[\s\S]{0,200}?Resets\s+in\s+(?:(\d+)\s*hr\s*)?(?:(\d+)\s*min)?[\s\S]{0,400}?(\d{1,3})\s*%\s*used/i;
-  const USAGE_WEEKLY_RE =
-    /Weekly\s+limits[\s\S]{0,600}?All\s+models[\s\S]{0,200}?Resets\s+in\s+(?:(\d+)\s*hr\s*)?(?:(\d+)\s*min)?[\s\S]{0,400}?(\d{1,3})\s*%\s*used/i;
-
-  function pushUsage(kind, hr, min, pct, agent) {
-    const h = hr ? Number(hr) : 0;
-    const m = min ? Number(min) : 0;
-    const secs = h * 3600 + m * 60;
-    const snapshot = {
-      kind,
-      pct: Number(pct),
-      resetAtMs: Date.now() + secs * 1000,
-      sourceAgent: agent,
-      capturedAtMs: Date.now(),
-    };
-    document.dispatchEvent(new CustomEvent('a2a:usage', { detail: snapshot }));
-  }
-
-  function maybeCaptureUsage(t, agent, chunkBytes) {
-    t.usageTail = (t.usageTail || '') + usageDecoder.decode(chunkBytes, { stream: true });
-    if (t.usageTail.length > USAGE_TAIL_MAX) {
-      t.usageTail = t.usageTail.slice(-USAGE_TAIL_MAX);
-    }
-    // Strip ANSI for robust matching across alt-screen rewrites.
-    const clean = t.usageTail.replace(ANSI_ESCAPE_RE, '');
-    const sm = USAGE_SESSION_RE.exec(clean);
-    if (sm) pushUsage('session', sm[1], sm[2], sm[3], agent);
-    const wm = USAGE_WEEKLY_RE.exec(clean);
-    if (wm) pushUsage('weekly', wm[1], wm[2], wm[3], agent);
-    // Rewind the tail past the last match so we don't re-fire on every new byte.
-    if (sm || wm) {
-      const furthest = Math.max(sm ? sm.index + sm[0].length : 0,
-                                wm ? wm.index + wm[0].length : 0);
-      if (furthest > 0) t.usageTail = t.usageTail.slice(furthest);
-    }
-  }
+  // Usage-banner TTY scrape removed in v0.9.6 — main.js now polls GET /usage
+  // which the hub derives from ~/.claude/projects/*.jsonl transcripts.
+  // That path covers every claude on the machine, not just embedded panes.
 
   function maybeFlagAttention(t, agent, chunkBytes) {
     t.attnTail = (t.attnTail || '') + attnDecoder.decode(chunkBytes, { stream: true });
@@ -603,7 +559,6 @@
       t.term?.write(bytes);
       maybeAutoDismissDevChannels(t, agent, bytes);
       maybeFlagAttention(t, agent, bytes);
-      maybeCaptureUsage(t, agent, bytes);
     });
     t.exitUnlisten = await listen(`pty://exit/${agent}`, () => {
       removeTab(agent);
