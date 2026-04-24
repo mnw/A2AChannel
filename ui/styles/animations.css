@@ -1,0 +1,33 @@
+/* Keyframes consolidated from v0.9.5 — moved from style.css during v0.9.6 CSS hygiene pass. */
+
+@keyframes tab-attention {
+  0%, 100% {
+    background: color-mix(in oklab, var(--orange) 8%, transparent);
+    border-color: color-mix(in oklab, var(--orange) 35%, transparent);
+  }
+  50% {
+    background: color-mix(in oklab, var(--orange) 22%, transparent);
+    border-color: var(--orange);
+  }
+}
+
+@keyframes sparkle-spin {
+  0%   { transform: rotate(0deg)   scale(1); opacity: 0.95; }
+  50%  { transform: rotate(180deg) scale(1.08); opacity: 1; }
+  100% { transform: rotate(360deg) scale(1); opacity: 0.95; }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes blink-border {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(212, 96, 74, 0); }
+  50%      { box-shadow: 0 0 0 3px color-mix(in oklab, var(--red) 15%, transparent); }
+}
+
+/* Narrow viewport: shrink ledger + remove roster border, stay usable */

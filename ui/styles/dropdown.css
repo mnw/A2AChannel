@@ -1,0 +1,263 @@
+/* Dropdown primitives for the three variants: room switcher, composer target, spawn-modal room combo.
+   Sections moved verbatim from style.css during v0.9.6 §3.2. Rule-level dedup (shared selector
+   grouping, data-variant-based unification) is deferred — done as a follow-up.
+
+   DOM contract audit (§3.1):
+     .room-wrap          > <select.visually-hidden> + <button.room-display> + <div.room-menu>
+     .target-wrap        > <select.visually-hidden> + <button.target-display> + <div.target-menu>
+     .spawn-room-combo   > <input> + <button.spawn-room-picker-btn> + <div.spawn-room-menu>   */
+
+/* ── Custom room switcher (matches composer target-dropdown shape) ──────── */
+.room-wrap { position: relative; display: inline-flex; }
+
+.room-display {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 6px 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+  outline: none;
+  min-width: 130px;
+  transition: border-color 0.15s, color 0.15s;
+}
+.room-display:hover { border-color: var(--line-hover); color: var(--text); }
+.room-display[aria-expanded="true"] { border-color: var(--orange); color: var(--text); }
+.room-display-text { flex: 1; text-align: left; }
+.room-display svg { opacity: 0.7; transition: transform 0.15s; }
+.room-display[aria-expanded="true"] svg { transform: rotate(180deg); }
+
+.room-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 180px;
+  max-width: 260px;
+  max-height: 360px;
+  overflow-y: auto;
+  display: none;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  z-index: 30;
+}
+.room-menu.open { display: flex; }
+
+.room-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.room-option:hover { background: color-mix(in oklab, var(--orange) 12%, transparent); color: var(--text); }
+.room-option.selected { background: color-mix(in oklab, var(--orange) 16%, transparent); color: var(--text); }
+.room-option.selected::before { content: "✓"; color: var(--orange); font-weight: 700; margin-right: 2px; }
+
+.room-menu-divider {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--line);
+}
+
+/* ── Spawn-modal room combo (text input + styled picker popover) ───────── */
+.spawn-room-combo {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+}
+.spawn-room-combo input {
+  flex: 1;
+  border-radius: 6px 0 0 6px;
+  border-right: none;
+}
+.spawn-room-picker-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  padding: 0;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+  border-radius: 0 6px 6px 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.spawn-room-picker-btn:hover { color: var(--text); border-color: var(--line-hover); }
+.spawn-room-picker-btn[aria-expanded="true"] { color: var(--orange); border-color: var(--orange); }
+.spawn-room-picker-btn svg { transition: transform 0.15s; }
+.spawn-room-picker-btn[aria-expanded="true"] svg { transform: rotate(180deg); }
+
+.spawn-room-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 200px;
+  max-width: 100%;
+  max-height: 240px;
+  overflow-y: auto;
+  display: none;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  z-index: 40;
+}
+.spawn-room-menu.open { display: flex; }
+.spawn-room-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.spawn-room-option:hover { background: color-mix(in oklab, var(--orange) 12%, transparent); color: var(--text); }
+.spawn-room-option.empty { opacity: 0.6; cursor: default; font-style: italic; }
+.spawn-room-option.empty:hover { background: transparent; color: var(--text-muted); }
+
+.status-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 11px 6px 9px;
+  background: rgba(127, 176, 105, 0.08);
+  border: 1px solid rgba(127, 176, 105, 0.22);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: #9dc285;
+}
+/* #dot + #status-text live inside .status-pill (JS writes to both). */
+.status-pill .dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--green) 15%, transparent);
+  animation: pulse 2s ease-in-out infinite;
+}
+.status-pill .dot.error {
+  background: var(--red);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--red) 15%, transparent);
+}
+.status-pill .dot.live { background: var(--green); }
+.status-pill #status-text { color: inherit; }
+/* Error state darkens the whole pill */
+.status-pill.error {
+  background: color-mix(in oklab, var(--red) 8%, transparent);
+  border-color: color-mix(in oklab, var(--red) 25%, transparent);
+  color: #e38f7a;
+}
+
+.icon-btn {
+  width: 30px; height: 30px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--bg-elev);
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+  padding: 0;
+}
+.icon-btn:hover {
+  color: var(--text);
+  border-color: var(--line-hover);
+  background: var(--bg-hover);
+}
+.icon-btn svg { width: 14px; height: 14px; }
+
+/* ── Custom target dropdown ────────────────────────────────── */
+/* The native <select id="target"> stays in the DOM (visually hidden) as the
+   source of truth for value reads. The visible .target-display + .target-menu
+   are driven by renderTargetDropdown() in main.js. */
+.target-wrap { position: relative; display: inline-flex; }
+
+.target-display {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 8px 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+  outline: none;
+  min-width: 140px;
+  transition: border-color 0.15s, color 0.15s;
+}
+.target-display:hover { border-color: var(--line-hover); color: var(--text); }
+.target-display[aria-expanded="true"] { border-color: var(--orange); color: var(--text); }
+.target-display-text { flex: 1; text-align: left; }
+.target-display svg { opacity: 0.7; transition: transform 0.15s; }
+.target-display[aria-expanded="true"] svg { transform: rotate(180deg); }
+
+.target-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  min-width: 200px;
+  max-width: 280px;
+  max-height: 360px;
+  overflow-y: auto;
+  display: none;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  z-index: 20;
+}
+.target-menu.open { display: flex; }
+
+.target-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.target-option:hover { background: color-mix(in oklab, var(--orange) 12%, transparent); color: var(--text); }
+.target-option.selected { background: color-mix(in oklab, var(--orange) 16%, transparent); color: var(--text); }
+.target-option.selected::before { content: "✓"; color: var(--orange); font-weight: 700; margin-right: 2px; }
+.target-option.interrupt { color: var(--red-hover); }
+.target-option.interrupt:hover { background: color-mix(in oklab, var(--red) 12%, transparent); color: #e8937d; }
+.target-option .prefix { color: var(--text-dim); font-size: 10.5px; }
+.target-option.interrupt .prefix { color: inherit; opacity: 0.8; }
+
+.target-menu-divider {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--line);
+}

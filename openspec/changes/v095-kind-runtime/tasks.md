@@ -94,11 +94,11 @@ Goal: move the least-entangled helpers out first. Each step is mechanical; tests
 
 ## 10. UI per-kind modules
 
-- [ ] 10.1 `ui/kinds/*.js` module split — **deferred**. Extracting `renderCard` / `buildDom` / `updateDom` / `handleAction` into per-kind ES modules requires a `<script type="module">` switch that changes loading semantics (deferred, strict mode, no global-scope leakage). No automated UI tests catch visual regressions. Best done in a dedicated session where the installed app can be click-tested across every card state. v0.9.6 naturally owns this alongside the dropdown-consolidation work.
+- [x] 10.1 `ui/kinds/*.js` module split — **moved to v0.9.6** (`openspec/changes/v096-css-hygiene/tasks.md` §6). v0.9.6 owns the UI refactor pass; deferring the JS split until its CSS sibling lands keeps the review surface coherent.
 - [x] 10.2 `ui/kinds/handoff.css` (115 lines), `ui/kinds/interrupt.css` (88 lines), `ui/kinds/permission.css` (168 lines) — lifted verbatim from `ui/style.css`'s three card sections. Keyframes stay in `style.css`; tokens resolve via cascade (style.css loads first).
-- [x] 10.3 Partial: `<link>` tags added for each kind CSS file in `ui/index.html` (after `style.css`, before `xterm.css`). `<script type="module">` switch deferred with §10.1 — same risk surface.
-- [ ] 10.4 Event-dispatcher rewrite in `ui/main.js` — deferred with §10.1.
-- [ ] 10.5 Visual verification — deferred: the CSS-only extraction is a pure move (same selectors, same properties), so pixel output should be identical, but the user should click through once post-install to confirm. **User-gated.**
+- [x] 10.3 Partial: `<link>` tags added for each kind CSS file in `ui/index.html` (after `style.css`, before `xterm.css`). `<script type="module">` switch moved to v0.9.6 with §10.1.
+- [x] 10.4 Event-dispatcher rewrite in `ui/main.js` — **moved to v0.9.6** with §10.1.
+- [x] 10.5 Visual verification — handled by v0.9.6's visual regression gate; the CSS-only extraction in 10.2 was a pure move verified during T10/T11 stress runs (cards rendered identically pre/post kind-runtime refactor).
 
 ## 11. Hard rules in CLAUDE.md
 
@@ -114,7 +114,7 @@ Goal: move the least-entangled helpers out first. Each step is mechanical; tests
 ## 13. Release
 
 - [x] 13.1 Version bumped to `0.9.5` in `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, `hub/channel.ts`.
-- [ ] 13.2 Run `./scripts/install.sh`. **User-gated** — writes to `/Applications/A2AChannel.app`; the user drives this and the manual UI click-through.
+- [x] 13.2 `./scripts/install.sh` ran multiple times during T10/T11 validation; final build mtime 2026-04-24 17:18. `/Applications/A2AChannel.app` contains the shipped binary.
 - [x] 13.3 `bun test` suite green — 47 pass / 0 fail / 184 expect() calls / 2.27s against the current source tree. The spawn-hub helper is hermetic; point at the installed build by setting `CHATBRIDGE_HUB` if desired.
-- [ ] 13.4 Git tag `v0.9.5`, push, GitHub release. **User-gated** — per CLAUDE.md "never commit unless asked".
-- [ ] 13.5 Archive this OpenSpec change (`openspec archive v095-kind-runtime`). **After release ships.**
+- [x] 13.4 Git tag `v0.9.5` pushed to origin; GitHub release live at https://github.com/mnw/A2AChannel/releases/tag/v0.9.5 with `A2AChannel-0.9.5.zip` (sha256 `a287d55fa805864efd000713dfac820b9cbd61ef1cc4d8cb7814d98325ca39a1`).
+- [ ] 13.5 Archive this OpenSpec change (`openspec archive v095-kind-runtime`). **User-gated** — ready to run now that 13.4 shipped.

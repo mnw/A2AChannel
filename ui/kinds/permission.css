@@ -50,7 +50,7 @@
 .permission-card.status-dismissed {
   position: static;
   border-left-color: var(--text-dim);
-  background: rgba(107, 93, 81, 0.06);
+  background: color-mix(in oklab, var(--text-dim) 6%, transparent);
   opacity: 0.8;
   animation: none;
   box-shadow: none;
@@ -76,20 +76,20 @@
   font-size: 10px;
   padding: 2px 7px;
   border-radius: 3px;
-  background: rgba(212, 96, 74, 0.15);
+  background: color-mix(in oklab, var(--red) 15%, transparent);
   color: var(--red);
   letter-spacing: 0.06em;
 }
 .permission-card.status-allowed .status-badge {
-  background: rgba(127, 176, 105, 0.15);
+  background: color-mix(in oklab, var(--green) 15%, transparent);
   color: var(--green);
 }
 .permission-card.status-denied .status-badge {
-  background: rgba(107, 93, 81, 0.2);
+  background: color-mix(in oklab, var(--text-dim) 20%, transparent);
   color: var(--text-dim);
 }
 .permission-card.status-dismissed .status-badge {
-  background: rgba(107, 93, 81, 0.18);
+  background: color-mix(in oklab, var(--text-dim) 18%, transparent);
   color: var(--text-dim);
 }
 .permission-dismiss {
@@ -107,7 +107,7 @@
   transition: background 0.15s, color 0.15s;
 }
 .permission-dismiss:hover {
-  background: rgba(107, 93, 81, 0.2);
+  background: color-mix(in oklab, var(--text-dim) 20%, transparent);
   color: var(--text);
 }
 .permission-description {
@@ -170,7 +170,7 @@
 .permission-actions button.allow { background: var(--orange, #d97757); }
 .permission-actions button.allow:hover { background: #e58b6d; }
 .permission-actions button.deny { background: var(--red); }
-.permission-actions button.deny:hover { background: #e07a63; }
+.permission-actions button.deny:hover { background: var(--red-hover); }
 .permission-replay-badge {
   font-family: var(--mono);
   font-size: 10px;

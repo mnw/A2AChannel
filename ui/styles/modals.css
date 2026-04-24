@@ -1,0 +1,152 @@
+/* ── Modals ────────────────────────────────────────────────── */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+.modal-backdrop.open { display: flex; }
+
+.modal {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 18px 20px;
+  width: min(560px, 90vw);
+  box-shadow: 0 16px 48px rgba(0,0,0,0.6);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.modal h2 {
+  font-family: var(--serif);
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text);
+}
+.modal p {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.modal label {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.modal input[type=text],
+.modal input:not([type]),
+.modal textarea {
+  width: 100%;
+  background: var(--bg-inset);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 8px 12px;
+  border-radius: 5px;
+  outline: none;
+}
+.modal textarea { min-height: 200px; resize: vertical; }
+.modal textarea:focus, .modal input:focus { border-color: var(--line-hover); }
+.modal input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  color: var(--text-dim);
+}
+.modal input[type=checkbox],
+.modal input[type=radio] {
+  width: auto;
+  accent-color: var(--orange);
+  cursor: pointer;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+.modal-actions .status {
+  margin-right: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--green);
+  align-self: center;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.modal-actions .status.visible { opacity: 1; }
+.modal-actions button:last-child {
+  background: var(--orange);
+  color: var(--bg-inset);
+  border: none;
+  font-weight: 600;
+}
+.modal-actions button:last-child:hover { background: var(--orange-hover); color: var(--bg-inset); }
+
+/* Nutshell editor reuses .nutshell-editor + .box, keep its own shape */
+.nutshell-editor {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 220;
+}
+.nutshell-editor.open { display: flex; }
+.nutshell-editor .box {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 18px 20px;
+  width: min(640px, 92vw);
+  box-shadow: 0 16px 48px rgba(0,0,0,0.6);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.nutshell-editor h2 {
+  font-family: var(--serif);
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text);
+}
+.nutshell-editor p {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.nutshell-editor textarea {
+  min-height: 180px;
+  background: var(--bg-inset);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family: var(--serif);
+  font-size: 14px;
+  font-style: italic;
+  padding: 10px 12px;
+  border-radius: 5px;
+  resize: vertical;
+  outline: none;
+}
+.nutshell-editor textarea:focus { border-color: var(--line-hover); }
+.nutshell-editor .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.nutshell-editor .actions button:last-child {
+  background: var(--orange);
+  color: var(--bg-inset);
+  border: none;
+  font-weight: 600;
+}
+.nutshell-editor .actions button:last-child:hover { background: var(--orange-hover); color: var(--bg-inset); }
+

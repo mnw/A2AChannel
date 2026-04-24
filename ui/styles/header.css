@@ -1,0 +1,237 @@
+/* ── Header ────────────────────────────────────────────────── */
+header {
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--line);
+  padding: 14px 20px 12px;
+  flex-shrink: 0;
+}
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.brand-mark { width: 26px; height: 26px; display: grid; place-items: center; }
+.brand-mark svg,
+.brand-mark img { width: 100%; height: 100%; display: block; }
+.brand-name {
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: 17px;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.brand-name i {
+  color: var(--orange);
+  font-style: italic;
+  font-weight: 400;
+}
+.brand-meta {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding-left: 14px;
+  margin-left: 4px;
+  border-left: 1px solid var(--line);
+}
+
+.status-cluster { display: flex; align-items: center; gap: 10px; }
+
+/* ── Usage pill: session + weekly plan limits, populated by PTY scrape ── */
+.usage-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-muted);
+  cursor: default;
+}
+.usage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.usage-chip[data-empty="1"] { opacity: 0.45; cursor: default; }
+.usage-chip[data-stale="1"] { opacity: 0.55; }
+.usage-chip .usage-label { color: var(--text-dim); }
+.usage-chip .usage-pct { color: var(--text); font-weight: 600; }
+.usage-chip .usage-sep { color: var(--text-dim); opacity: 0.5; }
+.usage-chip .usage-reset { color: var(--text-muted); }
+.usage-chip[data-level="warn"] .usage-pct,
+.usage-chip[data-level="warn"] .usage-reset { color: var(--orange); }
+.usage-chip[data-level="warn"] .usage-pct::after { content: " ⚠"; }
+.usage-chip[data-level="danger"] .usage-pct,
+.usage-chip[data-level="danger"] .usage-reset { color: var(--red); }
+.usage-chip[data-level="danger"] .usage-pct::before { content: "⚠ "; }
+.usage-divider { color: var(--line); opacity: 0.8; }
+
+.room-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.room-controls .icon-btn[disabled] { opacity: 0.35; cursor: not-allowed; }
+
+
+/* ── Roster ────────────────────────────────────────────────── */
+.roster {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+  flex-wrap: wrap;
+}
+.roster-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-right: 4px;
+}
+
+/* #legend uses .legend-item (rendered by main.js). Style these to look
+   like the mockup's .agent pill. */
+#legend {
+  display: contents;  /* let legend-item participate in .roster flex */
+}
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px 5px 8px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text);
+  cursor: default;
+  transition: all 0.15s;
+}
+.legend-item.online {
+  background: var(--bg-elev);
+  border-color: var(--line);
+}
+.legend-item.offline { opacity: 0.55; }
+/* Roster pills are display-only — no hover feedback. */
+.legend-item.you {
+  background: rgba(217, 119, 87, 0.1);
+  border-color: color-mix(in oklab, var(--orange) 35%, transparent);
+  color: #f0c4b0;
+}
+
+.legend-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--text-dim);
+  box-shadow: 0 0 6px currentColor;
+}
+.legend-item.online .legend-dot { box-shadow: 0 0 6px currentColor; }
+.legend-item.offline .legend-dot { box-shadow: none; opacity: 0.5; }
+
+.presence-dot { display: none; }  /* subsumed into .legend-dot visual */
+.legend-label { font-weight: 500; letter-spacing: 0; }
+.legend-state {
+  font-size: 10px;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+}
+.legend-remove {
+  display: none;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+  margin-left: 2px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.legend-item.offline .legend-remove { display: inline-flex; align-items: center; }
+.legend-remove:hover { color: var(--red); }
+
+.add-agent {
+  background: transparent;
+  border: 1px dashed var(--line);
+  color: var(--text-dim);
+  padding: 5px 12px;
+  border-radius: 16px;
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.add-agent:hover { color: var(--text-muted); border-color: var(--line-hover); }
+
+
+/* ── Nutshell strip ────────────────────────────────────────── */
+.nutshell {
+  background: linear-gradient(90deg, color-mix(in oklab, var(--orange) 6%, transparent) 0%, transparent 60%);
+  border-bottom: 1px solid var(--line);
+  padding: 11px 20px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+  transition: background 0.35s;
+}
+.nutshell.flash { background: rgba(127, 176, 105, 0.1); }
+.nutshell-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--orange);
+  text-transform: uppercase;
+  font-weight: 500;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in oklab, var(--orange) 30%, transparent);
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.nutshell-body {
+  font-family: var(--serif);
+  font-size: 14px;
+  font-style: italic;
+  color: var(--text);
+  font-weight: 400;
+  flex: 1;
+  line-height: 1.4;
+  cursor: text;
+}
+.nutshell-body.empty { color: var(--text-dim); font-style: italic; }
+.nutshell-meta {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.nutshell-edit-btn {
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 3px 9px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 10px;
+  transition: color 0.15s, background 0.15s;
+}
+.nutshell-edit-btn:hover { color: var(--text); background: var(--bg-elev); }
+

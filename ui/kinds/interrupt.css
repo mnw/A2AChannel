@@ -14,7 +14,7 @@
 }
 .interrupt-card.status-acknowledged {
   border-left-color: var(--text-dim);
-  background: rgba(107, 93, 81, 0.06);
+  background: color-mix(in oklab, var(--text-dim) 6%, transparent);
   opacity: 0.75;
   animation: none;
   box-shadow: none;
@@ -36,12 +36,12 @@
   font-size: 10px;
   padding: 2px 7px;
   border-radius: 3px;
-  background: rgba(212, 96, 74, 0.15);
+  background: color-mix(in oklab, var(--red) 15%, transparent);
   color: var(--red);
   letter-spacing: 0.06em;
 }
 .interrupt-card.status-acknowledged .status-badge {
-  background: rgba(107, 93, 81, 0.2);
+  background: color-mix(in oklab, var(--text-dim) 20%, transparent);
   color: var(--text-dim);
 }
 .interrupt-text {
@@ -75,7 +75,7 @@
   cursor: pointer;
   transition: background 0.15s;
 }
-.interrupt-actions button:hover { background: #e07a63; }
+.interrupt-actions button:hover { background: var(--red-hover); }
 .interrupt-replay-badge {
   font-family: var(--mono);
   font-size: 10px;

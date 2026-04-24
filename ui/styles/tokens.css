@@ -1,0 +1,66 @@
+/* ── Design tokens ─────────────────────────────────────────── */
+:root {
+  /* Palette (warm dark) */
+  --bg:         #1a1714;
+  --bg-raised:  #221d19;
+  --bg-elev:    #2a231e;
+  --bg-inset:   #14110f;
+  --line:       #352c26;
+  --line-soft:  #2a231e;
+  --text:       #f5ede2;
+  --text-muted: #a69583;
+  --text-dim:   #6b5d51;
+
+  /* Accents */
+  --orange:       #d97757;
+  --orange-soft:  #b85f40;
+  --orange-hover: #e08265;
+  --amber:        #e8a857;
+  --green:        #7fb069;
+  --red:          #d4604a;
+  --red-hover:    #e07a63;
+  --blue:         #6b9bc9;
+  --purple:       #a788c4;
+  --pink:         #d98eb3;
+  --teal:         #6ab5a3;
+
+  /* Hover-state surfaces (v0.9.6 token consolidation — previously
+     hardcoded as #4a3d34 / #2f2621 in 11 + 6 locations respectively). */
+  --line-hover:   #4a3d34;
+  --bg-hover:     #2f2621;
+
+  /* Typography */
+  --mono:  'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --serif: 'Fraunces', Georgia, 'Times New Roman', serif;
+  --sans:  'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+
+  /* Legacy Catppuccin aliases — kept so any unmigrated rule still
+     resolves. TODO: remove once no --ctp-* reference remains. */
+  --ctp-rosewater: var(--text);
+  --ctp-flamingo:  var(--text);
+  --ctp-pink:      var(--pink);
+  --ctp-mauve:     var(--purple);
+  --ctp-red:       var(--red);
+  --ctp-maroon:    var(--red);
+  --ctp-peach:     var(--orange);
+  --ctp-yellow:    var(--amber);
+  --ctp-green:     var(--green);
+  --ctp-teal:      var(--teal);
+  --ctp-sky:       var(--blue);
+  --ctp-sapphire:  var(--blue);
+  --ctp-blue:      var(--blue);
+  --ctp-lavender:  var(--purple);
+  --ctp-text:      var(--text);
+  --ctp-subtext1:  var(--text-muted);
+  --ctp-subtext0:  var(--text-muted);
+  --ctp-overlay2:  var(--text-muted);
+  --ctp-overlay1:  var(--text-dim);
+  --ctp-overlay0:  var(--text-dim);
+  --ctp-surface2:  var(--line);
+  --ctp-surface1:  var(--line);
+  --ctp-surface0:  var(--bg-elev);
+  --ctp-base:      var(--bg);
+  --ctp-mantle:    var(--bg-raised);
+  --ctp-crust:     var(--bg-inset);
+}
+

@@ -1,0 +1,179 @@
+/* ── Composer ──────────────────────────────────────────────── */
+footer {
+  border-top: 1px solid var(--line);
+  padding: 12px 20px 14px;
+  background: var(--bg);
+  flex-shrink: 0;
+}
+.input-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  position: relative;
+}
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+
+/* Composer icon buttons share .icon-btn already. Send button is orange. */
+#send-btn {
+  background: var(--orange);
+  color: var(--bg-inset);
+  border: none;
+  padding: 0 16px;
+  height: 36px;
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+#send-btn:hover { background: var(--orange-hover); color: var(--bg-inset); }
+#send-btn:active { background: var(--orange-soft); }
+
+/* Emoji / attach buttons are square icon buttons */
+#emoji-btn, #attach-btn {
+  width: 36px; height: 36px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  background: var(--bg-elev);
+  color: var(--text-muted);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+#emoji-btn:hover, #attach-btn:hover { color: var(--text); background: var(--bg-hover); }
+
+.hint {
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.hint kbd {
+  background: var(--bg-elev);
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+/* Emoji / mention popovers */
+.emoji-popover {
+  position: absolute;
+  bottom: 44px;
+  left: 0;
+  display: none;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 2px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px;
+  max-width: 320px;
+  z-index: 10;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+.emoji-popover.open { display: grid; }
+.emoji-popover button {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 18px;
+  padding: 4px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.emoji-popover button:hover { background: rgba(255,255,255,0.06); }
+
+.mention-popover {
+  position: absolute;
+  bottom: 44px;
+  left: 0;
+  display: none;
+  flex-direction: column;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px;
+  min-width: 160px;
+  max-width: 240px;
+  z-index: 10;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+.mention-popover.open { display: flex; }
+.mention-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+}
+.mention-item:hover, .mention-item.active { background: color-mix(in oklab, var(--orange) 12%, transparent); }
+.mention-item .dot { width: 8px; height: 8px; border-radius: 50%; }
+.mention-item .meta { font-size: 10px; color: var(--text-dim); margin-left: auto; }
+.mention-item.offline { opacity: 0.6; }
+
+/* Attachment row (chips) */
+.attachment-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.attachment-row:empty { display: none; }
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+.attachment-chip img {
+  width: 24px; height: 24px;
+  object-fit: cover;
+  border-radius: 3px;
+}
+.attachment-chip .x {
+  color: var(--red);
+  cursor: pointer;
+  font-weight: bold;
+  padding: 0 2px;
+}
+
+
+textarea#msg-input {
+  resize: none;
+  line-height: 1.5;
+  min-height: 36px;
+  max-height: 180px;
+  overflow-y: auto;
+}

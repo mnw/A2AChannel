@@ -1,0 +1,51 @@
+/* ── Main two-column layout (chat | splitter | terminal) ───── */
+.app-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+  overflow: hidden;
+}
+body.no-terminal .splitter,
+body.no-terminal .terminal-col { display: none; }
+body.no-terminal .chat-col { flex: 1 1 auto; }
+body:not(.no-terminal) .chat-col {
+  flex: 0 0 calc(var(--split, 50%));
+  min-width: 0;
+}
+
+
+/* ── Splitter ──────────────────────────────────────────────── */
+.splitter {
+  flex: 0 0 6px;
+  background: var(--line-soft);
+  cursor: col-resize;
+  position: relative;
+  transition: background 0.15s;
+}
+/* Vertical grip dots in the middle of the splitter so the drag
+   affordance is discoverable without making the strip thicker. */
+.splitter::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 2px;
+  height: 28px;
+  background-image: linear-gradient(to bottom, currentColor 2px, transparent 2px);
+  background-size: 2px 6px;
+  background-repeat: repeat-y;
+  color: var(--text-dim);
+  pointer-events: none;
+  transition: color 0.15s, height 0.15s;
+}
+.splitter:hover { background: var(--bg-elev); }
+.splitter:hover::before { color: var(--orange); height: 36px; }
+.splitter.dragging { background: var(--orange); }
+.splitter.dragging::before { color: var(--bg-inset); height: 40px; }
+
+
+@media (max-width: 1024px) {
+  .brand-meta { display: none; }
+}

@@ -1,8 +1,13 @@
 let BUS = 'http://127.0.0.1:8011';       // overridden at bootstrap via Tauri invoke
 let AUTH_TOKEN = '';                     // filled by bootstrap(); bearer token for mutating routes
 let HUMAN_NAME = 'you';                  // filled by bootstrap(); the human's identity in the roster
-const handoffCards = new Map();          // handoff_id → { element, version, status, snapshot }
-const permissionCards = new Map();       // request_id → { element, version, status, snapshot }
+// Card state maps: declared here so cross-kind main.js utilities (trimMessages,
+// cleanup on reset, countdown timer) can access all three. Per-kind render/handle
+// functions live in ui/kinds/<kind>.js (v0.9.6 §6) and mutate these maps via
+// shared classic-script lexical scope.
+const handoffCards    = new Map();  // handoff_id → { element, version, status, snapshot }
+const interruptCards  = new Map();  // interrupt_id → { element, version, status, snapshot }
+const permissionCards = new Map();  // request_id → { element, version, status, snapshot }
 const MESSAGE_DOM_LIMIT = 2000;          // trim #messages to this many nodes
 const ATTACHMENT_URL_RE = /^\/image\/[A-Za-z0-9_-]+\.[a-z0-9]{1,10}$/i;
 const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp)$/i;
@@ -355,8 +360,9 @@ function applyRoomFilter() {
   document.body.dataset.selectedRoom = SELECTED_ROOM;
   document.body.classList.toggle('room-filtered', SELECTED_ROOM !== ROOM_ALL);
   // Per-element visibility: each rendered message/card/tab tags its own `data-room`.
-  // CSS handles the hide — see style.css `body.room-filtered .msg:not([data-room="..."])`.
-  // JS does the dynamic attribute selector via a style rule we keep in sync here.
+  // The visibility rules below are injected at runtime (dynamic attribute selectors
+  // depend on the currently-selected room label). No static counterpart in any
+  // stylesheet — this JS is the single source of truth.
   let styleEl = document.getElementById('room-filter-style');
   if (!styleEl) {
     styleEl = document.createElement('style');
@@ -1307,249 +1313,10 @@ window.addEventListener('drop', (e) => {
   if (f) uploadAttachment(f);
 });
 
-/* ── Handoff card rendering ──────────────────────────────── */
-function renderHandoffCard(event) {
-  const snapshot = event.snapshot || (() => {
-    try { return JSON.parse(event.text || '{}'); } catch { return null; }
-  })();
-  if (!snapshot || !event.handoff_id) return;
 
-  // Version reconciliation: discard stale broadcasts; log transitions for debugging.
-  const existing = handoffCards.get(event.handoff_id);
-  const incomingVersion = Number(event.version ?? snapshot.version ?? 0);
-  console.debug('[handoff]', event.kind, event.handoff_id,
-    'v=', incomingVersion, 'status=', snapshot.status,
-    existing ? `(existing v${existing.version} ${existing.status})` : '(new)');
-  if (existing && existing.version >= incomingVersion) {
-    console.debug('[handoff] dropping stale version', incomingVersion, '<=', existing.version);
-    return;
-  }
-
-  if (existing) {
-    updateHandoffCardDom(existing.element, snapshot, event);
-    existing.version = incomingVersion;
-    existing.status = snapshot.status;
-    existing.snapshot = snapshot;
-  } else {
-    const el = buildHandoffCardDom(snapshot, event);
-    messagesEl.appendChild(el);
-    handoffCards.set(event.handoff_id, {
-      element: el,
-      version: incomingVersion,
-      status: snapshot.status,
-      snapshot,
-    });
-    trimMessages();
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-  }
-}
-
-function buildHandoffCardDom(snapshot, event) {
-  const el = document.createElement('div');
-  el.className = 'handoff-card';
-  el._handoffId = snapshot.id;
-  if (typeof snapshot.room === 'string' && snapshot.room) el.dataset.room = snapshot.room;
-  updateHandoffCardDom(el, snapshot, event);
-  return el;
-}
-
-function updateHandoffCardDom(el, snapshot, event) {
-  el.className = 'handoff-card';
-  el.classList.add(`status-${snapshot.status}`);
-
-  const replayBadge = event.replay === true || event.replay === 'true'
-    ? `<span class="handoff-replay-badge">(replay)</span>`
-    : '';
-
-  const contextHtml = snapshot.context
-    ? `<div class="handoff-context">
-         <details>
-           <summary>context</summary>
-           <pre>${escHtml(JSON.stringify(snapshot.context, null, 2))}</pre>
-         </details>
-       </div>`
-    : '';
-
-  const reasonHtml = snapshot.status === 'declined' && snapshot.decline_reason
-    ? `<div class="handoff-reason">declined: ${escHtml(snapshot.decline_reason)}</div>`
-    : snapshot.status === 'cancelled' && snapshot.cancel_reason
-      ? `<div class="handoff-reason">cancelled${snapshot.cancelled_by ? ` by ${escHtml(snapshot.cancelled_by)}` : ''}: ${escHtml(snapshot.cancel_reason)}</div>`
-      : snapshot.status === 'cancelled' && snapshot.cancelled_by
-        ? `<div class="handoff-reason">cancelled by ${escHtml(snapshot.cancelled_by)}</div>`
-        : snapshot.status === 'accepted' && snapshot.comment
-          ? `<div class="handoff-reason">accepted: ${escHtml(snapshot.comment)}</div>`
-          : '';
-
-  const showActions = snapshot.status === 'pending';
-  let actionsHtml = '';
-  if (showActions) {
-    const buttons = [];
-    if (snapshot.to_agent === HUMAN_NAME) {
-      buttons.push(`<button type="button" class="accept" data-action="accept">Accept</button>`);
-      buttons.push(`<button type="button" class="decline" data-action="decline">Decline</button>`);
-    }
-    if (snapshot.from_agent === HUMAN_NAME) {
-      buttons.push(`<button type="button" class="cancel" data-action="cancel">Cancel</button>`);
-    }
-    if (buttons.length) {
-      actionsHtml = `<div class="handoff-actions">${buttons.join('')}</div>`;
-    }
-  }
-
-  el.innerHTML = `
-    <div class="handoff-header">
-      <span class="route">${escHtml(snapshot.from_agent)} → ${escHtml(snapshot.to_agent)}</span>
-      <span class="status-badge">${escHtml(snapshot.status)}</span>
-      ${replayBadge}
-    </div>
-    <span class="handoff-countdown" data-expires="${snapshot.expires_at_ms}"></span>
-    <div class="handoff-task">${escHtml(snapshot.task)}</div>
-    <div class="handoff-meta">handoff ${escHtml(snapshot.id)}</div>
-    ${contextHtml}
-    ${reasonHtml}
-    ${actionsHtml}
-  `;
-
-  el.querySelectorAll('.handoff-actions button').forEach((btn) => {
-    btn.addEventListener('click', () => handleHandoffAction(snapshot.id, btn.dataset.action));
-  });
-
-  updateCountdownLabel(el);
-}
-
-async function handleHandoffAction(id, action) {
-  let body;
-  if (action === 'accept') {
-    body = { by: HUMAN_NAME };
-  } else if (action === 'decline') {
-    const reason = await askReason('Decline handoff', 'Why are you declining?', { required: true });
-    if (!reason) return;
-    body = { by: HUMAN_NAME, reason };
-  } else if (action === 'cancel') {
-    const reason = await askReason('Cancel handoff', 'Optional reason:', { required: false });
-    if (reason === null) return; // user clicked Cancel in the dialog
-    body = { by: HUMAN_NAME };
-    if (reason) body.reason = reason;
-  } else {
-    return;
-  }
-  try {
-    const r = await authedFetch(`/handoffs/${encodeURIComponent(id)}/${action}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!r.ok) {
-      const err = await parseErrorBody(r);
-      addMessage({ from: 'system', to: HUMAN_NAME, text: `Handoff ${action} failed: ${err}`, ts: '' });
-    }
-  } catch (e) {
-    addMessage({ from: 'system', to: HUMAN_NAME, text: `Handoff ${action} error: ${e?.message ?? e}`, ts: '' });
-  }
-}
-
-/* ── Interrupt cards ─────────────────────────────────────── */
-const interruptCards = new Map(); // interrupt_id → { element, version, status, snapshot }
-
-function renderInterruptCard(event) {
-  const snapshot = event.snapshot || (() => {
-    try { return JSON.parse(event.text || '{}'); } catch { return null; }
-  })();
-  if (!snapshot || !event.interrupt_id) return;
-
-  const existing = interruptCards.get(event.interrupt_id);
-  const incomingVersion = Number(event.version ?? snapshot.version ?? 0);
-  if (existing && existing.version >= incomingVersion) return;
-
-  if (existing) {
-    updateInterruptCardDom(existing.element, snapshot, event);
-    existing.version = incomingVersion;
-    existing.status = snapshot.status;
-    existing.snapshot = snapshot;
-  } else {
-    const el = buildInterruptCardDom(snapshot, event);
-    // Pending interrupts sticky to top; acknowledged ones flow in line.
-    if (snapshot.status === 'pending') {
-      messagesEl.insertBefore(el, messagesEl.firstChild);
-    } else {
-      messagesEl.appendChild(el);
-    }
-    interruptCards.set(event.interrupt_id, {
-      element: el, version: incomingVersion, status: snapshot.status, snapshot,
-    });
-    trimMessages();
-    if (snapshot.status !== 'pending') messagesEl.scrollTop = messagesEl.scrollHeight;
-  }
-}
-
-function buildInterruptCardDom(snapshot, event) {
-  const el = document.createElement('div');
-  el.className = 'interrupt-card';
-  el._interruptId = snapshot.id;
-  if (typeof snapshot.room === 'string' && snapshot.room) el.dataset.room = snapshot.room;
-  updateInterruptCardDom(el, snapshot, event);
-  return el;
-}
-
-function updateInterruptCardDom(el, snapshot, event) {
-  el.className = 'interrupt-card';
-  el.classList.add(`status-${snapshot.status}`);
-  const replayBadge = event.replay === true || event.replay === 'true'
-    ? `<span class="interrupt-replay-badge">(replay)</span>` : '';
-  const isRecipient = snapshot.to_agent === HUMAN_NAME;
-  const actionsHtml = snapshot.status === 'pending'
-    ? `<div class="interrupt-actions">
-         <button type="button" data-action="ack">${isRecipient ? 'Acknowledge' : 'Acknowledge (on behalf)'}</button>
-       </div>`
-    : '';
-  el.innerHTML = `
-    <div class="interrupt-header">
-      <span class="route">⚠ Interrupt — ${escHtml(snapshot.from_agent)} → ${escHtml(snapshot.to_agent)}</span>
-      <span class="status-badge">${escHtml(snapshot.status)}</span>
-      ${replayBadge}
-    </div>
-    <div class="interrupt-text">${escHtml(snapshot.text)}</div>
-    <div class="interrupt-meta">${escHtml(snapshot.id)}${snapshot.acknowledged_by ? ` · ack by ${escHtml(snapshot.acknowledged_by)}` : ''}</div>
-    ${actionsHtml}
-  `;
-  el.querySelectorAll('.interrupt-actions button').forEach((btn) => {
-    btn.addEventListener('click', () => handleInterruptAction(snapshot.id));
-  });
-}
-
-async function handleInterruptAction(id) {
-  try {
-    const r = await authedFetch(`/interrupts/${encodeURIComponent(id)}/ack`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ by: HUMAN_NAME }),
-    });
-    if (!r.ok) {
-      const err = await parseErrorBody(r);
-      addMessage({ from: 'system', to: HUMAN_NAME, text: `Interrupt ack failed: ${err}`, ts: '' });
-    }
-  } catch (e) {
-    addMessage({ from: 'system', to: HUMAN_NAME, text: `Interrupt ack error: ${e?.message ?? e}`, ts: '' });
-  }
-}
 
 /* ── Permission cards ─────────────────────────────────────── */
 
-// Single sticky container that holds every currently-pending permission card.
-// Only this element is position:sticky — individual cards inside it are plain
-// flow children so they stack vertically instead of piling at top:0.
-function getPermissionStack() {
-  let stack = document.getElementById('permission-stack');
-  if (!stack) {
-    stack = document.createElement('div');
-    stack.id = 'permission-stack';
-    messagesEl.insertBefore(stack, messagesEl.firstChild);
-  } else if (stack !== messagesEl.firstChild) {
-    // Keep it pinned as the first child so sticky anchors to the top edge.
-    messagesEl.insertBefore(stack, messagesEl.firstChild);
-  }
-  return stack;
-}
 
 // DOM-limit trim that skips the persistent #permission-stack (which is always
 // firstChild when present). Without the skip, trim deletes the stack itself,
@@ -1567,128 +1334,6 @@ function trimMessages() {
   }
 }
 
-function renderPermissionCard(event) {
-  const snapshot = event.snapshot || (() => {
-    try { return JSON.parse(event.text || '{}'); } catch { return null; }
-  })();
-  if (!snapshot || !event.permission_id) return;
-
-  const existing = permissionCards.get(event.permission_id);
-  const incomingVersion = Number(event.version ?? snapshot.version ?? 0);
-  if (existing && existing.version >= incomingVersion) return;
-
-  if (existing) {
-    updatePermissionCardDom(existing.element, snapshot, event);
-    // Pending → resolved: leave the sticky stack, drop into chronological slot.
-    if (existing.status === 'pending' && snapshot.status !== 'pending') {
-      existing.element.remove();
-      messagesEl.appendChild(existing.element);
-    }
-    existing.version = incomingVersion;
-    existing.status = snapshot.status;
-    existing.snapshot = snapshot;
-  } else {
-    const el = buildPermissionCardDom(snapshot, event);
-    if (snapshot.status === 'pending') {
-      getPermissionStack().appendChild(el);
-    } else {
-      messagesEl.appendChild(el);
-    }
-    permissionCards.set(event.permission_id, {
-      element: el, version: incomingVersion, status: snapshot.status, snapshot,
-    });
-    trimMessages();
-    if (snapshot.status !== 'pending') messagesEl.scrollTop = messagesEl.scrollHeight;
-  }
-}
-
-function buildPermissionCardDom(snapshot, event) {
-  const el = document.createElement('div');
-  el.className = 'permission-card';
-  el._permissionId = snapshot.id;
-  if (typeof snapshot.room === 'string' && snapshot.room) el.dataset.room = snapshot.room;
-  updatePermissionCardDom(el, snapshot, event);
-  return el;
-}
-
-function updatePermissionCardDom(el, snapshot, event) {
-  el.className = 'permission-card';
-  el.classList.add(`status-${snapshot.status}`);
-  const replayBadge = event.replay === true || event.replay === 'true'
-    ? `<span class="permission-replay-badge">(replay)</span>` : '';
-  const preview = String(snapshot.input_preview ?? '');
-  const previewHtml = preview
-    ? `<details class="permission-preview-details">
-         <summary>input</summary>
-         <pre class="permission-input-preview">${escHtml(preview)}</pre>
-       </details>`
-    : '';
-  const metaSuffix = snapshot.resolved_by
-    ? ` · ${escHtml(snapshot.behavior === 'allow' ? 'allowed' : 'denied')} by ${escHtml(snapshot.resolved_by)}`
-    : '';
-  const showActions = snapshot.status === 'pending';
-  const actionsHtml = showActions
-    ? `<div class="permission-actions">
-         <button type="button" class="allow" data-action="allow">Allow</button>
-         <button type="button" class="deny"  data-action="deny">Deny</button>
-       </div>`
-    : '';
-  const dismissHtml = showActions
-    ? `<button type="button" class="permission-dismiss" title="Dismiss — clears the card without recording an allow/deny verdict. Use when the xterm already answered this prompt." aria-label="Dismiss">×</button>`
-    : '';
-  el.innerHTML = `
-    <div class="permission-header">
-      <span class="route">⛔ Approval — ${escHtml(snapshot.agent)} · ${escHtml(snapshot.tool_name)}</span>
-      <span class="status-badge">${escHtml(snapshot.status)}</span>
-      ${replayBadge}
-      ${dismissHtml}
-    </div>
-    <div class="permission-description">${escHtml(snapshot.description || '(no description)')}</div>
-    ${previewHtml}
-    <div class="permission-meta">${escHtml(snapshot.id)}${metaSuffix}</div>
-    ${actionsHtml}
-  `;
-  el.querySelectorAll('.permission-actions button').forEach((btn) => {
-    btn.addEventListener('click', () => handlePermissionAction(snapshot.id, btn.dataset.action));
-  });
-  const dismissBtn = el.querySelector('.permission-dismiss');
-  if (dismissBtn) {
-    dismissBtn.addEventListener('click', () => handlePermissionDismiss(snapshot.id));
-  }
-}
-
-async function handlePermissionAction(id, behavior) {
-  if (behavior !== 'allow' && behavior !== 'deny') return;
-  try {
-    const r = await authedFetch(`/permissions/${encodeURIComponent(id)}/verdict`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ by: HUMAN_NAME, behavior }),
-    });
-    if (!r.ok) {
-      const err = await parseErrorBody(r);
-      addMessage({ from: 'system', to: HUMAN_NAME, text: `Permission ${behavior} failed: ${err}`, ts: '' });
-    }
-  } catch (e) {
-    addMessage({ from: 'system', to: HUMAN_NAME, text: `Permission ${behavior} error: ${e?.message ?? e}`, ts: '' });
-  }
-}
-
-async function handlePermissionDismiss(id) {
-  try {
-    const r = await authedFetch(`/permissions/${encodeURIComponent(id)}/dismiss`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ by: HUMAN_NAME }),
-    });
-    if (!r.ok) {
-      const err = await parseErrorBody(r);
-      addMessage({ from: 'system', to: HUMAN_NAME, text: `Permission dismiss failed: ${err}`, ts: '' });
-    }
-  } catch (e) {
-    addMessage({ from: 'system', to: HUMAN_NAME, text: `Permission dismiss error: ${e?.message ?? e}`, ts: '' });
-  }
-}
 
 /* ── Nutshell state + editor ─────────────────────────────── */
 const nutshellEl        = document.getElementById('nutshell');

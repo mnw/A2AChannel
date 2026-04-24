@@ -1,0 +1,247 @@
+/* ── Terminal column (right) — body on left, vertical tabs on right ─ */
+.terminal-col {
+  flex: 1 1 auto;
+  background: var(--bg-inset);
+  display: flex;
+  flex-direction: row;       /* vertical tabs on the right edge */
+  min-height: 0;
+  min-width: 240px;
+  overflow: hidden;
+}
+/* Vertical tab rail — pinned to the right edge of the terminal column.
+   DOM order is still tabs-then-body (from v0.7.0); `order: 2` flips visual
+   placement to the right without touching terminal.js. */
+.terminal-tabs {
+  order: 2;
+  width: 110px;
+  flex-shrink: 0;
+  background: var(--bg-raised);
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 8px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+}
+.terminal-tab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  position: relative;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.terminal-tab:hover { color: var(--text); background: rgba(255,255,255,0.03); }
+.terminal-tab.active {
+  background: var(--bg-inset);
+  border-color: var(--line);
+  color: var(--text);
+}
+/* Orange flag on active tab, flush to the right rail's inside edge */
+.terminal-tab.active::before {
+  content: '';
+  position: absolute;
+  right: -9px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 18px;
+  background: var(--orange);
+  border-radius: 2px 0 0 2px;
+}
+.terminal-tab[data-state="dead"] { opacity: 0.6; font-style: italic; }
+.terminal-tab[data-state="external"] { opacity: 0.75; }
+
+/* Shell tab — pinned, cross-room, no close-x. Visually distinct from agent
+   tabs: warm background fill + thicker bottom divider + shell-y icon + muted
+   uppercase label. Opacity full (not tied to agent-state external) because
+   the shell is always present. */
+.terminal-tab-shell {
+  background: color-mix(in oklab, var(--orange) 6%, transparent);
+  border-left: 2px solid transparent;
+  border-bottom: 2px solid var(--line);
+  margin-bottom: 6px;
+  padding-bottom: 10px;
+  position: relative;
+  opacity: 1 !important;
+  font-style: normal !important;
+}
+.terminal-tab-shell:hover {
+  background: rgba(217, 119, 87, 0.10);
+}
+.terminal-tab-shell.active {
+  background: rgba(217, 119, 87, 0.14);
+}
+.terminal-tab-shell.active::before { display: none; }  /* neutralize the agent-tab flag */
+
+.terminal-tab-shell .tab-icon {
+  opacity: 0.75;
+  flex-shrink: 0;
+  margin-right: 2px;
+  color: var(--orange);
+}
+.terminal-tab-shell:hover .tab-icon,
+.terminal-tab-shell.active .tab-icon { opacity: 1; }
+.terminal-tab-shell .tab-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.terminal-tab-shell.active .tab-label,
+.terminal-tab-shell:hover .tab-label { color: var(--text); }
+.terminal-tab-shell .state-dot { display: none; }  /* not an agent — no dot */
+
+/* Heading between the shell tab and the agent tabs — signals "this is where
+   agents live" and discourages users from starting claude inside the shell tab. */
+.terminal-tabs-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 8px;
+  padding: 0 4px;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  opacity: 0.7;
+  cursor: default;
+  user-select: none;
+}
+.terminal-tabs-heading::before,
+.terminal-tabs-heading::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+  opacity: 0.5;
+}
+
+/* Agent needs your attention (permission prompt waiting). Pulses until
+   the user focuses the tab. Clears when `.active` is set or the user
+   clicks the tab. */
+.terminal-tab.needs-attention {
+  animation: tab-attention 1.2s ease-in-out infinite;
+}
+.terminal-tab.needs-attention .state-dot {
+  background: var(--orange);
+  box-shadow: 0 0 8px rgba(217, 119, 87, 0.7);
+}
+.terminal-tab.needs-attention .tab-label {
+  color: var(--orange);
+  font-weight: 600;
+}
+.terminal-tab .state-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex-shrink: 0;
+}
+.terminal-tab[data-state="live"] .state-dot     { background: var(--green); box-shadow: 0 0 6px rgba(127,176,105,0.45); }
+.terminal-tab[data-state="launching"] .state-dot { background: var(--amber); box-shadow: 0 0 6px rgba(232,168,87,0.45); }
+.terminal-tab[data-state="dead"] .state-dot      { background: var(--red); }
+.terminal-tab[data-state="external"] .state-dot  {
+  background: transparent;
+  border: 1px solid var(--text-dim);
+}
+.terminal-tab .tab-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+.terminal-tab .close-x {
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}
+.terminal-tab:hover .close-x,
+.terminal-tab.active .close-x { opacity: 1; color: var(--text-muted); }
+.terminal-tab .close-x:hover { color: var(--red); }
+
+.terminal-tab-new {
+  /* Pushed to the bottom of the vertical rail by margin-top: auto — the
+     flex column consumes all remaining space above it. */
+  margin-top: auto;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 14px;
+  padding: 0;
+  cursor: pointer;
+  width: 100%;
+  height: 30px;
+  border-radius: 6px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.terminal-tab-new:hover {
+  color: var(--orange);
+  border-color: rgba(217, 119, 87, 0.4);
+  background: var(--bg-hover);
+}
+
+.terminal-body {
+  order: 1;                  /* visually first, even though DOM has it second */
+  flex: 1 1 auto;
+  position: relative;
+  overflow: hidden;
+  padding: 4px 6px;
+  min-height: 0;
+}
+.terminal-pane {
+  position: absolute;
+  inset: 4px 6px;
+  display: none;
+}
+.terminal-pane.active { display: block; }
+.terminal-pane .xterm { height: 100%; }
+
+.terminal-empty, .terminal-external-info, .terminal-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 16px;
+  text-align: center;
+  gap: 14px;
+  z-index: 2;
+  background: var(--bg-inset);
+}
+.terminal-loading-icon {
+  width: 48px;
+  height: 48px;
+  animation: sparkle-spin 1.6s linear infinite;
+}
+.terminal-loading-label {
+  min-height: 1.4em;
+  transition: opacity 0.25s ease;
+}
+

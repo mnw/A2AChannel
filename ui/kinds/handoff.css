@@ -11,7 +11,7 @@
   grid-template-columns: 1fr auto;
   gap: 6px 12px;
 }
-.handoff-card.status-pending   { border-left-color: var(--amber); background: rgba(232, 168, 87, 0.04); }
+.handoff-card.status-pending   { border-left-color: var(--amber); background: color-mix(in oklab, var(--amber) 4%, transparent); }
 .handoff-card.status-accepted  { border-left-color: var(--green); }
 .handoff-card.status-declined  { border-left-color: var(--red); }
 .handoff-card.status-cancelled { border-left-color: var(--orange-soft); }
@@ -32,15 +32,15 @@
   font-size: 10px;
   padding: 2px 7px;
   border-radius: 3px;
-  background: rgba(232, 168, 87, 0.12);
+  background: color-mix(in oklab, var(--amber) 12%, transparent);
   color: var(--amber);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
-.handoff-card.status-accepted  .status-badge { background: rgba(127, 176, 105, 0.12); color: var(--green); }
-.handoff-card.status-declined  .status-badge { background: rgba(212, 96, 74, 0.12);   color: #e07a63; }
-.handoff-card.status-cancelled .status-badge { background: rgba(217, 119, 87, 0.12);  color: var(--orange); }
-.handoff-card.status-expired   .status-badge { background: rgba(107, 93, 81, 0.18);   color: var(--text-dim); }
+.handoff-card.status-accepted  .status-badge { background: color-mix(in oklab, var(--green) 12%, transparent); color: var(--green); }
+.handoff-card.status-declined  .status-badge { background: color-mix(in oklab, var(--red) 12%, transparent);   color: var(--red-hover); }
+.handoff-card.status-cancelled .status-badge { background: color-mix(in oklab, var(--orange) 12%, transparent);  color: var(--orange); }
+.handoff-card.status-expired   .status-badge { background: color-mix(in oklab, var(--text-dim) 18%, transparent);   color: var(--text-dim); }
 
 .handoff-task   { color: var(--text); font-weight: 500; font-size: 12.5px; line-height: 1.45; }
 .handoff-reason { color: var(--text-muted); font-size: 12px; font-style: italic; }
@@ -82,18 +82,18 @@
   cursor: pointer;
   transition: all 0.15s;
 }
-.handoff-actions button:hover { background: #2f2621; color: var(--text); }
+.handoff-actions button:hover { background: var(--bg-hover); color: var(--text); }
 .handoff-actions .accept {
   background: var(--orange);
   color: var(--bg-inset);
   border-color: transparent;
   font-weight: 600;
 }
-.handoff-actions .accept:hover { background: #e08265; color: var(--bg-inset); }
-.handoff-actions .decline { color: #e07a63; border-color: rgba(212, 96, 74, 0.25); }
-.handoff-actions .decline:hover { background: rgba(212, 96, 74, 0.08); color: #e58d77; }
-.handoff-actions .cancel { color: #d9a189; border-color: rgba(217, 119, 87, 0.3); }
-.handoff-actions .cancel:hover { background: rgba(217, 119, 87, 0.08); color: var(--orange); }
+.handoff-actions .accept:hover { background: var(--orange-hover); color: var(--bg-inset); }
+.handoff-actions .decline { color: var(--red-hover); border-color: color-mix(in oklab, var(--red) 25%, transparent); }
+.handoff-actions .decline:hover { background: color-mix(in oklab, var(--red) 8%, transparent); color: #e58d77; }
+.handoff-actions .cancel { color: #d9a189; border-color: color-mix(in oklab, var(--orange) 30%, transparent); }
+.handoff-actions .cancel:hover { background: color-mix(in oklab, var(--orange) 8%, transparent); color: var(--orange); }
 
 .handoff-countdown {
   font-family: var(--mono);

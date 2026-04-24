@@ -1,0 +1,67 @@
+/* Shared card skeleton for handoff, interrupt, permission cards.
+   Per-kind files at ui/kinds/<kind>.css only need to declare the properties
+   that actually differ (background, border-left color, margin, animation,
+   header typography). */
+
+.handoff-card,
+.interrupt-card,
+.permission-card {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 11px 12px;
+  font-size: 12.5px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 12px;
+}
+
+.handoff-header,
+.interrupt-header,
+.permission-header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-family: var(--mono);
+}
+
+.handoff-header .route,
+.interrupt-header .route,
+.permission-header .route {
+  color: inherit;
+}
+
+.handoff-header .status-badge,
+.interrupt-header .status-badge,
+.permission-header .status-badge {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  letter-spacing: 0.06em;
+}
+
+.handoff-meta,
+.interrupt-meta,
+.permission-meta {
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.handoff-actions,
+.interrupt-actions,
+.permission-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.handoff-replay-badge,
+.interrupt-replay-badge,
+.permission-replay-badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-left: 4px;
+  font-weight: 400;
+}

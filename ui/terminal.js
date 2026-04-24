@@ -378,10 +378,10 @@
     }
   }
 
-  // Caskaydia is inlined as a data: URL in style.css — no fetch, synchronously available.
+  // Caskaydia is inlined as a data: URL in ui/styles/fonts.css — no fetch, synchronously available.
   // Eagerly fetch every font the xterm instance may reach for. The
   // 2.7 MB CaskaydiaMono Nerd Font is embedded as a base64 data: URI
-  // in style.css — browsers defer its parse until something in the
+  // in ui/styles/fonts.css — browsers defer its parse until something in the
   // DOM asks for it. xterm's canvas atlas bakes glyphs at open() time,
   // so if the font isn't ready we get blank cells for box-drawing /
   // Nerd-patch codepoints claude uses in its banner. Explicit

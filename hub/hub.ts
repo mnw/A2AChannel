@@ -254,8 +254,10 @@ function emitWhere(entry: Entry, predicate: (agent: AgentType) => boolean): void
 function broadcastRoster(): void {
   const snap = agents.rosterSnapshot();
   for (const q of uiSubscribers) q.push(snap);
-  // Re-brief connected agents so early-joiners learn about later-joining peers.
-  broadcastBriefingsToConnectedAgents();
+  // Re-brief via the debounced path so a burst of agent joins (e.g., reconnect
+  // storm after hub restart) collapses into a single final-state briefing per
+  // peer instead of O(N) intermediate snapshots.
+  scheduleBriefingFanout();
 }
 
 // Peer list excludes self + non-same-room agents (human always included). Tool list must stay
