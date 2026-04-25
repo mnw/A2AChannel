@@ -149,6 +149,124 @@ fn claude_command(agent: &str, room: &str, session_mode: Option<&str>) -> Result
     ))
 }
 
+// Open a PTY, attach to the named tmux session on our socket, register the
+// handle in PtyRegistry, and spawn the reader task that forwards output bytes
+// to the webview as `pty://output/<name>` events. Emits `pty://exit/<name>`
+// and removes the handle when the reader ends. Caller owns the agent-name
+// validation and session-creation steps — this helper only attaches + streams.
+fn attach_and_stream(
+    app: AppHandle,
+    registry: Arc<Mutex<HashMap<String, Arc<Mutex<PtyHandle>>>>>,
+    name: &str,
+    lang: &str,
+) -> Result<(), String> {
+    let tmux = resolve_tmux_bin()?;
+    let sock = tmux_socket_path();
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| format!("openpty: {e}"))?;
+
+    let mut builder = CommandBuilder::new(tmux);
+    builder.arg("-S");
+    builder.arg(sock);
+    builder.arg("attach-session");
+    builder.arg("-t");
+    builder.arg(name);
+    builder.env("TERM", "xterm-256color");
+    builder.env("COLORTERM", "truecolor");
+    builder.env("LANG", lang);
+    builder.env("LC_ALL", lang);
+
+    let child = pair
+        .slave
+        .spawn_command(builder)
+        .map_err(|e| format!("spawn attach-session: {e}"))?;
+    drop(pair.slave);
+
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| format!("take_writer: {e}"))?;
+    let reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| format!("clone_reader: {e}"))?;
+
+    {
+        let mut map = registry.lock().unwrap();
+        map.insert(
+            name.to_string(),
+            Arc::new(Mutex::new(PtyHandle {
+                master: pair.master,
+                writer,
+                _child: child,
+            })),
+        );
+    }
+
+    // PTY reads are blocking — dedicated thread so we don't starve the tokio executor.
+    let app_clone = app.clone();
+    let name_clone = name.to_string();
+    let registry_clone = registry.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut reader = reader;
+        let mut buf = [0u8; 8192];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let b64 = B64.encode(&buf[..n]);
+                    let _ = app_clone.emit(
+                        &format!("pty://output/{}", name_clone),
+                        OutputPayload {
+                            agent: name_clone.clone(),
+                            b64,
+                        },
+                    );
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = app_clone.emit(&format!("pty://exit/{}", name_clone), &name_clone);
+        let mut map = registry_clone.lock().unwrap();
+        map.remove(&name_clone);
+    });
+
+    Ok(())
+}
+
+// Apply the standard tmux options + env to a session that already exists on
+// our socket. Used by the reattach path on both agent and shell tabs. The
+// remain-on-exit off is critical: legacy builds left it "on" which held
+// panes after claude exits and broke the tab-close flow. tmux_run errors are
+// ignored — these are best-effort setters against a known-live session.
+fn configure_existing_session(name: &str, lang: &str) {
+    let _ = tmux_run(&["set-option", "-t", name, "remain-on-exit", "off"]);
+    let _ = tmux_run(&["set-option", "-t", name, "status", "off"]);
+    let _ = tmux_run(&["set-environment", "-t", name, "TERM", "xterm-256color"]);
+    let _ = tmux_run(&["set-environment", "-t", name, "COLORTERM", "truecolor"]);
+    let _ = tmux_run(&["set-environment", "-t", name, "LANG", lang]);
+    let _ = tmux_run(&["set-environment", "-t", name, "LC_ALL", lang]);
+}
+
+// Resolve UTF-8 locale for tmux sessions. GUI launches under launchd inherit
+// a blank or "C" locale, which makes claude's terminal-capability detection
+// downgrade to ASCII (logo renders as `____` instead of Braille/box-drawing).
+// Prefer the user's LANG if it already contains "utf"; otherwise default to
+// en_US.UTF-8 which ships with every macOS install.
+fn resolve_utf8_locale() -> String {
+    std::env::var("LANG")
+        .ok()
+        .filter(|v| v.to_lowercase().contains("utf"))
+        .unwrap_or_else(|| "en_US.UTF-8".to_string())
+}
+
 // Validate a room label: 1..=64 chars, [A-Za-z0-9_.-] + spaces, no leading/trailing space.
 // Mirrors hub.ts validRoomLabel so the two ends agree.
 fn valid_room_label(room: &str) -> bool {
@@ -215,26 +333,12 @@ pub fn pty_spawn(
     let spawn_cmd = claude_command(&agent, &resolved_room, session_mode.as_deref())?;
     let api_key = resolve_anthropic_api_key();
 
-    // UTF-8 locale for the session. GUI launches under launchd inherit
-    // a blank or "C" locale, which makes claude's terminal-capability
-    // detection downgrade to ASCII (logo renders as `____` instead of
-    // Braille/box-drawing). Prefer the user's LANG if it's already
-    // UTF-8-ful; otherwise default to en_US.UTF-8 which ships with
-    // every macOS install.
-    let lang = std::env::var("LANG")
-        .ok()
-        .filter(|v| v.to_lowercase().contains("utf"))
-        .unwrap_or_else(|| "en_US.UTF-8".to_string());
+    let lang = resolve_utf8_locale();
     let lang_env = format!("LANG={lang}");
     let lc_all_env = format!("LC_ALL={lang}");
 
     if session_exists(&agent) {
-        let _ = tmux_run(&["set-option", "-t", &agent, "remain-on-exit", "off"]);
-        let _ = tmux_run(&["set-option", "-t", &agent, "status", "off"]);
-        let _ = tmux_run(&["set-environment", "-t", &agent, "TERM", "xterm-256color"]);
-        let _ = tmux_run(&["set-environment", "-t", &agent, "COLORTERM", "truecolor"]);
-        let _ = tmux_run(&["set-environment", "-t", &agent, "LANG", &lang]);
-        let _ = tmux_run(&["set-environment", "-t", &agent, "LC_ALL", &lang]);
+        configure_existing_session(&agent, &lang);
     } else {
         // -x 80 -y 24 is load-bearing: without explicit dims tmux probes TIOCGWINSZ and we
         // have no controlling TTY. Real size is applied via SIGWINCH on attach.
@@ -264,85 +368,7 @@ pub fn pty_spawn(
         let _ = tmux_run(&["set-option", "-t", &agent, "status", "off"]);
     }
 
-    let tmux = resolve_tmux_bin()?;
-    let sock = tmux_socket_path();
-    let pty_system = native_pty_system();
-    let pair = pty_system
-        .openpty(PtySize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| format!("openpty: {e}"))?;
-
-    let mut builder = CommandBuilder::new(tmux);
-    builder.arg("-S");
-    builder.arg(sock);
-    builder.arg("attach-session");
-    builder.arg("-t");
-    builder.arg(&agent);
-    builder.env("TERM", "xterm-256color");
-    builder.env("COLORTERM", "truecolor");
-    builder.env("LANG", &lang);
-    builder.env("LC_ALL", &lang);
-
-    let child = pair
-        .slave
-        .spawn_command(builder)
-        .map_err(|e| format!("spawn attach-session: {e}"))?;
-    drop(pair.slave);
-
-    let writer = pair
-        .master
-        .take_writer()
-        .map_err(|e| format!("take_writer: {e}"))?;
-    let reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| format!("clone_reader: {e}"))?;
-
-    {
-        let mut map = state.0.lock().unwrap();
-        map.insert(
-            agent.clone(),
-            Arc::new(Mutex::new(PtyHandle {
-                master: pair.master,
-                writer,
-                _child: child,
-            })),
-        );
-    }
-
-    // PTY reads are blocking — dedicated thread so we don't starve the tokio executor.
-    let app_clone = app.clone();
-    let agent_clone = agent.clone();
-    let registry = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut reader = reader;
-        let mut buf = [0u8; 8192];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let b64 = B64.encode(&buf[..n]);
-                    let _ = app_clone.emit(
-                        &format!("pty://output/{}", agent_clone),
-                        OutputPayload {
-                            agent: agent_clone.clone(),
-                            b64,
-                        },
-                    );
-                }
-                Err(_) => break,
-            }
-        }
-        let _ = app_clone.emit(&format!("pty://exit/{}", agent_clone), &agent_clone);
-        let mut map = registry.lock().unwrap();
-        map.remove(&agent_clone);
-    });
-
-    Ok(())
+    attach_and_stream(app, state.0.clone(), &agent, &lang)
 }
 
 #[tauri::command]
@@ -419,12 +445,7 @@ pub fn pty_spawn_shell(
         }
     }
 
-    // Reuse the agent-session locale rule — claude isn't spawned here, but user shells
-    // in a GUI-launched process inherit a blank locale from launchd and end up with "C".
-    let lang = std::env::var("LANG")
-        .ok()
-        .filter(|v| v.to_lowercase().contains("utf"))
-        .unwrap_or_else(|| "en_US.UTF-8".to_string());
+    let lang = resolve_utf8_locale();
     let lang_env = format!("LANG={lang}");
     let lc_all_env = format!("LC_ALL={lang}");
 
@@ -440,16 +461,14 @@ pub fn pty_spawn_shell(
     let a2a_marker_env = "A2ACHANNEL_SHELL=1";
 
     if session_exists(name) {
-        let _ = tmux_run(&["set-option", "-t", name, "remain-on-exit", "off"]);
-        let _ = tmux_run(&["set-option", "-t", name, "status", "off"]);
-        // allow-passthrough lets DA1/DSR escapes (yazi's terminal-capability probe)
-        // reach xterm.js directly rather than getting swallowed by tmux. Silences
-        // yazi's "Terminal response timeout" startup warning.
+        configure_existing_session(name, &lang);
+        // Shell-tab extras on top of the shared config:
+        // - allow-passthrough lets DA1/DSR escapes (yazi's terminal-capability probe)
+        //   reach xterm.js directly rather than getting swallowed by tmux. Silences
+        //   yazi's "Terminal response timeout" startup warning.
+        // - A2ACHANNEL_SHELL is a marker env var .zshrc checks to scope
+        //   A2AChannel-only theming without affecting the user's regular shell.
         let _ = tmux_run(&["set-option", "-t", name, "allow-passthrough", "on"]);
-        let _ = tmux_run(&["set-environment", "-t", name, "TERM", "xterm-256color"]);
-        let _ = tmux_run(&["set-environment", "-t", name, "COLORTERM", "truecolor"]);
-        let _ = tmux_run(&["set-environment", "-t", name, "LANG", &lang]);
-        let _ = tmux_run(&["set-environment", "-t", name, "LC_ALL", &lang]);
         let _ = tmux_run(&["set-environment", "-t", name, "A2ACHANNEL_SHELL", "1"]);
     } else {
         let args: Vec<&str> = vec![
@@ -469,84 +488,7 @@ pub fn pty_spawn_shell(
         let _ = tmux_run(&["set-option", "-t", name, "allow-passthrough", "on"]);
     }
 
-    let tmux = resolve_tmux_bin()?;
-    let sock = tmux_socket_path();
-    let pty_system = native_pty_system();
-    let pair = pty_system
-        .openpty(PtySize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| format!("openpty: {e}"))?;
-
-    let mut builder = CommandBuilder::new(tmux);
-    builder.arg("-S");
-    builder.arg(sock);
-    builder.arg("attach-session");
-    builder.arg("-t");
-    builder.arg(name);
-    builder.env("TERM", "xterm-256color");
-    builder.env("COLORTERM", "truecolor");
-    builder.env("LANG", &lang);
-    builder.env("LC_ALL", &lang);
-
-    let child = pair
-        .slave
-        .spawn_command(builder)
-        .map_err(|e| format!("spawn attach-session: {e}"))?;
-    drop(pair.slave);
-
-    let writer = pair
-        .master
-        .take_writer()
-        .map_err(|e| format!("take_writer: {e}"))?;
-    let reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| format!("clone_reader: {e}"))?;
-
-    {
-        let mut map = state.0.lock().unwrap();
-        map.insert(
-            name.to_string(),
-            Arc::new(Mutex::new(PtyHandle {
-                master: pair.master,
-                writer,
-                _child: child,
-            })),
-        );
-    }
-
-    let app_clone = app.clone();
-    let name_clone = name.to_string();
-    let registry = state.0.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut reader = reader;
-        let mut buf = [0u8; 8192];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let b64 = B64.encode(&buf[..n]);
-                    let _ = app_clone.emit(
-                        &format!("pty://output/{}", name_clone),
-                        OutputPayload {
-                            agent: name_clone.clone(),
-                            b64,
-                        },
-                    );
-                }
-                Err(_) => break,
-            }
-        }
-        let _ = app_clone.emit(&format!("pty://exit/{}", name_clone), &name_clone);
-        let mut map = registry.lock().unwrap();
-        map.remove(&name_clone);
-    });
-
-    Ok(())
+    attach_and_stream(app, state.0.clone(), name, &lang)
 }
 
 // Is the shell tmux session currently live on our socket? Used by the UI to decide

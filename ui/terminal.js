@@ -715,10 +715,19 @@
       return !r || r === filterRoom;
     };
     if (activeAgent && visible(activeAgent)) return;
-    for (const name of tabs.keys()) {
-      if (visible(name)) { focusTab(name); return; }
-    }
-    // No visible tabs: clear active so the empty-state renders instead of a stale pane.
+    // Preference order when refocusing on a room change: an agent that wants
+    // attention > a live agent > any agent in the room > shell. Iterating tabs
+    // naively lands on the shell first because it's the pinned-first entry and
+    // has no data-room (so it matches every filter) — that's the bug we're
+    // fixing here. The shell is fallback only.
+    const candidates = [...tabs.keys()].filter((n) => !isShell(n) && visible(n));
+    const pick =
+      candidates.find((n) => tabs.get(n).tabEl.classList.contains('needs-attention')) ||
+      candidates.find((n) => tabs.get(n).state === 'live') ||
+      candidates[0] ||
+      [...tabs.keys()].find((n) => visible(n));
+    if (pick) { focusTab(pick); return; }
+    // No visible tabs at all: clear active so the empty-state renders instead of a stale pane.
     if (activeAgent) {
       const prev = tabs.get(activeAgent);
       if (prev) prev.paneEl.classList.remove('active');

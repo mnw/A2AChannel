@@ -761,6 +761,34 @@ function addMessage(data) {
   const body = document.createElement('div');
   body.className = 'msg-body';
   body.innerHTML = highlightMentions(linkify(escHtml(data.text || ''))) + attachmentHtml;
+
+  // Copy-to-clipboard affordance on agent messages (not human / not system).
+  // Two buttons — top-right and bottom-right — both copy the raw text. Hover-only,
+  // subtle by default, full-opacity when the user actually targets them.
+  if (from !== 'you' && from !== 'system') {
+    const copyText = data.text || '';
+    for (const pos of ['top', 'bottom']) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `msg-copy-btn msg-copy-${pos}`;
+      btn.title = 'Copy message';
+      btn.setAttribute('aria-label', 'Copy message');
+      btn.innerHTML =
+        '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" ' +
+        'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<rect x="9" y="9" width="13" height="13" rx="2"/>' +
+        '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        navigator.clipboard?.writeText(copyText).then(
+          () => showCopyToast('Copied'),
+          () => showCopyToast('Copy failed'),
+        );
+      });
+      body.appendChild(btn);
+    }
+  }
+
   content.appendChild(body);
 
   div.appendChild(content);
