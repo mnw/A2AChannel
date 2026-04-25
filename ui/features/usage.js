@@ -17,7 +17,6 @@
   const POLL_MS = 60_000;
   const RENDER_TICK_MS = 60_000;       // drift the "resets in Xh Ym" label
   const BANNER_KEY = 'a2achannel_usage_banner';
-  const BANNER_FRESH_MS = 30 * 60_000; // banner ages out after 30 min even if reset hasn't passed
 
   // ── Element handles ─────────────────────────────────────────────
   const sessionEl = document.getElementById('usage-session');
@@ -45,7 +44,13 @@
   const ANSI_ESCAPE_RE =
     /\x1b(?:\[[0-9;?]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|[\x20-\x2F]+[\x30-\x7E]|[@-Z\\-_])/g;
   const usageDecoder = new TextDecoder('utf-8', { fatal: false });
-  const TAIL_MAX = 32_768;
+  // 128 KB tail. /usage's raw bytes are 30–50 KB (cost breakdown + 3 sections
+  // + contributors + Ink's cursor-positioning ANSI is 3–5× the visible text).
+  // 32 KB trims the START of the banner — "Current session" is the first
+  // matchable section, so it falls out before the regex ever sees the full
+  // pattern. "Current week (all models)" comes later, survives. That's why
+  // weekly worked and session didn't. 128 KB keeps both co-resident.
+  const TAIL_MAX = 131_072;
   // Lenient regexes: Ink lays the banner out via cursor-forward escapes, not
   // literal spaces — so post-strip we see "Currentsession" / "21%usedResets…"
   // with zero whitespace between words. `\s*` allows zero, `[\s\S]*?` between
@@ -127,7 +132,14 @@
       return;
     }
     _debug.matchCount += 1;
+    // Merge into the existing pinned snapshot — never clobber a previously-
+    // captured field. Reason: claude's /usage banner is huge (cost breakdown
+    // + 3 sections + contributors) and a single chunk may carry only the
+    // weekly portion if the session line has rolled out of the 32 KB tail.
+    // Without this merge, a weekly-only match would erase the session field
+    // and the pill would fall back to USD even though session is still valid.
     const snap = {
+      ...(bannerSnapshot || {}),
       capturedAtMs: Date.now(),
       sourceAgent: agent,
     };
@@ -212,10 +224,13 @@
   }
 
   // ── Banner-vs-transcript layering ─────────────────────────────
+  // Banner stays pinned until either (a) the reset time crosses, or (b) the
+  // user runs /usage again to refresh. Removed the artificial 30-minute
+  // freshness cap (v0.9.11) — % only goes UP between resets, so a 25%-used
+  // reading from 2 h ago is still a valid lower bound on the truth, and
+  // showing it is more useful than falling back to the rough USD estimate.
   function bannerStillFresh(snap, scope) {
     if (!snap || !snap[scope]) return false;
-    const age = Date.now() - (snap.capturedAtMs ?? 0);
-    if (age > BANNER_FRESH_MS) return false;
     const reset = snap[scope].resetAtMs;
     if (Number.isFinite(reset) && reset <= Date.now()) return false;
     return true;
