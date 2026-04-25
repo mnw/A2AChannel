@@ -2,16 +2,17 @@
 // writes at ~/.claude/projects/<slug>/<session>.jsonl.
 //
 // Why this module exists: Claude Code exposes no programmatic usage API.
-// The /cost banner scrape in ui/terminal.js only sees claudes running in
-// A2AChannel's embedded panes — warnings in the user's own terminal never
-// reach the hub. Parsing the transcripts covers every claude on the machine.
+// Parsing the transcripts covers every claude on the machine. The hub returns
+// this snapshot at GET /usage; the UI lays the /usage banner scrape on top
+// when it's fresh (real % of plan), falling through to this transcript-based
+// view (USD computed from public pricing) the rest of the time.
 //
 // What the transcripts give us: per-assistant-message `usage` blocks with
-// input/output/cache token counts and an ISO timestamp. That's enough to
-// compute rolling 5-hour blocks (matches claude's session-limit window) and
-// a rolling 7-day window. It is NOT enough to compute % of plan (the plan
-// tier is not in the transcripts, and the per-tier token caps aren't public).
-// The pill shows absolute tokens + reset deltas instead.
+// input/output/cache token counts, model, and an ISO timestamp. We sum:
+//   - tokens (input + output, the metric session-limit warnings track)
+//   - cost in USD using the public pricing table below × per-model rates,
+//     including cache discounts (mirrors ccusage's approach)
+// across the current 5-hour session block and the rolling 7-day window.
 
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -21,10 +22,53 @@ const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
 const BLOCK_MS = 5 * 60 * 60 * 1000;   // session-limit window
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
+// Public Anthropic pricing as of 2026-04 (per million tokens).
+// Source: https://www.anthropic.com/pricing — verify on every cost-table change.
+// Cache rates: 5m write = 1.25× input, 1h write = 2× input, read = 0.10× input
+// (Anthropic's published cache discount schedule).
+type ModelPricing = {
+  input: number;        // $/MTok
+  output: number;       // $/MTok
+  cacheWrite5m: number; // $/MTok (ephemeral 5-minute cache write)
+  cacheWrite1h: number; // $/MTok (ephemeral 1-hour cache write)
+  cacheRead: number;    // $/MTok
+};
+
+const PRICING_PER_MTOK: Record<string, ModelPricing> = {
+  "claude-opus-4-7":   { input: 15,    output: 75,    cacheWrite5m: 18.75,  cacheWrite1h: 30,   cacheRead: 1.50 },
+  "claude-opus-4-6":   { input: 15,    output: 75,    cacheWrite5m: 18.75,  cacheWrite1h: 30,   cacheRead: 1.50 },
+  "claude-opus-4-5":   { input: 15,    output: 75,    cacheWrite5m: 18.75,  cacheWrite1h: 30,   cacheRead: 1.50 },
+  "claude-opus-4":     { input: 15,    output: 75,    cacheWrite5m: 18.75,  cacheWrite1h: 30,   cacheRead: 1.50 },
+  "claude-sonnet-4-7": { input:  3,    output: 15,    cacheWrite5m:  3.75,  cacheWrite1h:  6,   cacheRead: 0.30 },
+  "claude-sonnet-4-6": { input:  3,    output: 15,    cacheWrite5m:  3.75,  cacheWrite1h:  6,   cacheRead: 0.30 },
+  "claude-sonnet-4-5": { input:  3,    output: 15,    cacheWrite5m:  3.75,  cacheWrite1h:  6,   cacheRead: 0.30 },
+  "claude-sonnet-4":   { input:  3,    output: 15,    cacheWrite5m:  3.75,  cacheWrite1h:  6,   cacheRead: 0.30 },
+  "claude-haiku-4-5":  { input:  1,    output:  5,    cacheWrite5m:  1.25,  cacheWrite1h:  2,   cacheRead: 0.10 },
+  "claude-haiku-4":    { input:  1,    output:  5,    cacheWrite5m:  1.25,  cacheWrite1h:  2,   cacheRead: 0.10 },
+};
+// Conservative fallback for unknown models — matches Sonnet pricing so we don't
+// silently zero out the cost when claude ships a new model id we haven't tabled.
+const FALLBACK_PRICING: ModelPricing = { input: 3, output: 15, cacheWrite5m: 3.75, cacheWrite1h: 6, cacheRead: 0.30 };
+
+function pricingFor(model: string): ModelPricing {
+  if (model in PRICING_PER_MTOK) return PRICING_PER_MTOK[model];
+  // Heuristic for variant ids ("claude-opus-4-7-20260101" etc.) — match by prefix.
+  for (const k of Object.keys(PRICING_PER_MTOK)) {
+    if (model.startsWith(k)) return PRICING_PER_MTOK[k];
+  }
+  if (model.includes("opus"))   return PRICING_PER_MTOK["claude-opus-4-7"];
+  if (model.includes("haiku"))  return PRICING_PER_MTOK["claude-haiku-4-5"];
+  return FALLBACK_PRICING;
+}
+
 type UsageEntry = {
   tsMs: number;
-  tokens: number;
+  tokens: number;     // input + output (matches session-limit warning semantics)
+  costUsd: number;    // input + output + cache_write + cache_read, USD
+  model: string;
 };
+
+export type ModelBreakdown = Record<string, { tokens: number; costUsd: number }>;
 
 export type UsageSnapshot = {
   capturedAtMs: number;
@@ -32,19 +76,30 @@ export type UsageSnapshot = {
     blockStartMs: number | null;
     blockEndMs: number | null;
     totalTokens: number;
+    totalCostUsd: number;
     active: boolean;
+    byModel: ModelBreakdown;
   };
   weekly: {
     windowStartMs: number;
     totalTokens: number;
+    totalCostUsd: number;
+    byModel: ModelBreakdown;
   };
 };
 
-const EMPTY: UsageSnapshot = {
-  capturedAtMs: 0,
-  session: { blockStartMs: null, blockEndMs: null, totalTokens: 0, active: false },
-  weekly: { windowStartMs: 0, totalTokens: 0 },
-};
+function emptySnapshot(now: number, weekStart: number): UsageSnapshot {
+  return {
+    capturedAtMs: now,
+    session: {
+      blockStartMs: null, blockEndMs: null, totalTokens: 0, totalCostUsd: 0,
+      active: false, byModel: {},
+    },
+    weekly: {
+      windowStartMs: weekStart, totalTokens: 0, totalCostUsd: 0, byModel: {},
+    },
+  };
+}
 
 async function listRecentTranscripts(sinceMs: number): Promise<string[]> {
   const out: string[] = [];
@@ -84,7 +139,7 @@ async function readEntries(path: string, sinceMs: number): Promise<UsageEntry[]>
   const out: UsageEntry[] = [];
   for (const line of text.split("\n")) {
     if (!line) continue;
-    let j: { type?: string; timestamp?: string; message?: { usage?: Record<string, unknown> } };
+    let j: { type?: string; timestamp?: string; message?: { model?: string; usage?: Record<string, unknown> } };
     try {
       j = JSON.parse(line);
     } catch {
@@ -95,48 +150,92 @@ async function readEntries(path: string, sinceMs: number): Promise<UsageEntry[]>
     if (!u || typeof u !== "object") continue;
     const ts = Date.parse(j.timestamp ?? "");
     if (!Number.isFinite(ts) || ts < sinceMs) continue;
-    // Pill counts input + output only — cache_read is rate-discounted and
-    // cache_creation is a per-message overhead, neither is comparable to the
-    // "% of session limit" warnings claude prints (those are input+output).
-    const tokens = (Number(u.input_tokens) || 0) + (Number(u.output_tokens) || 0);
-    if (tokens <= 0) continue;
-    out.push({ tsMs: ts, tokens });
+    const model = j.message?.model ?? "";
+    const inputTok  = Number(u.input_tokens) || 0;
+    const outputTok = Number(u.output_tokens) || 0;
+    const cacheReadTok = Number(u.cache_read_input_tokens) || 0;
+    // The transcript splits cache_creation into 5m / 1h tiers; fall back to the
+    // legacy aggregate when the tiered field isn't present.
+    const cc = (u.cache_creation && typeof u.cache_creation === "object")
+      ? u.cache_creation as { ephemeral_5m_input_tokens?: number; ephemeral_1h_input_tokens?: number }
+      : null;
+    const cache5mTok = Number(cc?.ephemeral_5m_input_tokens) || 0;
+    const cache1hTok = Number(cc?.ephemeral_1h_input_tokens) || 0;
+    const cacheCreateLegacyTok = Number(u.cache_creation_input_tokens) || 0;
+    // Avoid double-counting: prefer the tiered split when present, else legacy.
+    const cache5m = cc ? cache5mTok : 0;
+    const cache1h = cc ? cache1hTok : 0;
+    const cacheCreateOther = cc ? 0 : cacheCreateLegacyTok;
+
+    const tokens = inputTok + outputTok;
+    if (tokens <= 0 && cacheReadTok <= 0 && cache5m <= 0 && cache1h <= 0 && cacheCreateOther <= 0) continue;
+
+    const p = pricingFor(model);
+    const costUsd =
+      (inputTok      * p.input        +
+       outputTok     * p.output       +
+       cacheReadTok  * p.cacheRead    +
+       cache5m       * p.cacheWrite5m +
+       cache1h       * p.cacheWrite1h +
+       cacheCreateOther * p.cacheWrite5m  // legacy field — assume 5m tier
+      ) / 1_000_000;
+
+    out.push({ tsMs: ts, tokens, costUsd, model });
   }
   return out;
 }
 
+function accumulate(
+  entries: UsageEntry[],
+): { tokens: number; costUsd: number; byModel: ModelBreakdown } {
+  let tokens = 0;
+  let costUsd = 0;
+  const byModel: ModelBreakdown = {};
+  for (const e of entries) {
+    tokens += e.tokens;
+    costUsd += e.costUsd;
+    const k = e.model || "unknown";
+    if (!byModel[k]) byModel[k] = { tokens: 0, costUsd: 0 };
+    byModel[k].tokens += e.tokens;
+    byModel[k].costUsd += e.costUsd;
+  }
+  return { tokens, costUsd, byModel };
+}
+
 // Session blocks are fixed 5-hour windows. A new block starts whenever a
-// message falls after the previous block's end (i.e. `blockStart + 5h`).
-// We want the block the most recent message landed in — that's "the current
-// block" whether or not activity is ongoing right this second.
+// message falls after the previous block's end. We want the block the most
+// recent message landed in — that's the current block.
 function computeSession(sorted: UsageEntry[], now: number): UsageSnapshot["session"] {
   if (sorted.length === 0) {
-    return { blockStartMs: null, blockEndMs: null, totalTokens: 0, active: false };
+    return { blockStartMs: null, blockEndMs: null, totalTokens: 0, totalCostUsd: 0, active: false, byModel: {} };
   }
-  // Walk oldest-to-newest, rolling the block forward whenever a message
-  // arrives past the current window's end.
   let blockStartMs = sorted[0].tsMs;
   let blockEndMs = blockStartMs + BLOCK_MS;
-  let totalTokens = 0;
+  let inBlock: UsageEntry[] = [];
   for (const e of sorted) {
     if (e.tsMs >= blockEndMs) {
       blockStartMs = e.tsMs;
       blockEndMs = blockStartMs + BLOCK_MS;
-      totalTokens = 0;
+      inBlock = [];
     }
-    totalTokens += e.tokens;
+    inBlock.push(e);
   }
-  // "active" = the current wall clock is still inside this block. The last
-  // message might be minutes or hours inside the block; either way the block
-  // is open until blockEndMs.
-  return { blockStartMs, blockEndMs, totalTokens, active: now < blockEndMs };
+  const { tokens, costUsd, byModel } = accumulate(inBlock);
+  return {
+    blockStartMs,
+    blockEndMs,
+    totalTokens: tokens,
+    totalCostUsd: costUsd,
+    active: now < blockEndMs,
+    byModel,
+  };
 }
 
 export async function readUsageSnapshot(): Promise<UsageSnapshot> {
   const now = Date.now();
   const weekStart = now - WEEK_MS;
   const files = await listRecentTranscripts(weekStart);
-  if (files.length === 0) return { ...EMPTY, capturedAtMs: now, weekly: { windowStartMs: weekStart, totalTokens: 0 } };
+  if (files.length === 0) return emptySnapshot(now, weekStart);
 
   const all: UsageEntry[] = [];
   for (const f of files) {
@@ -146,11 +245,16 @@ export async function readUsageSnapshot(): Promise<UsageSnapshot> {
   all.sort((a, b) => a.tsMs - b.tsMs);
 
   const session = computeSession(all, now);
-  const weeklyTotal = all.reduce((s, e) => s + e.tokens, 0);
+  const weekly = accumulate(all);
 
   return {
     capturedAtMs: now,
     session,
-    weekly: { windowStartMs: weekStart, totalTokens: weeklyTotal },
+    weekly: {
+      windowStartMs: weekStart,
+      totalTokens: weekly.tokens,
+      totalCostUsd: weekly.costUsd,
+      byModel: weekly.byModel,
+    },
   };
 }

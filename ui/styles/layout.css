@@ -1,3 +1,37 @@
+/* ── macOS title-bar strip (titleBarStyle: Overlay) ───────────
+   28px-tall band at the very top, padding-left clears traffic lights.
+   The whole strip is data-tauri-drag-region; only the right-side button
+   opts out (Tauri excludes interactive elements automatically). The header
+   below it is unchanged. */
+.titlebar {
+  flex: 0 0 28px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  padding: 0 10px 0 80px;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--line);
+}
+/* Title-bar buttons render as bare icons — no border, no background. Hover
+   only nudges the icon's color, so the strip stays visually quiet. */
+.titlebar-button.icon-btn {
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-dim);
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.titlebar-button.icon-btn:hover {
+  background: transparent;
+  color: var(--text);
+}
+
 /* ── Main two-column layout (chat | splitter | terminal) ───── */
 .app-body {
   flex: 1 1 auto;
@@ -5,6 +39,32 @@
   flex-direction: row;
   min-height: 0;
   overflow: hidden;
+}
+
+/* ── App footer: thin status strip at the bottom of the window.
+   Holds the usage pill (left) + connection/agents pill (right). Sits
+   outside .app-body so the chat scroll area never overlaps it. */
+.app-footer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 12px;
+  background: var(--bg-elev);
+  border-top: 1px solid var(--line);
+  font-size: 10.5px;
+  line-height: 1;
+}
+/* Pill chrome inside the footer is already provided by usage.css /
+   dropdown.css — the footer is just the band that holds them. The
+   only override: drop the pill borders so the strip reads as one row
+   instead of two separate pills floating in a band. */
+.app-footer .usage-pill,
+.app-footer .status-pill {
+  border: none;
+  background: transparent;
+  padding: 0 4px;
 }
 body.no-terminal .splitter,
 body.no-terminal .terminal-col { display: none; }

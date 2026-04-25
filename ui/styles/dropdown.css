@@ -143,12 +143,12 @@
   align-items: center;
   gap: 8px;
   padding: 6px 11px 6px 9px;
-  background: rgba(127, 176, 105, 0.08);
-  border: 1px solid rgba(127, 176, 105, 0.22);
+  background: color-mix(in oklab, var(--green) 8%, transparent);
+  border: 1px solid color-mix(in oklab, var(--green) 22%, transparent);
   border-radius: 6px;
   font-family: var(--mono);
   font-size: 11px;
-  color: #9dc285;
+  color: var(--green-strong);
 }
 /* #dot + #status-text live inside .status-pill (JS writes to both). */
 .status-pill .dot {
@@ -167,7 +167,7 @@
 .status-pill.error {
   background: color-mix(in oklab, var(--red) 8%, transparent);
   border-color: color-mix(in oklab, var(--red) 25%, transparent);
-  color: #e38f7a;
+  color: var(--red-strong);
 }
 
 .icon-btn {
@@ -252,7 +252,7 @@
 .target-option.selected { background: color-mix(in oklab, var(--orange) 16%, transparent); color: var(--text); }
 .target-option.selected::before { content: "✓"; color: var(--orange); font-weight: 700; margin-right: 2px; }
 .target-option.interrupt { color: var(--red-hover); }
-.target-option.interrupt:hover { background: color-mix(in oklab, var(--red) 12%, transparent); color: #e8937d; }
+.target-option.interrupt:hover { background: color-mix(in oklab, var(--red) 12%, transparent); color: var(--red-strong); }
 .target-option .prefix { color: var(--text-dim); font-size: 10.5px; }
 .target-option.interrupt .prefix { color: inherit; opacity: 0.8; }
 

@@ -1,0 +1,38 @@
+/* ── Usage pill ────────────────────────────────────────────────────
+   Header chip showing how much of the user's plan budget has been
+   consumed. Two chips (Session, Weekly). Data layered by ui/usage.js:
+   fresh /usage banner scrape > transcript-derived USD > empty state.
+   The data-level attribute drives warn/danger styling at 75% / 90%. */
+.usage-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-muted);
+  cursor: default;
+}
+.usage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.usage-chip[data-empty="1"] { opacity: 0.45; cursor: default; }
+.usage-chip[data-stale="1"] { opacity: 0.55; }
+.usage-chip .usage-label { color: var(--text-dim); }
+.usage-chip .usage-pct   { color: var(--text); font-weight: 600; }
+.usage-chip .usage-sep   { color: var(--text-dim); opacity: 0.5; }
+.usage-chip .usage-reset { color: var(--text-muted); }
+.usage-chip[data-level="warn"] .usage-pct,
+.usage-chip[data-level="warn"] .usage-reset { color: var(--orange); }
+.usage-chip[data-level="warn"]   .usage-pct::after  { content: " ⚠"; }
+.usage-chip[data-level="danger"] .usage-pct,
+.usage-chip[data-level="danger"] .usage-reset { color: var(--red); }
+.usage-chip[data-level="danger"] .usage-pct::before { content: "⚠ "; }
+.usage-divider { color: var(--line); opacity: 0.8; }

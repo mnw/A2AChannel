@@ -18,12 +18,26 @@
 <link rel="stylesheet" href="styles/composer.css">
 <link rel="stylesheet" href="styles/chat.css">
 <link rel="stylesheet" href="styles/terminal.css">
+<link rel="stylesheet" href="styles/usage.css">
 <link rel="stylesheet" href="kinds/handoff.css">
 <link rel="stylesheet" href="kinds/interrupt.css">
 <link rel="stylesheet" href="kinds/permission.css">
 <link rel="stylesheet" href="vendor/xterm/xterm.css">
 </head>
 <body class="no-terminal">
+
+<!-- macOS title-bar strip. Lives at the very top of the window (top: 0)
+     because tauri.conf has titleBarStyle: Overlay — the webview extends into
+     the OS title-bar zone. Traffic lights render on top of this strip on the
+     left; the rest is data-tauri-drag-region so the user can still drag the
+     window. The single button on the right opts out of drag automatically
+     (Tauri excludes interactive elements). -->
+<div class="titlebar" data-tauri-drag-region>
+  <button type="button" class="icon-btn titlebar-button" id="reveal-btn" title="Reveal MCP configs in Finder" aria-label="MCP configs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></button>
+  <button type="button" class="icon-btn titlebar-button" id="settings-btn" title="Open config.json in your default editor" aria-label="Open settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
+  <button type="button" class="icon-btn titlebar-button" id="reload-btn" title="Apply settings changes — restarts the hub, no app relaunch needed" aria-label="Reload settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
+  <button type="button" class="icon-btn titlebar-button" id="terminal-toggle-btn" title="Toggle terminal pane" aria-label="Toggle terminal pane"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></button>
+</div>
 
 <header>
   <div class="header-row">
@@ -37,8 +51,12 @@
           <circle cx="21" cy="14" r="1.6" fill="#7fb069"/>
         </svg>
       </div>
-      <div class="brand-name">A2A<i>Channel</i></div>
-      <div class="brand-meta" id="brand-meta">v…</div>
+    </div>
+
+    <div class="roster">
+      <span class="roster-label">Room</span>
+      <div class="legend" id="legend"></div>
+      <button type="button" class="add-agent" id="add-agent-btn" title="Launch a new agent">+ agent</button>
     </div>
 
     <div class="status-cluster">
@@ -58,36 +76,7 @@
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
         </button>
       </div>
-      <div class="usage-pill" id="usage-pill" title="Token counts across all claudes on this machine. Session = current 5-hour block. Weekly = rolling 7 days. Click any chip to copy.">
-        <span class="usage-chip" id="usage-session" data-empty="1">
-          <span class="usage-label">Session</span>
-          <span class="usage-pct">—</span>
-          <span class="usage-sep">·</span>
-          <span class="usage-reset">no data</span>
-        </span>
-        <span class="usage-divider">|</span>
-        <span class="usage-chip" id="usage-weekly" data-empty="1">
-          <span class="usage-label">Weekly</span>
-          <span class="usage-pct">—</span>
-          <span class="usage-sep">·</span>
-          <span class="usage-reset">no data</span>
-        </span>
-      </div>
-      <div class="status-pill" id="status-pill">
-        <div class="dot" id="dot"></div>
-        <span id="status-text">connecting…</span>
-      </div>
-      <button type="button" class="icon-btn" id="reveal-btn" title="Reveal MCP configs in Finder" aria-label="MCP configs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></button>
-      <button type="button" class="icon-btn" id="settings-btn" title="Open config.json in your default editor" aria-label="Open settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
-      <button type="button" class="icon-btn" id="reload-btn" title="Apply settings changes — restarts the hub, no app relaunch needed" aria-label="Reload settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
-      <button type="button" class="icon-btn" id="terminal-toggle-btn" title="Toggle terminal pane" aria-label="Toggle terminal pane"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></button>
     </div>
-  </div>
-
-  <div class="roster">
-    <span class="roster-label">Room</span>
-    <div class="legend" id="legend"></div>
-    <button type="button" class="add-agent" id="add-agent-btn" title="Launch a new agent">+ agent</button>
   </div>
 </header>
 
@@ -154,6 +143,28 @@
   </div>
 
 </div><!-- /app-body -->
+
+<footer class="app-footer">
+  <div class="status-pill" id="status-pill">
+    <div class="dot" id="dot"></div>
+    <span id="status-text">connecting…</span>
+  </div>
+  <div class="usage-pill" id="usage-pill" title="Token counts across all claudes on this machine. Session = current 5-hour block. Weekly = rolling 7 days. Click any chip to copy.">
+    <span class="usage-chip" id="usage-session" data-empty="1">
+      <span class="usage-label">Session</span>
+      <span class="usage-pct">—</span>
+      <span class="usage-sep">·</span>
+      <span class="usage-reset">no data</span>
+    </span>
+    <span class="usage-divider">|</span>
+    <span class="usage-chip" id="usage-weekly" data-empty="1">
+      <span class="usage-label">Weekly</span>
+      <span class="usage-pct">—</span>
+      <span class="usage-sep">·</span>
+      <span class="usage-reset">no data</span>
+    </span>
+  </div>
+</footer>
 
 <div class="modal-backdrop" id="spawn-modal">
   <div class="modal">
@@ -243,10 +254,40 @@
 
 <script src="vendor/xterm/xterm.js"></script>
 <script src="vendor/xterm/addon-fit.js"></script>
+
+<!-- v0.9.10 module layout — ui/ folder structure:
+       core/      — foundations (zero deps): pure utilities + globals + HTTP.
+       features/  — feature modules (depend on core): renderers, room/roster,
+                     composer family, nutshell strip, MCP modal, usage pill.
+       kinds/     — per-kind card renderers (handoff, interrupt, permission).
+       terminal/  — terminal-pane sub-modules (currently pty.js).
+       styles/    — CSS modules (loaded as <link> in <head>).
+       index.html, main.js, terminal.js — at root: entry + two orchestrators.
+     Each module's header comment declares its declared-earlier dependencies. -->
+
+<!-- Tier 1: foundations -->
+<script src="core/text.js"></script>
+<script src="core/state.js"></script>
+<script src="core/http.js"></script>
+
+<!-- Tier 2: feature modules -->
+<script src="features/messages.js"></script>
+<script src="features/rooms.js"></script>
+<script src="features/roster.js"></script>
+<script src="features/nutshell.js"></script>
+<script src="features/mentions.js"></script>
+<script src="features/emoji.js"></script>
+<script src="features/attachments.js"></script>
+<script src="features/composer.js"></script>
+<script src="features/mcp-modal.js"></script>
+
+<!-- Tier 3: orchestrator + kinds + pill + terminal -->
 <script src="main.js"></script>
+<script src="features/usage.js"></script>
 <script src="kinds/handoff.js"></script>
 <script src="kinds/interrupt.js"></script>
 <script src="kinds/permission.js"></script>
+<script src="terminal/pty.js"></script>
 <script src="terminal.js"></script>
 </body>
 </html>

@@ -19,8 +19,9 @@
   border-left: 1px solid var(--line);
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  padding: 10px 8px;
+  /* Tightened: was 10/8 padding + 3 gap. */
+  gap: 2px;
+  padding: 5px 6px;
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: thin;
@@ -29,7 +30,8 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 8px 10px;
+  /* Tightened: was 8/10. */
+  padding: 5px 8px;
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--text-muted);
@@ -77,10 +79,10 @@
   font-style: normal !important;
 }
 .terminal-tab-shell:hover {
-  background: rgba(217, 119, 87, 0.10);
+  background: color-mix(in oklab, var(--orange) 10%, transparent);
 }
 .terminal-tab-shell.active {
-  background: rgba(217, 119, 87, 0.14);
+  background: color-mix(in oklab, var(--orange) 14%, transparent);
 }
 .terminal-tab-shell.active::before { display: none; }  /* neutralize the agent-tab flag */
 
@@ -109,7 +111,8 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 4px 0 8px;
+  /* Tightened: was 4/8. */
+  margin: 2px 0 4px;
   padding: 0 4px;
   font-family: var(--mono);
   font-size: 9px;
@@ -137,7 +140,7 @@
 }
 .terminal-tab.needs-attention .state-dot {
   background: var(--orange);
-  box-shadow: 0 0 8px rgba(217, 119, 87, 0.7);
+  box-shadow: 0 0 8px color-mix(in oklab, var(--orange) 70%, transparent);
 }
 .terminal-tab.needs-attention .tab-label {
   color: var(--orange);
@@ -149,8 +152,8 @@
   background: var(--text-dim);
   flex-shrink: 0;
 }
-.terminal-tab[data-state="live"] .state-dot     { background: var(--green); box-shadow: 0 0 6px rgba(127,176,105,0.45); }
-.terminal-tab[data-state="launching"] .state-dot { background: var(--amber); box-shadow: 0 0 6px rgba(232,168,87,0.45); }
+.terminal-tab[data-state="live"] .state-dot     { background: var(--green); box-shadow: 0 0 6px color-mix(in oklab, var(--green) 45%, transparent); }
+.terminal-tab[data-state="launching"] .state-dot { background: var(--amber); box-shadow: 0 0 6px color-mix(in oklab, var(--amber) 45%, transparent); }
 .terminal-tab[data-state="dead"] .state-dot      { background: var(--red); }
 .terminal-tab[data-state="external"] .state-dot  {
   background: transparent;
@@ -199,7 +202,7 @@
 }
 .terminal-tab-new:hover {
   color: var(--orange);
-  border-color: rgba(217, 119, 87, 0.4);
+  border-color: color-mix(in oklab, var(--orange) 40%, transparent);
   background: var(--bg-hover);
 }
 

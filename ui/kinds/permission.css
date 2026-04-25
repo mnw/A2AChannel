@@ -4,12 +4,14 @@
   border: 1px solid var(--line);
   border-left: 3px solid var(--red);
   border-radius: 6px;
-  padding: 11px 12px;
-  margin: 8px 0;
+  /* Vertical padding + row gap tightened in v0.9.10 (was 11/12 + 6,
+     now 7/12 + 3). Horizontal kept — width was fine. */
+  padding: 7px 12px;
+  margin: 5px 0;
   font-size: 12.5px;
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 6px 12px;
+  gap: 3px 12px;
   animation: blink-border 2.5s ease-in-out infinite;
 }
 /* Pending cards live inside #permission-stack, which is the element that's
@@ -18,7 +20,7 @@
    would sticky-anchor independently and later-in-DOM cards would paint over
    earlier ones, hiding them). */
 .permission-card.status-pending {
-  background: rgba(26, 23, 20, 0.97);
+  background: color-mix(in oklab, var(--bg) 97%, transparent);
   backdrop-filter: blur(4px);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
 }
@@ -137,13 +139,13 @@
   background: var(--bg-inset);
   border: 1px solid var(--line);
   border-radius: 4px;
-  padding: 8px 10px;
+  padding: 6px 10px;
   color: var(--text-dim);
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 240px;
   overflow: auto;
-  margin: 6px 0 0;
+  margin: 3px 0 0;
 }
 .permission-meta {
   color: var(--text-dim);
@@ -159,7 +161,7 @@
 .permission-actions button {
   font-family: var(--mono);
   font-size: 11px;
-  padding: 5px 14px;
+  padding: 3px 14px;
   border-radius: 4px;
   color: var(--bg-inset);
   border: none;
@@ -168,7 +170,7 @@
   transition: background 0.15s;
 }
 .permission-actions button.allow { background: var(--orange, #d97757); }
-.permission-actions button.allow:hover { background: #e58b6d; }
+.permission-actions button.allow:hover { background: var(--orange-hover); }
 .permission-actions button.deny { background: var(--red); }
 .permission-actions button.deny:hover { background: var(--red-hover); }
 .permission-replay-badge {

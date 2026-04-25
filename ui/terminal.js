@@ -161,41 +161,14 @@
     localStorage.setItem('a2achannel_agent_cwds', JSON.stringify(cwdCache));
   }
 
-  async function ptySpawn(agent, cwd, sessionMode, room) {
-    const args = { agent, cwd };
-    if (sessionMode === 'resume' || sessionMode === 'continue') {
-      args.sessionMode = sessionMode;
-    }
-    if (room) args.room = room;
-    return invoke('pty_spawn', args);
-  }
-  async function ptyWrite(agent, b64) {
-    return invoke('pty_write', { agent, b64 });
-  }
-  async function ptyResize(agent, cols, rows) {
-    return invoke('pty_resize', { agent, cols, rows });
-  }
-  async function ptyKill(agent) {
-    return invoke('pty_kill', { agent });
-  }
-  async function ptyList() {
-    try { return await invoke('pty_list'); }
-    catch { return []; }
-  }
-
-  const encoder = new TextEncoder();
-  function strToB64(str) {
-    const bytes = encoder.encode(str);
-    let bin = '';
-    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-    return btoa(bin);
-  }
-  function b64ToBytes(b64) {
-    const bin = atob(b64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return bytes;
-  }
+  // PTY Tauri-invoke wrappers (ptySpawn, ptyWrite, ptyResize, ptyKill,
+  // ptyList) and base64 helpers (strToB64, b64ToBytes) live in
+  // ui/terminal/pty.js — loaded just before this file. Pulled into the
+  // IIFE's scope here so the rest of the body can use them by name.
+  const {
+    ptySpawn, ptyWrite, ptyResize, ptyKill, ptyList,
+    strToB64, b64ToBytes,
+  } = window.__A2A_TERM__.pty;
 
   const xtermTheme = {
     background: '#14110f', foreground: '#f5ede2', cursor: '#d97757',
@@ -480,9 +453,9 @@
   const ATTENTION_MARKER = 'Doyouwantto';
   const ATTN_TAIL_MAX = 2048;
 
-  // Usage-banner TTY scrape removed in v0.9.6 — main.js now polls GET /usage
-  // which the hub derives from ~/.claude/projects/*.jsonl transcripts.
-  // That path covers every claude on the machine, not just embedded panes.
+  // Usage-banner TTY scrape lives in ui/usage.js. We just hand it bytes —
+  // see window.A2A_USAGE.captureBanner. The fan-out point is in the chunk
+  // handler below alongside maybeFlagAttention / maybeAutoDismissDevChannels.
 
   function maybeFlagAttention(t, agent, chunkBytes) {
     t.attnTail = (t.attnTail || '') + attnDecoder.decode(chunkBytes, { stream: true });
@@ -559,6 +532,7 @@
       t.term?.write(bytes);
       maybeAutoDismissDevChannels(t, agent, bytes);
       maybeFlagAttention(t, agent, bytes);
+      window.A2A_USAGE?.captureBanner(t, agent, bytes);
     });
     t.exitUnlisten = await listen(`pty://exit/${agent}`, () => {
       removeTab(agent);

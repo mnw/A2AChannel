@@ -2,7 +2,9 @@
 header {
   background: var(--bg-raised);
   border-bottom: 1px solid var(--line);
-  padding: 14px 20px 12px;
+  /* Single-row header in v0.9.9 — roster folded into header-row, version
+     inline with brand. Symmetric 8px top/bottom keeps it tight. */
+  padding: 8px 20px;
   flex-shrink: 0;
 }
 .header-row {
@@ -31,53 +33,20 @@ header {
   font-style: italic;
   font-weight: 400;
 }
+/* Version sits inline with the brand name as a small tag — no divider, just
+   a thin space before. Reads as "A2AChannel v0.9.9" — one product mark. */
 .brand-meta {
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--text-dim);
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
-  padding-left: 14px;
-  margin-left: 4px;
-  border-left: 1px solid var(--line);
 }
 
 .status-cluster { display: flex; align-items: center; gap: 10px; }
 
-/* ── Usage pill: session + weekly plan limits, populated by PTY scrape ── */
-.usage-pill {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 10px;
-  background: var(--bg-elev);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: var(--text-muted);
-  cursor: default;
-}
-.usage-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  cursor: pointer;
-  padding: 0 2px;
-}
-.usage-chip[data-empty="1"] { opacity: 0.45; cursor: default; }
-.usage-chip[data-stale="1"] { opacity: 0.55; }
-.usage-chip .usage-label { color: var(--text-dim); }
-.usage-chip .usage-pct { color: var(--text); font-weight: 600; }
-.usage-chip .usage-sep { color: var(--text-dim); opacity: 0.5; }
-.usage-chip .usage-reset { color: var(--text-muted); }
-.usage-chip[data-level="warn"] .usage-pct,
-.usage-chip[data-level="warn"] .usage-reset { color: var(--orange); }
-.usage-chip[data-level="warn"] .usage-pct::after { content: " ⚠"; }
-.usage-chip[data-level="danger"] .usage-pct,
-.usage-chip[data-level="danger"] .usage-reset { color: var(--red); }
-.usage-chip[data-level="danger"] .usage-pct::before { content: "⚠ "; }
-.usage-divider { color: var(--line); opacity: 0.8; }
+/* Usage pill rules live in styles/usage.css (header has no business owning
+   them — they belong with ui/usage.js, the module that drives them). */
 
 .room-controls {
   display: flex;
@@ -87,14 +56,18 @@ header {
 .room-controls .icon-btn[disabled] { opacity: 0.35; cursor: not-allowed; }
 
 
-/* ── Roster ────────────────────────────────────────────────── */
+/* ── Roster ──────────────────────────────────────────────────
+   Lives inline inside .header-row as the middle flex item (between
+   .brand and .status-cluster). No top divider, no margin/padding —
+   the header is single-row now. flex: 1 + min-width: 0 lets the
+   legend take whatever middle space remains while the brand and
+   status-cluster sit at their natural widths on the edges. */
 .roster {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px dashed var(--line);
+  flex: 1 1 auto;
+  min-width: 0;
   flex-wrap: wrap;
 }
 .roster-label {
@@ -132,9 +105,9 @@ header {
 .legend-item.offline { opacity: 0.55; }
 /* Roster pills are display-only — no hover feedback. */
 .legend-item.you {
-  background: rgba(217, 119, 87, 0.1);
+  background: color-mix(in oklab, var(--orange) 10%, transparent);
   border-color: color-mix(in oklab, var(--orange) 35%, transparent);
-  color: #f0c4b0;
+  color: var(--code-text);
 }
 
 .legend-dot {
@@ -192,7 +165,7 @@ header {
   flex-shrink: 0;
   transition: background 0.35s;
 }
-.nutshell.flash { background: rgba(127, 176, 105, 0.1); }
+.nutshell.flash { background: color-mix(in oklab, var(--green) 10%, transparent); }
 .nutshell-label {
   font-family: var(--mono);
   font-size: 10px;

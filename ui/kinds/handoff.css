@@ -91,8 +91,8 @@
 }
 .handoff-actions .accept:hover { background: var(--orange-hover); color: var(--bg-inset); }
 .handoff-actions .decline { color: var(--red-hover); border-color: color-mix(in oklab, var(--red) 25%, transparent); }
-.handoff-actions .decline:hover { background: color-mix(in oklab, var(--red) 8%, transparent); color: #e58d77; }
-.handoff-actions .cancel { color: #d9a189; border-color: color-mix(in oklab, var(--orange) 30%, transparent); }
+.handoff-actions .decline:hover { background: color-mix(in oklab, var(--red) 8%, transparent); color: var(--red-strong); }
+.handoff-actions .cancel { color: var(--orange-hover); border-color: color-mix(in oklab, var(--orange) 30%, transparent); }
 .handoff-actions .cancel:hover { background: color-mix(in oklab, var(--orange) 8%, transparent); color: var(--orange); }
 
 .handoff-countdown {

@@ -29,6 +29,13 @@
   --line-hover:   #4a3d34;
   --bg-hover:     #2f2621;
 
+  /* Foreground accents that read as "stronger" versions of the base palette
+     when used as text/icon color over tinted backgrounds. v0.9.10 — promoted
+     from inline hex so a future skin can override per-token. */
+  --code-text:    #f0c4b0;  /* <code> inside chat bubbles — warm tint */
+  --green-strong: #9dc285;  /* online/success text on green-tinted surfaces */
+  --red-strong:   #e38f7a;  /* error/decline text on red-tinted surfaces */
+
   /* Typography */
   --mono:  'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
   --serif: 'Fraunces', Georgia, 'Times New Roman', serif;

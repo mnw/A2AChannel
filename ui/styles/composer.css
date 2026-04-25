@@ -58,14 +58,26 @@ footer {
 }
 #emoji-btn:hover, #attach-btn:hover { color: var(--text); background: var(--bg-hover); }
 
+/* Composer hints — reveal on focus only. Default-visible they're permanent
+   noise (4 cues most users learn once); focus-within keeps them discoverable
+   without paying the layout cost when you're not typing. */
 .hint {
-  margin-top: 8px;
+  margin-top: 0;
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
   font-family: var(--mono);
   font-size: 10px;
   color: var(--text-dim);
   display: flex;
   gap: 14px;
   flex-wrap: wrap;
+  transition: max-height 0.18s ease, margin-top 0.18s ease, opacity 0.18s ease;
+}
+.chat-col footer:focus-within .hint {
+  max-height: 32px;
+  margin-top: 8px;
+  opacity: 1;
 }
 .hint kbd {
   background: var(--bg-elev);

@@ -131,7 +131,7 @@
   background: var(--bg-elev);
   padding: 1px 5px;
   border-radius: 3px;
-  color: #f0c4b0;
+  color: var(--code-text);
 }
 
 /* Self (human) messages — right-aligned with orange-tinted bubble
@@ -149,7 +149,7 @@
   color: var(--text-muted);
   font-style: italic;
   background: color-mix(in oklab, var(--red) 8%, transparent);
-  border-color: rgba(212, 96, 74, 0.22);
+  border-color: color-mix(in oklab, var(--red) 22%, transparent);
 }
 
 .msg-body img {
@@ -165,7 +165,7 @@
 .msg-body .msg-link {
   color: var(--blue);
   text-decoration: underline;
-  text-decoration-color: rgba(107, 155, 201, 0.4);
+  text-decoration-color: color-mix(in oklab, var(--blue) 40%, transparent);
   text-underline-offset: 2px;
   word-break: break-all;
 }
@@ -236,8 +236,8 @@
 #drop-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(26, 23, 20, 0.78);
-  border: 2px dashed rgba(217, 119, 87, 0.5);
+  background: color-mix(in oklab, var(--bg) 78%, transparent);
+  border: 2px dashed color-mix(in oklab, var(--orange) 50%, transparent);
   display: none;
   align-items: center;
   justify-content: center;

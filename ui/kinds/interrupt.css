@@ -1,6 +1,6 @@
 /* ── Interrupt cards ───────────────────────────────────────── */
 .interrupt-card {
-  background: rgba(212, 96, 74, 0.06);
+  background: color-mix(in oklab, var(--red) 6%, transparent);
   border: 1px solid var(--line);
   border-left: 3px solid var(--red);
   border-radius: 6px;
