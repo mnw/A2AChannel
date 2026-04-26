@@ -149,6 +149,61 @@ footer {
 .mention-item .meta { font-size: var(--fs-2xs); color: var(--text-dim); margin-left: auto; }
 .mention-item.offline { opacity: 0.6; }
 
+/* Slash-command picker popover — same shape as the mention popover, sits in
+   the same anchor position. The composer toggles between them on first
+   character: `/` opens slash-popover, `@` opens mention-popover. */
+.slash-popover {
+  position: absolute;
+  bottom: var(--size-44);
+  left: 0;
+  display: none;
+  flex-direction: column;
+  background: var(--bg-elev);
+  border: var(--border-1) solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-4);
+  min-width: var(--size-200);
+  max-width: var(--size-280);
+  max-height: var(--size-240);
+  overflow-y: auto;
+  z-index: var(--z-sticky);
+  box-shadow: var(--shadow-popover);
+}
+.slash-popover.open { display: flex; }
+.slash-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  padding: var(--sp-6) var(--sp-10);
+  cursor: pointer;
+  border-radius: var(--radius-md);
+  font-family: var(--mono);
+  font-size: var(--fs-base);
+  color: var(--text);
+}
+.slash-item:hover, .slash-item.active { background: color-mix(in oklab, var(--orange) 12%, transparent); }
+.slash-item .slash-cmd { flex: 1; }
+.slash-item .slash-badge { font-size: var(--fs-2xs); color: var(--text-dim); margin-left: auto; }
+.slash-item.unavailable { opacity: 0.5; cursor: not-allowed; }
+.slash-item.unavailable .slash-badge { color: var(--text-dim); }
+.slash-empty, .slash-loading {
+  padding: var(--sp-6) var(--sp-10);
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.slash-error {
+  margin: var(--sp-4) 0 0;
+  padding: var(--sp-4) var(--sp-8);
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+  color: var(--red);
+  background: color-mix(in oklab, var(--red) 8%, transparent);
+  border-radius: var(--radius-md);
+}
+
 /* Attachment row (chips) */
 .attachment-row {
   display: flex;

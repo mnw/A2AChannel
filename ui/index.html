@@ -125,13 +125,15 @@
         <button id="send-btn" type="button">Send</button>
         <div class="emoji-popover" id="emoji-popover"></div>
         <div class="mention-popover" id="mention-popover"></div>
+        <div class="slash-popover" id="slash-popover"></div>
       </div>
       <div class="hint">
         <span><kbd>Enter</kbd> send</span>
         <span><kbd>Shift</kbd>+<kbd>Enter</kbd> newline</span>
         <span><kbd>@</kbd>name target</span>
-        <span>no <kbd>@</kbd> broadcast</span>
+        <span><kbd>/</kbd>command @target</span>
       </div>
+      <div class="slash-error" id="slash-error" hidden></div>
     </footer>
   </div>
 
@@ -278,6 +280,10 @@
 <script src="features/mentions.js"></script>
 <script src="features/emoji.js"></script>
 <script src="features/attachments.js"></script>
+<script src="features/slash-discovery.js"></script>
+<script src="features/slash-mode.js"></script>
+<script src="features/slash-picker.js"></script>
+<script src="features/slash-send.js"></script>
 <script src="features/composer.js"></script>
 <script src="features/mcp-modal.js"></script>
 <script src="features/theme.js"></script>

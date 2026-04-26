@@ -835,6 +835,64 @@ fn open_in_editor(agent: String) -> Result<String, String> {
     Ok(cwd.to_string_lossy().to_string())
 }
 
+// Discover slash commands available to a single agent: built-ins are not
+// included here (the UI prepends those). Scans the agent's live cwd
+// `.claude/commands/*.md` and `.claude/skills/*/SKILL.md`, plus the personal
+// `~/.claude/commands/*.md` and `~/.claude/skills/*/SKILL.md`. Returns
+// command names without the leading `/`. Best-effort: any error reading a
+// directory yields an empty contribution rather than propagating.
+#[tauri::command]
+fn slash_discover_for_agent(agent: String) -> Vec<String> {
+    let mut out: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let cwd = pty::pane_current_path(&agent).ok();
+    let home = dirs::home_dir();
+    let roots: Vec<PathBuf> = [cwd.as_deref(), home.as_deref()]
+        .into_iter()
+        .flatten()
+        .map(|p| p.join(".claude"))
+        .collect();
+    for root in &roots {
+        scan_commands_dir(&root.join("commands"), &mut out);
+        scan_skills_dir(&root.join("skills"), &mut out);
+    }
+    out.into_iter().collect()
+}
+
+fn scan_commands_dir(dir: &Path, out: &mut std::collections::BTreeSet<String>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("md") {
+            continue;
+        }
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            out.insert(stem.to_string());
+        }
+    }
+}
+
+fn scan_skills_dir(dir: &Path, out: &mut std::collections::BTreeSet<String>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if !path.join("SKILL.md").is_file() {
+            continue;
+        }
+        if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+            out.insert(name.to_string());
+        }
+    }
+}
+
 #[tauri::command]
 fn get_mcp_template() -> Result<String, String> {
     let a2a_bin = resolve_a2a_bin()?;
@@ -875,6 +933,7 @@ pub fn run() {
             get_hub_url,
             get_app_version,
             get_mcp_template,
+            slash_discover_for_agent,
             get_human_name,
             get_ui_settings,
             open_config_file,

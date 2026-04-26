@@ -39,11 +39,6 @@
   const spawnSubmit   = document.getElementById('spawn-submit');
   const spawnSessionContinue = document.getElementById('spawn-session-continue');
   const spawnSessionResume   = document.getElementById('spawn-session-resume');
-  const confirmModal  = document.getElementById('confirm-modal');
-  const confirmTitle  = document.getElementById('confirm-title');
-  const confirmPrompt = document.getElementById('confirm-prompt');
-  const confirmOk     = document.getElementById('confirm-ok');
-  const confirmCancel = document.getElementById('confirm-cancel');
 
   const NAME_RE = /^[A-Za-z0-9_.-][A-Za-z0-9 _.-]{0,62}[A-Za-z0-9_.-]$|^[A-Za-z0-9_.-]$/;
 
@@ -128,30 +123,8 @@
   splitter?.addEventListener('pointerup',     endDrag);
   splitter?.addEventListener('pointercancel', endDrag);
 
-  let confirmResolver = null;
-  function askConfirm(title, prompt) {
-    return new Promise((resolve) => {
-      confirmResolver = resolve;
-      confirmTitle.textContent = title;
-      confirmPrompt.textContent = prompt;
-      confirmModal.classList.add('open');
-      confirmOk.focus();
-    });
-  }
-  function closeConfirm(result) {
-    confirmModal.classList.remove('open');
-    const r = confirmResolver;
-    confirmResolver = null;
-    if (r) r(result);
-  }
-  confirmOk?.addEventListener('click',     () => closeConfirm(true));
-  confirmCancel?.addEventListener('click', () => closeConfirm(false));
-  confirmModal?.addEventListener('click', (e) => {
-    if (e.target === confirmModal) closeConfirm(false);
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && confirmModal.classList.contains('open')) closeConfirm(false);
-  });
+  // askConfirm is provided globally by core/state.js (shared with slash-send
+  // and any other module that needs the confirm modal).
 
   const tabs = new Map();
   let activeAgent = null;
