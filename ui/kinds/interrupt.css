@@ -1,16 +1,16 @@
 /* ── Interrupt cards ───────────────────────────────────────── */
 .interrupt-card {
   background: color-mix(in oklab, var(--red) 6%, transparent);
-  border: 1px solid var(--line);
-  border-left: 3px solid var(--red);
-  border-radius: 6px;
-  padding: 11px 12px;
-  margin: 8px 0;
-  font-size: 12.5px;
+  border: var(--border-1) solid var(--line);
+  border-left: var(--border-3) solid var(--red);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-11) var(--sp-12);
+  margin: var(--sp-8) 0;
+  font-size: var(--fs-lg);
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 6px 12px;
-  animation: blink-border 2.5s ease-in-out infinite;
+  gap: var(--sp-6) var(--sp-12);
+  animation: blink-border var(--motion-blink) ease-in-out infinite;
 }
 .interrupt-card.status-acknowledged {
   border-left-color: var(--text-dim);
@@ -21,21 +21,21 @@
 }
 .interrupt-header {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-8);
   align-items: center;
   font-family: var(--mono);
   font-weight: 700;
   color: var(--red);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 .interrupt-card.status-acknowledged .interrupt-header { color: var(--text-dim); }
 .interrupt-header .route { color: inherit; }
 .interrupt-header .status-badge {
-  font-size: 10px;
-  padding: 2px 7px;
-  border-radius: 3px;
+  font-size: var(--fs-2xs);
+  padding: var(--sp-2) var(--sp-7);
+  border-radius: var(--radius-sm);
   background: color-mix(in oklab, var(--red) 15%, transparent);
   color: var(--red);
   letter-spacing: 0.06em;
@@ -47,7 +47,7 @@
 .interrupt-text {
   color: var(--text);
   font-weight: 500;
-  line-height: 1.45;
+  line-height: var(--lh-base);
   white-space: pre-wrap;
   word-break: break-word;
   grid-column: 1 / -1;
@@ -55,32 +55,32 @@
 .interrupt-meta {
   color: var(--text-dim);
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 .interrupt-actions {
   grid-column: 1 / -1;
   display: flex;
   justify-content: flex-end;
-  gap: 6px;
+  gap: var(--sp-6);
 }
 .interrupt-actions button {
   font-family: var(--mono);
-  font-size: 11px;
-  padding: 5px 14px;
-  border-radius: 4px;
+  font-size: var(--fs-sm);
+  padding: var(--sp-5) var(--sp-14);
+  border-radius: var(--radius-md);
   background: var(--red);
   color: var(--bg-inset);
   border: none;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background var(--motion-fast);
 }
 .interrupt-actions button:hover { background: var(--red-hover); }
 .interrupt-replay-badge {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   color: var(--text-dim);
-  margin-left: 4px;
+  margin-left: var(--sp-4);
   font-weight: 400;
 }
 

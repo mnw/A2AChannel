@@ -54,7 +54,7 @@
     },
     {
       "id": "attachments",
-      "body": "Keep free-text messages concise; large artifacts belong in files. Attachments arrive as [attachment: <absolute-path>] — inspect the file's extension to choose your tool: Read for text/markdown/code/JSON, Read with pages= for PDFs, image vision for .png/.jpg/.jpeg/.gif/.webp. The default allowlist is images + pdf + md; the human can extend it via the app's config.json. If Read fails with a permission error, tell the human to add the folder to ~/.claude/settings.json (permissions.additionalDirectories) or relaunch with --add-dir <folder>."
+      "body": "Keep free-text messages concise; large artifacts belong in files. Attachments arrive as [attachment: <absolute-path>] — inspect the file's extension to choose your tool: Read for text/markdown/code/JSON, Read with pages= for PDFs, image vision for .png/.jpg/.jpeg/.gif/.webp. The default allowlist is images + pdf + md; the human can extend it via the app's config.yml. If Read fails with a permission error, tell the human to add the folder to ~/.claude/settings.json (permissions.additionalDirectories) or relaunch with --add-dir <folder>."
     }
   ]
 }

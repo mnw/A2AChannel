@@ -129,7 +129,7 @@ fn write_mcp_config_for(agent: &str, room: &str) -> Result<PathBuf, String> {
 }
 
 // Build the claude invocation. Direct-exec (no shell), so claude_path must be absolute —
-// comes from config.json to avoid paying the .zshrc-loading cost on every spawn.
+// comes from config.yml to avoid paying the .zshrc-loading cost on every spawn.
 fn claude_command(agent: &str, room: &str, session_mode: Option<&str>) -> Result<String, String> {
     let cfg_path = write_mcp_config_for(agent, room)?;
     let path_str = cfg_path.to_string_lossy().replace('\'', r"'\''");
@@ -526,4 +526,21 @@ pub fn pty_list() -> Result<Vec<String>, String> {
 #[tauri::command]
 pub fn resolve_default_room(cwd: String) -> String {
     default_room_for_cwd(std::path::Path::new(&cwd))
+}
+
+// Live cwd of the agent's tmux pane. Tracks `cd` commands the agent runs
+// — not the original spawn path. Used by the "open in editor" feature so
+// the editor follows wherever the agent currently is.
+pub fn pane_current_path(agent: &str) -> Result<PathBuf, String> {
+    if !valid_agent_name(agent) {
+        return Err(format!("invalid agent: {agent}"));
+    }
+    let raw = tmux_run(&[
+        "display-message", "-p", "-t", agent, "#{pane_current_path}",
+    ])?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(format!("no pane_current_path for agent '{agent}'"));
+    }
+    Ok(PathBuf::from(trimmed))
 }

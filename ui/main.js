@@ -239,6 +239,10 @@ if (reloadBtn) {
         if (typeof info.url === 'string' && info.url) BUS = info.url;
         if (typeof info.token === 'string') AUTH_TOKEN = info.token;
       }
+      // Re-apply theme + font scale from the (re-read) config.yml.
+      if (window.A2A_UI && typeof window.A2A_UI.reload === 'function') {
+        try { await window.A2A_UI.reload(); } catch {}
+      }
       try {
         const name = await tauriInvoke('get_human_name');
         if (typeof name === 'string' && name) {

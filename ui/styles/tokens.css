@@ -1,17 +1,37 @@
-/* ── Design tokens ─────────────────────────────────────────── */
-:root {
-  /* Palette (warm dark) */
-  --bg:         #1a1714;
-  --bg-raised:  #221d19;
-  --bg-elev:    #2a231e;
-  --bg-inset:   #14110f;
-  --line:       #352c26;
-  --line-soft:  #2a231e;
-  --text:       #f5ede2;
-  --text-muted: #a69583;
-  --text-dim:   #6b5d51;
+/* ═══════════════════════════════════════════════════════════════════════
+   A2AChannel design tokens.
 
-  /* Accents */
+   Two layers, separated below:
+
+     SKIN LAYER       — palette + theme-aware overlays. Override per theme
+                        via [data-theme="…"] blocks at the bottom of this
+                        file. Touching these is a theme change.
+
+     STRUCTURAL LAYER — sizing, spacing, typography scale, motion, z-index,
+                        elevation. These are PRODUCT-WIDE design-system
+                        decisions and never per-theme. Touching them is a
+                        system change. Theme blocks MUST NOT override
+                        anything in this layer.
+
+   ─────────────────────────────────────────────────────────────────────── */
+:root {
+
+  /* ═════════ SKIN LAYER ═════════════════════════════════════════════════ */
+
+  /* Palette (warm dark — default theme). */
+  --bg:           #1a1714;
+  --bg-raised:    #221d19;
+  --bg-elev:      #2a231e;
+  --bg-inset:     #14110f;
+  --bg-hover:     #2f2621;
+  --line:         #352c26;
+  --line-soft:    #2a231e;
+  --line-hover:   #4a3d34;
+  --text:         #f5ede2;
+  --text-muted:   #a69583;
+  --text-dim:     #6b5d51;
+
+  /* Accents (semantic + reserved). */
   --orange:       #d97757;
   --orange-soft:  #b85f40;
   --orange-hover: #e08265;
@@ -24,22 +44,323 @@
   --pink:         #d98eb3;
   --teal:         #6ab5a3;
 
-  /* Hover-state surfaces (v0.9.6 token consolidation — previously
-     hardcoded as #4a3d34 / #2f2621 in 11 + 6 locations respectively). */
-  --line-hover:   #4a3d34;
-  --bg-hover:     #2f2621;
+  /* "Strong" foreground accents — text/icon over tinted surfaces. */
+  --code-text:    #f0c4b0;
+  --green-strong: #9dc285;
+  --red-strong:   #e38f7a;
 
-  /* Foreground accents that read as "stronger" versions of the base palette
-     when used as text/icon color over tinted backgrounds. v0.9.10 — promoted
-     from inline hex so a future skin can override per-token. */
-  --code-text:    #f0c4b0;  /* <code> inside chat bubbles — warm tint */
-  --green-strong: #9dc285;  /* online/success text on green-tinted surfaces */
-  --red-strong:   #e38f7a;  /* error/decline text on red-tinted surfaces */
+  /* Theme-aware overlays. Light themes flip these to black-on-light in their
+     override blocks; full white-on-dark looks wrong on a light background. */
+  --scrim:              rgba(0, 0, 0, 0.6);
+  --hover-overlay:      rgba(255, 255, 255, 0.06);
+  --hover-overlay-soft: rgba(255, 255, 255, 0.03);
 
-  /* Typography */
-  --mono:  'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  /* xterm.js palette — terminal panes consume these via getComputedStyle in
+     ui/terminal/xterm-themes.js. Themes override the same names below. */
+  --xterm-bg:             #14110f;
+  --xterm-fg:             var(--text);
+  --xterm-cursor:         var(--orange);
+  --xterm-black:          #2a231e;
+  --xterm-red:            var(--red);
+  --xterm-green:          var(--green);
+  --xterm-yellow:         var(--amber);
+  --xterm-blue:           var(--blue);
+  --xterm-magenta:        var(--purple);
+  --xterm-cyan:           var(--teal);
+  --xterm-white:          var(--text-muted);
+  --xterm-bright-black:   var(--line-hover);
+  --xterm-bright-red:     var(--red-hover);
+  --xterm-bright-green:   var(--green-strong);
+  --xterm-bright-yellow:  #f0be7a;
+  --xterm-bright-blue:    #84afd9;
+  --xterm-bright-magenta: #bb9fd5;
+  --xterm-bright-cyan:    #83c9b9;
+  --xterm-bright-white:   var(--text);
+
+  /* ═════════ STRUCTURAL LAYER ═══════════════════════════════════════════
+     Themes do NOT override anything below this line. */
+
+  /* Typography — families. The primary slot in --sans / --mono is exposed
+     as a CSS var (--user-sans / --user-mono) so config.yml can swap it via
+     ui/features/theme.js. The rest of the chain is structural and never
+     overridden — guarantees a working fallback if the user font is missing
+     or invalid. --serif is brand chrome (brand mark + nutshell display);
+     not user-overridable to keep visual identity consistent. */
+  --mono:  var(--user-mono, 'JetBrains Mono'),
+           ui-monospace, 'SF Mono', Menlo, monospace;
   --serif: 'Fraunces', Georgia, 'Times New Roman', serif;
-  --sans:  'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --sans:  var(--user-sans, 'Inter'),
+           -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial,
+           sans-serif;
+
+  /* Typography — font-size scale. Each step multiplies its base px value by
+     --ui-font-scale (set from config.yml `font_scale`, default 1). Bumping
+     the scale uniformly resizes every text element without touching rules. */
+  --ui-font-scale: 1;
+  --fs-3xs:  calc(9px    * var(--ui-font-scale));
+  --fs-2xs:  calc(10px   * var(--ui-font-scale));
+  --fs-xs:   calc(10.5px * var(--ui-font-scale));
+  --fs-sm:   calc(11px   * var(--ui-font-scale));
+  --fs-md:   calc(11.5px * var(--ui-font-scale));
+  --fs-base: calc(12px   * var(--ui-font-scale));
+  --fs-lg:   calc(12.5px * var(--ui-font-scale));
+  --fs-xl:   calc(13px   * var(--ui-font-scale));
+  --fs-2xl:  calc(13.5px * var(--ui-font-scale));
+  --fs-3xl:  calc(14px   * var(--ui-font-scale));
+  --fs-4xl:  calc(16px   * var(--ui-font-scale));
+  --fs-5xl:  calc(17px   * var(--ui-font-scale));
+  --fs-6xl:  calc(18px   * var(--ui-font-scale));
+
+  /* Terminal baseline. Aliased to --fs-xl (13px) by default — mono fonts
+     typically have a smaller x-height than proportional UI fonts, so a
+     slight bump above --fs-base keeps xterm cells visually balanced with
+     chat bubbles. Override here if you want xterm to track a different
+     step in the scale. */
+  --fs-terminal: var(--fs-xl);
+
+  /* Typography — line-height. Dimensionless ratios. */
+  --lh-tight:    1.4;
+  --lh-base:     1.45;   /* card body */
+  --lh-relaxed:  1.5;
+  --lh-loose:    1.55;   /* msg body */
+  --lh-spacious: 1.75;
+
+  /* Spacing scale — token name = pixel value (--sp-N → Npx) so migration
+     from literals is mechanical and round-trippable. Use the smallest ramp
+     step that fits when adding new spacing; introduce off-scale values only
+     by extending the scale here, never as an inline literal. */
+  --sp-1:  1px;
+  --sp-2:  2px;
+  --sp-3:  3px;
+  --sp-4:  4px;
+  --sp-5:  5px;
+  --sp-6:  6px;
+  --sp-7:  7px;
+  --sp-8:  8px;
+  --sp-9:  9px;
+  --sp-10: 10px;
+  --sp-11: 11px;
+  --sp-12: 12px;
+  --sp-13: 13px;
+  --sp-14: 14px;
+  --sp-16: 16px;
+  --sp-18: 18px;
+  --sp-20: 20px;
+  --sp-24: 24px;
+  --sp-32: 32px;
+  --sp-40: 40px;
+  --sp-48: 48px;
+
+  /* Element-size scale — for fixed dimensions of UI primitives (avatars,
+     dots, icon buttons, brand mark). Same naming convention as --sp-N:
+     token name = pixel value. Distinct namespace from spacing because they
+     describe COMPONENT IDENTITY, not breathing room — a UI dot isn't 6px
+     of padding, it's a 6px-wide circle. */
+  --size-1:    1px;     /* hairline divider/separator height */
+  --size-2:    2px;     /* splitter rail width */
+  --size-3:    3px;     /* terminal active flag width */
+  --size-4:    4px;     /* msg-copy edge offset */
+  --size-6:    6px;     /* state dots, splitter */
+  --size-7:    7px;     /* legend dot */
+  --size-8:    8px;     /* mention-popover dot */
+  --size-10:   10px;    /* webkit scrollbar thickness */
+  --size-12:   12px;    /* small SVG icons (msg-copy) */
+  --size-14:   14px;    /* default SVG icon inside icon-btn */
+  --size-18:   18px;    /* terminal active flag height */
+  --size-20:   20px;    /* msg-copy button */
+  --size-22:   22px;    /* permission-dismiss / titlebar buttons */
+  --size-24:   24px;    /* attachment-chip thumbnail */
+  --size-26:   26px;    /* brand-mark */
+  --size-28:   28px;    /* msg-avatar */
+  --size-30:   30px;    /* default icon-btn */
+  --size-32:   32px;    /* spawn-room picker button */
+  --size-36:   36px;    /* composer #send-btn, #emoji-btn, #attach-btn */
+  --size-40:   40px;    /* splitter active drag height */
+  --size-44:   44px;    /* composer popover bottom offset (above composer) */
+  --size-48:   48px;    /* terminal-loading icon */
+  --size-60:   60px;    /* drop-overlay top offset (clears titlebar) */
+  --size-130:  130px;   /* room-display min-width */
+  --size-140:  140px;   /* target-display min-width */
+  --size-150:  150px;   /* terminal tab rail width */
+  --size-160:  160px;   /* mention-popover min-width */
+  --size-180:  180px;   /* msg-input max-height, spawn-room-menu min-width */
+  --size-200:  200px;   /* mention popover, target-menu, spawn-room-menu */
+  --size-240:  240px;   /* terminal-col min-width, popover height caps */
+  --size-260:  260px;   /* room-menu max-width */
+  --size-280:  280px;   /* target-menu max-width */
+  --size-320:  320px;   /* msg-body img max-height, emoji-popover max-width */
+  --size-360:  360px;   /* attachment-link max-width, room/target menu max-height */
+  --size-560:  560px;   /* generic modal width cap */
+  --size-640:  640px;   /* nutshell editor width cap */
+
+  /* Border-width scale. */
+  --border-1: 1px;   /* default — every card, divider, input */
+  --border-2: 2px;   /* shell-tab separator, drop-overlay dashed border */
+  --border-3: 3px;   /* card left-marker (handoff/interrupt/permission) */
+
+  /* Border-radius scale. */
+  --radius-xs:    2px;     /* terminal active flag, thin overlays */
+  --radius-sm:    3px;
+  --radius-md:    4px;
+  --radius-lg:    6px;     /* most cards */
+  --radius-xl:    12px;    /* chat bubble */
+  --radius-pill:  16px;    /* legend pills */
+  --radius-round: 999px;   /* status pills, tags */
+  --radius-circle: 50%;    /* dots, avatars */
+
+  /* Z-index ladder. Higher numbers paint above lower. */
+  --z-base:           1;
+  --z-raised:         2;
+  --z-pinned:         5;
+  --z-sticky:         10;
+  --z-overlay:        20;
+  --z-dropdown:       30;
+  --z-dropdown-menu:  40;
+  --z-toast:          100;
+  --z-modal:          200;
+  --z-modal-content:  220;
+  --z-drop-overlay:   500;
+
+  /* Motion timing scale. Per Material/HIG: 150–300 ms for micro,
+     ≤400 ms for complex. */
+  --motion-instant:    0.1s;
+  --motion-fast:       0.15s;     /* primary — most micro-interactions */
+  --motion-base:       0.18s;     /* composer hint reveal */
+  --motion-medium:     0.2s;      /* chat msg fade-in */
+  --motion-slow:       0.25s;     /* terminal loading transition */
+  --motion-slower:     0.35s;     /* nutshell flash */
+  --motion-attention:  1.2s;      /* terminal-tab needs-attention pulse */
+  --motion-spinner:    1.6s;      /* terminal loading sparkle spin */
+  --motion-pulse:      2s;        /* status dot pulse */
+  --motion-blink:      2.5s;      /* permission-card border blink */
+
+  /* Shadow elevation scale (theme-agnostic black-on-anything). */
+  --shadow-sm:      0 2px 8px rgba(0, 0, 0, 0.35);   /* sticky cards */
+  --shadow-md:      0 6px 20px rgba(0, 0, 0, 0.45);  /* copy toast */
+  --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.4);   /* composer popovers */
+  --shadow-lg:      0 8px 24px rgba(0, 0, 0, 0.5);   /* dropdown menus */
+  --shadow-modal:   0 16px 48px rgba(0, 0, 0, 0.6);  /* modals */
+
+  /* Glow blur radii — for `box-shadow: 0 0 <Npx> <currentColor|var()>`
+     decorative glows on dots, attention markers. The color is theme-aware
+     via currentColor / color-mix; only the geometric blur is captured here. */
+  --glow-sm: 6px;
+  --glow-md: 8px;
 
 }
 
+
+/* ═════════ THEME OVERRIDES ═════════════════════════════════════════════════
+   Each block overrides ONLY the SKIN LAYER tokens above. Structural tokens
+   (font-size scale, spacing, sizing, radius, z-index, motion, shadows, glows)
+   are constant across themes — never override them here. */
+
+/* ── Rosé Pine Dawn (light theme) ──────────────────────────────────────── */
+[data-theme="rose-pine-dawn"] {
+  --bg:           #faf4ed;  /* base */
+  --bg-raised:    #fffaf3;  /* surface */
+  --bg-elev:      #f2e9e1;  /* overlay */
+  --bg-inset:     #f4ede8;  /* highlight-low */
+  --bg-hover:     #dfdad9;  /* highlight-med */
+  --line:         #dfdad9;
+  --line-soft:    #f4ede8;
+  --line-hover:   #cecacd;  /* highlight-high */
+  --text:         #575279;  /* text */
+  --text-muted:   #797593;  /* subtle */
+  --text-dim:     #9893a5;  /* muted */
+
+  --orange:       #d7827e;  /* rose */
+  --orange-soft:  #b4637a;  /* love (darker) */
+  --orange-hover: #c97165;
+  --amber:        #ea9d34;  /* gold */
+  --green:        #286983;  /* pine */
+  --red:          #b4637a;  /* love */
+  --red-hover:    #c5708a;
+  --blue:         #56949f;  /* foam */
+  --purple:       #907aa9;  /* iris */
+  --pink:         #d7827e;  /* rose */
+  --teal:         #286983;  /* pine */
+
+  --code-text:    #d7827e;  /* rose */
+  --green-strong: #286983;  /* pine — dark teal stays legible on light tint */
+  --red-strong:   #b4637a;  /* love */
+
+  /* Light-theme scrim/overlays — black-on-light, lighter alpha. */
+  --scrim:              rgba(0, 0, 0, 0.35);
+  --hover-overlay:      rgba(0, 0, 0, 0.06);
+  --hover-overlay-soft: rgba(0, 0, 0, 0.03);
+
+  /* xterm — Rosé Pine alacritty mapping; pine for green so it's legible
+     on cream; foam for blue; rose for cyan. Bright == normal. */
+  --xterm-bg:             var(--bg);
+  --xterm-cursor:         var(--orange);
+  --xterm-black:          var(--bg-elev);
+  --xterm-red:            var(--red);
+  --xterm-green:          var(--green);
+  --xterm-yellow:         var(--amber);
+  --xterm-blue:           var(--blue);
+  --xterm-magenta:        var(--purple);
+  --xterm-cyan:           var(--orange);
+  --xterm-white:          var(--text);
+  --xterm-bright-black:   var(--text-dim);
+  --xterm-bright-red:     var(--red);
+  --xterm-bright-green:   var(--green);
+  --xterm-bright-yellow:  var(--amber);
+  --xterm-bright-blue:    var(--blue);
+  --xterm-bright-magenta: var(--purple);
+  --xterm-bright-cyan:    var(--orange);
+  --xterm-bright-white:   var(--text);
+}
+
+/* ── Rosé Pine Moon (medium-dark theme) ────────────────────────────────── */
+[data-theme="rose-pine-moon"] {
+  --bg:           #232136;
+  --bg-raised:    #2a273f;
+  --bg-elev:      #393552;
+  --bg-inset:     #2a283e;
+  --bg-hover:     #44415a;
+  --line:         #44415a;
+  --line-soft:    #2a283e;
+  --line-hover:   #56526e;
+  --text:         #e0def4;
+  --text-muted:   #908caa;
+  --text-dim:     #6e6a86;
+
+  --orange:       #ea9a97;  /* rose */
+  --orange-soft:  #eb6f92;  /* love */
+  --orange-hover: #e88e8b;
+  --amber:        #f6c177;  /* gold */
+  --green:        #3e8fb0;  /* pine */
+  --red:          #eb6f92;  /* love */
+  --red-hover:    #f29ab1;
+  --blue:         #9ccfd8;  /* foam */
+  --purple:       #c4a7e7;  /* iris */
+  --pink:         #ea9a97;
+  --teal:         #3e8fb0;
+
+  --code-text:    #ea9a97;
+  --green-strong: #9ccfd8;  /* foam — brighter for legibility on dark tint */
+  --red-strong:   #eb6f92;
+
+  /* Moon is dark; scrim/overlays stay white-on-dark like default. Inherits
+     them automatically by not overriding. */
+
+  --xterm-bg:             var(--bg);
+  --xterm-cursor:         var(--orange);
+  --xterm-black:          var(--bg-elev);
+  --xterm-red:            var(--red);
+  --xterm-green:          var(--green);
+  --xterm-yellow:         var(--amber);
+  --xterm-blue:           var(--blue);
+  --xterm-magenta:        var(--purple);
+  --xterm-cyan:           var(--orange);
+  --xterm-white:          var(--text);
+  --xterm-bright-black:   var(--text-dim);
+  --xterm-bright-red:     var(--red);
+  --xterm-bright-green:   var(--green);
+  --xterm-bright-yellow:  var(--amber);
+  --xterm-bright-blue:    var(--blue);
+  --xterm-bright-magenta: var(--purple);
+  --xterm-bright-cyan:    var(--orange);
+  --xterm-bright-white:   var(--text);
+}

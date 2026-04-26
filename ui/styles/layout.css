@@ -4,23 +4,25 @@
    opts out (Tauri excludes interactive elements automatically). The header
    below it is unchanged. */
 .titlebar {
-  flex: 0 0 28px;
+  flex: 0 0 var(--size-28);
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 2px;
-  padding: 0 10px 0 80px;
+  gap: var(--sp-2);
+  /* 80px left clears the macOS traffic-light cluster — platform constant, not
+     a design-token value. Kept as a literal because it tracks Apple's metrics. */
+  padding: 0 var(--sp-10) 0 80px;
   background: var(--bg-raised);
-  border-bottom: 1px solid var(--line);
+  border-bottom: var(--border-1) solid var(--line);
 }
 /* Title-bar buttons render as bare icons — no border, no background. Hover
    only nudges the icon's color, so the strip stays visually quiet. */
 .titlebar-button.icon-btn {
-  width: 22px;
-  height: 22px;
+  width: var(--size-22);
+  height: var(--size-22);
   background: transparent;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   color: var(--text-dim);
   padding: 0;
   display: inline-flex;
@@ -49,11 +51,11 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 4px 12px;
+  gap: var(--sp-12);
+  padding: var(--sp-4) var(--sp-12);
   background: var(--bg-elev);
-  border-top: 1px solid var(--line);
-  font-size: 10.5px;
+  border-top: var(--border-1) solid var(--line);
+  font-size: var(--fs-xs);
   line-height: 1;
 }
 /* Pill chrome inside the footer is already provided by usage.css /
@@ -64,7 +66,7 @@
 .app-footer .status-pill {
   border: none;
   background: transparent;
-  padding: 0 4px;
+  padding: 0 var(--sp-4);
 }
 body.no-terminal .splitter,
 body.no-terminal .terminal-col { display: none; }
@@ -77,11 +79,11 @@ body:not(.no-terminal) .chat-col {
 
 /* ── Splitter ──────────────────────────────────────────────── */
 .splitter {
-  flex: 0 0 6px;
+  flex: 0 0 var(--size-6);
   background: var(--line-soft);
   cursor: col-resize;
   position: relative;
-  transition: background 0.15s;
+  transition: background var(--motion-fast);
 }
 /* Vertical grip dots in the middle of the splitter so the drag
    affordance is discoverable without making the strip thicker. */
@@ -91,19 +93,19 @@ body:not(.no-terminal) .chat-col {
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  width: 2px;
-  height: 28px;
-  background-image: linear-gradient(to bottom, currentColor 2px, transparent 2px);
-  background-size: 2px 6px;
+  width: var(--size-2);
+  height: var(--size-28);
+  background-image: linear-gradient(to bottom, currentColor var(--size-2), transparent var(--size-2));
+  background-size: var(--size-2) var(--size-6);
   background-repeat: repeat-y;
   color: var(--text-dim);
   pointer-events: none;
-  transition: color 0.15s, height 0.15s;
+  transition: color var(--motion-fast), height var(--motion-fast);
 }
 .splitter:hover { background: var(--bg-elev); }
-.splitter:hover::before { color: var(--orange); height: 36px; }
+.splitter:hover::before { color: var(--orange); height: var(--size-36); }
 .splitter.dragging { background: var(--orange); }
-.splitter.dragging::before { color: var(--bg-inset); height: 40px; }
+.splitter.dragging::before { color: var(--bg-inset); height: var(--size-40); }
 
 
 @media (max-width: 1024px) {

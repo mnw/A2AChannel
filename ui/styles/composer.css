@@ -1,23 +1,23 @@
 /* ── Composer ──────────────────────────────────────────────── */
 footer {
-  border-top: 1px solid var(--line);
-  padding: 12px 20px 14px;
+  border-top: var(--border-1) solid var(--line);
+  padding: var(--sp-12) var(--sp-20) var(--sp-14);
   background: var(--bg);
   flex-shrink: 0;
 }
 .input-row {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-8);
   align-items: center;
   position: relative;
 }
 
 .visually-hidden {
   position: absolute !important;
-  width: 1px !important;
-  height: 1px !important;
+  width: var(--size-1) !important;
+  height: var(--size-1) !important;
   padding: 0 !important;
-  margin: -1px !important;
+  margin: -var(--sp-1) !important;
   overflow: hidden !important;
   clip: rect(0, 0, 0, 0) !important;
   white-space: nowrap !important;
@@ -32,11 +32,11 @@ footer {
   background: var(--orange);
   color: var(--bg-inset);
   border: none;
-  padding: 0 16px;
-  height: 36px;
-  border-radius: 6px;
+  padding: 0 var(--sp-16);
+  height: var(--size-36);
+  border-radius: var(--radius-lg);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-base);
   font-weight: 600;
   cursor: pointer;
 }
@@ -45,16 +45,16 @@ footer {
 
 /* Emoji / attach buttons are square icon buttons */
 #emoji-btn, #attach-btn {
-  width: 36px; height: 36px;
+  width: var(--size-36); height: var(--size-36);
   padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
+  font-size: var(--fs-4xl);
   background: var(--bg-elev);
   color: var(--text-muted);
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  border: var(--border-1) solid var(--line);
+  border-radius: var(--radius-lg);
 }
 #emoji-btn:hover, #attach-btn:hover { color: var(--text); background: var(--bg-hover); }
 
@@ -67,125 +67,125 @@ footer {
   overflow: hidden;
   opacity: 0;
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   color: var(--text-dim);
   display: flex;
-  gap: 14px;
+  gap: var(--sp-14);
   flex-wrap: wrap;
-  transition: max-height 0.18s ease, margin-top 0.18s ease, opacity 0.18s ease;
+  transition: max-height var(--motion-base) ease, margin-top var(--motion-base) ease, opacity var(--motion-base) ease;
 }
 .chat-col footer:focus-within .hint {
-  max-height: 32px;
-  margin-top: 8px;
+  max-height: var(--size-32);
+  margin-top: var(--sp-8);
   opacity: 1;
 }
 .hint kbd {
   background: var(--bg-elev);
-  padding: 1px 5px;
-  border-radius: 3px;
-  border: 1px solid var(--line);
+  padding: var(--sp-1) var(--sp-5);
+  border-radius: var(--radius-sm);
+  border: var(--border-1) solid var(--line);
   color: var(--text-muted);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 
 /* Emoji / mention popovers */
 .emoji-popover {
   position: absolute;
-  bottom: 44px;
+  bottom: var(--size-44);
   left: 0;
   display: none;
   grid-template-columns: repeat(10, 1fr);
-  gap: 2px;
+  gap: var(--sp-2);
   background: var(--bg-elev);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 6px;
-  max-width: 320px;
-  z-index: 10;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  border: var(--border-1) solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-6);
+  max-width: var(--size-320);
+  z-index: var(--z-sticky);
+  box-shadow: var(--shadow-popover);
 }
 .emoji-popover.open { display: grid; }
 .emoji-popover button {
   background: transparent;
   border: none;
   color: inherit;
-  font-size: 18px;
-  padding: 4px;
+  font-size: var(--fs-6xl);
+  padding: var(--sp-4);
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-md);
 }
-.emoji-popover button:hover { background: rgba(255,255,255,0.06); }
+.emoji-popover button:hover { background: var(--hover-overlay); }
 
 .mention-popover {
   position: absolute;
-  bottom: 44px;
+  bottom: var(--size-44);
   left: 0;
   display: none;
   flex-direction: column;
   background: var(--bg-elev);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 4px;
-  min-width: 160px;
-  max-width: 240px;
-  z-index: 10;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  border: var(--border-1) solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-4);
+  min-width: var(--size-160);
+  max-width: var(--size-240);
+  z-index: var(--z-sticky);
+  box-shadow: var(--shadow-popover);
 }
 .mention-popover.open { display: flex; }
 .mention-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: var(--sp-8);
+  padding: var(--sp-6) var(--sp-10);
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-base);
   color: var(--text);
 }
 .mention-item:hover, .mention-item.active { background: color-mix(in oklab, var(--orange) 12%, transparent); }
-.mention-item .dot { width: 8px; height: 8px; border-radius: 50%; }
-.mention-item .meta { font-size: 10px; color: var(--text-dim); margin-left: auto; }
+.mention-item .dot { width: var(--size-8); height: var(--size-8); border-radius: var(--radius-circle); }
+.mention-item .meta { font-size: var(--fs-2xs); color: var(--text-dim); margin-left: auto; }
 .mention-item.offline { opacity: 0.6; }
 
 /* Attachment row (chips) */
 .attachment-row {
   display: flex;
-  gap: 6px;
+  gap: var(--sp-6);
   align-items: center;
-  margin-bottom: 6px;
+  margin-bottom: var(--sp-6);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   color: var(--text-muted);
 }
 .attachment-row:empty { display: none; }
 .attachment-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-6);
   background: var(--bg-elev);
-  border: 1px solid var(--line);
-  padding: 4px 8px;
-  border-radius: 4px;
+  border: var(--border-1) solid var(--line);
+  padding: var(--sp-4) var(--sp-8);
+  border-radius: var(--radius-md);
 }
 .attachment-chip img {
-  width: 24px; height: 24px;
+  width: var(--size-24); height: var(--size-24);
   object-fit: cover;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
 }
 .attachment-chip .x {
   color: var(--red);
   cursor: pointer;
   font-weight: bold;
-  padding: 0 2px;
+  padding: 0 var(--sp-2);
 }
 
 
 textarea#msg-input {
   resize: none;
-  line-height: 1.5;
-  min-height: 36px;
-  max-height: 180px;
+  line-height: var(--lh-relaxed);
+  min-height: var(--size-36);
+  max-height: var(--size-180);
   overflow-y: auto;
 }

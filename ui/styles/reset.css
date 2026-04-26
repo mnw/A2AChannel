@@ -6,8 +6,8 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--sans);
-  font-size: 13px;
-  line-height: 1.55;
+  font-size: var(--fs-xl);
+  line-height: var(--lh-loose);
   height: 100vh;
   display: flex;
   flex-direction: column;
@@ -23,29 +23,29 @@ button, input, select, textarea {
 input[type=text], textarea {
   flex: 1;
   background: var(--bg-elev);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 9px 12px;
-  font-size: 13px;
+  border: var(--border-1) solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-9) var(--sp-12);
+  font-size: var(--fs-xl);
   color: var(--text);
   font-family: var(--sans);
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color var(--motion-fast);
 }
 input[type=text]:focus, textarea:focus { border-color: var(--line-hover); }
 input[type=text]::placeholder, textarea::placeholder { color: var(--text-dim); }
 
 button {
   background: var(--bg-elev);
-  border: 1px solid var(--line);
+  border: var(--border-1) solid var(--line);
   color: var(--text-muted);
-  border-radius: 6px;
-  padding: 7px 14px;
+  border-radius: var(--radius-lg);
+  padding: var(--sp-7) var(--sp-14);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--motion-fast);
   outline: none;
 }
 button:hover { background: var(--bg-hover); color: var(--text); border-color: var(--line-hover); }

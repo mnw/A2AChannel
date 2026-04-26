@@ -1,18 +1,18 @@
 /* ── Permission cards (Claude Code approval relay) ────────────── */
 .permission-card {
   background: var(--bg);
-  border: 1px solid var(--line);
-  border-left: 3px solid var(--red);
-  border-radius: 6px;
+  border: var(--border-1) solid var(--line);
+  border-left: var(--border-3) solid var(--red);
+  border-radius: var(--radius-lg);
   /* Vertical padding + row gap tightened in v0.9.10 (was 11/12 + 6,
      now 7/12 + 3). Horizontal kept — width was fine. */
-  padding: 7px 12px;
-  margin: 5px 0;
-  font-size: 12.5px;
+  padding: var(--sp-7) var(--sp-12);
+  margin: var(--sp-5) 0;
+  font-size: var(--fs-lg);
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 3px 12px;
-  animation: blink-border 2.5s ease-in-out infinite;
+  gap: var(--sp-3) var(--sp-12);
+  animation: blink-border var(--motion-blink) ease-in-out infinite;
 }
 /* Pending cards live inside #permission-stack, which is the element that's
    actually sticky. Individual cards are plain flow children — this prevents
@@ -21,16 +21,16 @@
    earlier ones, hiding them). */
 .permission-card.status-pending {
   background: color-mix(in oklab, var(--bg) 97%, transparent);
-  backdrop-filter: blur(4px);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(var(--sp-4));
+  box-shadow: var(--shadow-sm);
 }
 #permission-stack {
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: var(--z-sticky);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--sp-4);
   /* Only take space when there's at least one pending card — an empty stack
      is invisible and doesn't add a top band above the chat flow. */
 }
@@ -62,22 +62,22 @@
 .permission-card.status-dismissed { border-left-color: var(--text-dim); opacity: 0.6; }
 .permission-header {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-8);
   align-items: center;
   font-family: var(--mono);
   font-weight: 700;
   color: var(--red);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 .permission-card.status-allowed .permission-header,
 .permission-card.status-denied  .permission-header { color: var(--text-dim); }
 .permission-header .route { color: inherit; }
 .permission-header .status-badge {
-  font-size: 10px;
-  padding: 2px 7px;
-  border-radius: 3px;
+  font-size: var(--fs-2xs);
+  padding: var(--sp-2) var(--sp-7);
+  border-radius: var(--radius-sm);
   background: color-mix(in oklab, var(--red) 15%, transparent);
   color: var(--red);
   letter-spacing: 0.06em;
@@ -96,17 +96,17 @@
 }
 .permission-dismiss {
   background: transparent;
-  border: 1px solid var(--line);
+  border: var(--border-1) solid var(--line);
   color: var(--text-dim);
-  width: 22px;
-  height: 22px;
-  line-height: 18px;
+  width: var(--size-22);
+  height: var(--size-22);
+  line-height: var(--size-18);
   padding: 0;
-  border-radius: 4px;
-  font-size: 16px;
+  border-radius: var(--radius-md);
+  font-size: var(--fs-4xl);
   cursor: pointer;
-  margin-left: 4px;
-  transition: background 0.15s, color 0.15s;
+  margin-left: var(--sp-4);
+  transition: background var(--motion-fast), color var(--motion-fast);
 }
 .permission-dismiss:hover {
   background: color-mix(in oklab, var(--text-dim) 20%, transparent);
@@ -115,7 +115,7 @@
 .permission-description {
   color: var(--text);
   font-weight: 500;
-  line-height: 1.45;
+  line-height: var(--lh-base);
   white-space: pre-wrap;
   word-break: break-word;
   grid-column: 1 / -1;
@@ -123,51 +123,51 @@
 .permission-preview-details {
   grid-column: 1 / -1;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   color: var(--text-dim);
 }
 .permission-preview-details > summary {
   cursor: pointer;
-  padding: 2px 0;
+  padding: var(--sp-2) 0;
   user-select: none;
   letter-spacing: 0.04em;
 }
 .permission-preview-details > summary:hover { color: var(--text); }
 .permission-input-preview {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   background: var(--bg-inset);
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 6px 10px;
+  border: var(--border-1) solid var(--line);
+  border-radius: var(--radius-md);
+  padding: var(--sp-6) var(--sp-10);
   color: var(--text-dim);
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 240px;
+  max-height: var(--size-240);
   overflow: auto;
-  margin: 3px 0 0;
+  margin: var(--sp-3) 0 0;
 }
 .permission-meta {
   color: var(--text-dim);
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 .permission-actions {
   grid-column: 1 / -1;
   display: flex;
   justify-content: flex-end;
-  gap: 6px;
+  gap: var(--sp-6);
 }
 .permission-actions button {
   font-family: var(--mono);
-  font-size: 11px;
-  padding: 3px 14px;
-  border-radius: 4px;
+  font-size: var(--fs-sm);
+  padding: var(--sp-3) var(--sp-14);
+  border-radius: var(--radius-md);
   color: var(--bg-inset);
   border: none;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background var(--motion-fast);
 }
 .permission-actions button.allow { background: var(--orange, #d97757); }
 .permission-actions button.allow:hover { background: var(--orange-hover); }
@@ -175,9 +175,9 @@
 .permission-actions button.deny:hover { background: var(--red-hover); }
 .permission-replay-badge {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   color: var(--text-dim);
-  margin-left: 4px;
+  margin-left: var(--sp-4);
   font-weight: 400;
 }
 

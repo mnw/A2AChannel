@@ -144,6 +144,8 @@ function showCopyToast(msg) {
   clearTimeout(_copyToastTimer);
   _copyToastTimer = setTimeout(() => copyToastEl.classList.remove('visible'), 1400);
 }
+// terminal.js (and other tier-3 modules) need this without redeclaring.
+window.showCopyToast = showCopyToast;
 
 // Inline link-copy buttons inside chat-row links.
 messagesEl.addEventListener('click', (e) => {

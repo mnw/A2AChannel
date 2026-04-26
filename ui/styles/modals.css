@@ -2,39 +2,39 @@
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.6);
+  background: var(--scrim);
   display: none;
   align-items: center;
   justify-content: center;
-  z-index: 200;
+  z-index: var(--z-modal);
 }
 .modal-backdrop.open { display: flex; }
 
 .modal {
   background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 18px 20px;
-  width: min(560px, 90vw);
-  box-shadow: 0 16px 48px rgba(0,0,0,0.6);
+  border: var(--border-1) solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-18) var(--sp-20);
+  width: min(var(--size-560), 90vw);
+  box-shadow: var(--shadow-modal);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--sp-10);
 }
 .modal h2 {
   font-family: var(--serif);
-  font-size: 16px;
+  font-size: var(--fs-4xl);
   font-weight: 500;
   color: var(--text);
 }
 .modal p {
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: var(--fs-base);
+  line-height: var(--lh-relaxed);
   color: var(--text-muted);
 }
 .modal label {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-dim);
@@ -44,15 +44,15 @@
 .modal textarea {
   width: 100%;
   background: var(--bg-inset);
-  border: 1px solid var(--line);
+  border: var(--border-1) solid var(--line);
   color: var(--text);
   font-family: var(--mono);
-  font-size: 12px;
-  padding: 8px 12px;
-  border-radius: 5px;
+  font-size: var(--fs-base);
+  padding: var(--sp-8) var(--sp-12);
+  border-radius: var(--radius-md);
   outline: none;
 }
-.modal textarea { min-height: 200px; resize: vertical; }
+.modal textarea { min-height: var(--size-200); resize: vertical; }
 .modal textarea:focus, .modal input:focus { border-color: var(--line-hover); }
 .modal input:disabled {
   opacity: 0.45;
@@ -69,17 +69,17 @@
 .modal-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  margin-top: 4px;
+  gap: var(--sp-8);
+  margin-top: var(--sp-4);
 }
 .modal-actions .status {
   margin-right: auto;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   color: var(--green);
   align-self: center;
   opacity: 0;
-  transition: opacity 0.2s;
+  transition: opacity var(--motion-medium);
 }
 .modal-actions .status.visible { opacity: 1; }
 .modal-actions button:last-child {
@@ -94,45 +94,45 @@
 .nutshell-editor {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.6);
+  background: var(--scrim);
   display: none;
   align-items: center;
   justify-content: center;
-  z-index: 220;
+  z-index: var(--z-modal-content);
 }
 .nutshell-editor.open { display: flex; }
 .nutshell-editor .box {
   background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 18px 20px;
-  width: min(640px, 92vw);
-  box-shadow: 0 16px 48px rgba(0,0,0,0.6);
+  border: var(--border-1) solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-18) var(--sp-20);
+  width: min(var(--size-640), 92vw);
+  box-shadow: var(--shadow-modal);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--sp-10);
 }
 .nutshell-editor h2 {
   font-family: var(--serif);
-  font-size: 16px;
+  font-size: var(--fs-4xl);
   font-weight: 500;
   color: var(--text);
 }
 .nutshell-editor p {
-  font-size: 12px;
+  font-size: var(--fs-base);
   color: var(--text-muted);
-  line-height: 1.5;
+  line-height: var(--lh-relaxed);
 }
 .nutshell-editor textarea {
-  min-height: 180px;
+  min-height: var(--size-180);
   background: var(--bg-inset);
-  border: 1px solid var(--line);
+  border: var(--border-1) solid var(--line);
   color: var(--text);
   font-family: var(--serif);
-  font-size: 14px;
+  font-size: var(--fs-3xl);
   font-style: italic;
-  padding: 10px 12px;
-  border-radius: 5px;
+  padding: var(--sp-10) var(--sp-12);
+  border-radius: var(--radius-md);
   resize: vertical;
   outline: none;
 }
@@ -140,7 +140,7 @@
 .nutshell-editor .actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: var(--sp-8);
 }
 .nutshell-editor .actions button:last-child {
   background: var(--orange);

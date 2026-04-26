@@ -5,7 +5,7 @@
   display: flex;
   flex-direction: row;       /* vertical tabs on the right edge */
   min-height: 0;
-  min-width: 240px;
+  min-width: var(--size-240);
   overflow: hidden;
 }
 /* Vertical tab rail — pinned to the right edge of the terminal column.
@@ -13,15 +13,15 @@
    placement to the right without touching terminal.js. */
 .terminal-tabs {
   order: 2;
-  width: 110px;
+  width: var(--size-150);
   flex-shrink: 0;
   background: var(--bg-raised);
-  border-left: 1px solid var(--line);
+  border-left: var(--border-1) solid var(--line);
   display: flex;
   flex-direction: column;
   /* Tightened: was 10/8 padding + 3 gap. */
-  gap: 2px;
-  padding: 5px 6px;
+  gap: var(--sp-2);
+  padding: var(--sp-5) var(--sp-6);
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: thin;
@@ -29,21 +29,21 @@
 .terminal-tab {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: var(--sp-7);
   /* Tightened: was 8/10. */
-  padding: 5px 8px;
+  padding: var(--sp-5) var(--sp-8);
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: calc(var(--fs-base) * 1.15);
   color: var(--text-muted);
   cursor: pointer;
-  border-radius: 6px;
-  border: 1px solid transparent;
+  border-radius: var(--radius-lg);
+  border: var(--border-1) solid transparent;
   background: transparent;
   position: relative;
   white-space: nowrap;
   overflow: hidden;
 }
-.terminal-tab:hover { color: var(--text); background: rgba(255,255,255,0.03); }
+.terminal-tab:hover { color: var(--text); background: var(--hover-overlay-soft); }
 .terminal-tab.active {
   background: var(--bg-inset);
   border-color: var(--line);
@@ -53,13 +53,13 @@
 .terminal-tab.active::before {
   content: '';
   position: absolute;
-  right: -9px;
+  right: calc(-1 * var(--sp-9));
   top: 50%;
   transform: translateY(-50%);
-  width: 3px;
-  height: 18px;
+  width: var(--size-3);
+  height: var(--size-18);
   background: var(--orange);
-  border-radius: 2px 0 0 2px;
+  border-radius: var(--radius-xs) 0 0 var(--radius-xs);
 }
 .terminal-tab[data-state="dead"] { opacity: 0.6; font-style: italic; }
 .terminal-tab[data-state="external"] { opacity: 0.75; }
@@ -70,10 +70,10 @@
    the shell is always present. */
 .terminal-tab-shell {
   background: color-mix(in oklab, var(--orange) 6%, transparent);
-  border-left: 2px solid transparent;
-  border-bottom: 2px solid var(--line);
-  margin-bottom: 6px;
-  padding-bottom: 10px;
+  border-left: var(--border-2) solid transparent;
+  border-bottom: var(--border-2) solid var(--line);
+  margin-bottom: var(--sp-6);
+  padding-bottom: var(--sp-10);
   position: relative;
   opacity: 1 !important;
   font-style: normal !important;
@@ -89,14 +89,14 @@
 .terminal-tab-shell .tab-icon {
   opacity: 0.75;
   flex-shrink: 0;
-  margin-right: 2px;
+  margin-right: var(--sp-2);
   color: var(--orange);
 }
 .terminal-tab-shell:hover .tab-icon,
 .terminal-tab-shell.active .tab-icon { opacity: 1; }
 .terminal-tab-shell .tab-label {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-base);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-muted);
@@ -110,12 +110,12 @@
 .terminal-tabs-heading {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-6);
   /* Tightened: was 4/8. */
-  margin: 2px 0 4px;
-  padding: 0 4px;
+  margin: var(--sp-2) 0 var(--sp-4);
+  padding: 0 var(--sp-4);
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: var(--fs-3xs);
   letter-spacing: 0.22em;
   text-transform: uppercase;
   color: var(--text-dim);
@@ -127,7 +127,7 @@
 .terminal-tabs-heading::after {
   content: "";
   flex: 1;
-  height: 1px;
+  height: var(--size-1);
   background: var(--line);
   opacity: 0.5;
 }
@@ -136,28 +136,28 @@
    the user focuses the tab. Clears when `.active` is set or the user
    clicks the tab. */
 .terminal-tab.needs-attention {
-  animation: tab-attention 1.2s ease-in-out infinite;
+  animation: tab-attention var(--motion-attention) ease-in-out infinite;
 }
 .terminal-tab.needs-attention .state-dot {
   background: var(--orange);
-  box-shadow: 0 0 8px color-mix(in oklab, var(--orange) 70%, transparent);
+  box-shadow: 0 0 var(--glow-md) color-mix(in oklab, var(--orange) 70%, transparent);
 }
 .terminal-tab.needs-attention .tab-label {
   color: var(--orange);
   font-weight: 600;
 }
 .terminal-tab .state-dot {
-  width: 6px; height: 6px;
-  border-radius: 50%;
+  width: var(--size-6); height: var(--size-6);
+  border-radius: var(--radius-circle);
   background: var(--text-dim);
   flex-shrink: 0;
 }
-.terminal-tab[data-state="live"] .state-dot     { background: var(--green); box-shadow: 0 0 6px color-mix(in oklab, var(--green) 45%, transparent); }
-.terminal-tab[data-state="launching"] .state-dot { background: var(--amber); box-shadow: 0 0 6px color-mix(in oklab, var(--amber) 45%, transparent); }
+.terminal-tab[data-state="live"] .state-dot     { background: var(--green); box-shadow: 0 0 var(--glow-sm) color-mix(in oklab, var(--green) 45%, transparent); }
+.terminal-tab[data-state="launching"] .state-dot { background: var(--amber); box-shadow: 0 0 var(--glow-sm) color-mix(in oklab, var(--amber) 45%, transparent); }
 .terminal-tab[data-state="dead"] .state-dot      { background: var(--red); }
 .terminal-tab[data-state="external"] .state-dot  {
   background: transparent;
-  border: 1px solid var(--text-dim);
+  border: var(--border-1) solid var(--text-dim);
 }
 .terminal-tab .tab-label {
   flex: 1;
@@ -165,40 +165,53 @@
   text-overflow: ellipsis;
   font-weight: 500;
 }
-.terminal-tab .close-x {
-  color: var(--text-dim);
-  font-size: 13px;
-  line-height: 1;
-  padding: 0 2px;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.15s;
-  flex-shrink: 0;
-}
+/* Action icons (close-x + open-editor) only render in the layout when the
+   tab is hovered or active. The label gets the full rail width at rest;
+   icons appear on hover. */
+.terminal-tab .close-x,
+.terminal-tab .open-editor { display: none; }
 .terminal-tab:hover .close-x,
-.terminal-tab.active .close-x { opacity: 1; color: var(--text-muted); }
+.terminal-tab.active .close-x,
+.terminal-tab:hover .open-editor,
+.terminal-tab.active .open-editor {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+  padding: 0 var(--sp-2);
+  transition: color var(--motion-fast);
+}
+.terminal-tab .close-x {
+  color: var(--text-muted);
+  font-size: var(--fs-xl);
+  line-height: 1;
+}
 .terminal-tab .close-x:hover { color: var(--red); }
+.terminal-tab .open-editor { color: var(--text-muted); }
+.terminal-tab .open-editor:hover { color: var(--orange); }
+.terminal-tab .open-editor svg { width: var(--size-12); height: var(--size-12); }
 
 .terminal-tab-new {
   /* Pushed to the bottom of the vertical rail by margin-top: auto — the
      flex column consumes all remaining space above it. */
   margin-top: auto;
   background: var(--bg-elev);
-  border: 1px solid var(--line);
+  border: var(--border-1) solid var(--line);
   color: var(--text-muted);
   font-family: var(--mono);
-  font-size: 14px;
+  font-size: var(--fs-3xl);
   padding: 0;
   cursor: pointer;
   width: 100%;
-  height: 30px;
-  border-radius: 6px;
+  height: var(--size-30);
+  border-radius: var(--radius-lg);
   line-height: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  transition: color var(--motion-fast), border-color var(--motion-fast), background var(--motion-fast);
 }
 .terminal-tab-new:hover {
   color: var(--orange);
@@ -211,12 +224,12 @@
   flex: 1 1 auto;
   position: relative;
   overflow: hidden;
-  padding: 4px 6px;
+  padding: var(--sp-4) var(--sp-6);
   min-height: 0;
 }
 .terminal-pane {
   position: absolute;
-  inset: 4px 6px;
+  inset: var(--sp-4) var(--sp-6);
   display: none;
 }
 .terminal-pane.active { display: block; }
@@ -230,21 +243,21 @@
   align-items: center;
   justify-content: center;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-base);
   color: var(--text-muted);
-  padding: 16px;
+  padding: var(--sp-16);
   text-align: center;
-  gap: 14px;
-  z-index: 2;
+  gap: var(--sp-14);
+  z-index: var(--z-raised);
   background: var(--bg-inset);
 }
 .terminal-loading-icon {
-  width: 48px;
-  height: 48px;
-  animation: sparkle-spin 1.6s linear infinite;
+  width: var(--size-48);
+  height: var(--size-48);
+  animation: sparkle-spin var(--motion-spinner) linear infinite;
 }
 .terminal-loading-label {
   min-height: 1.4em;
-  transition: opacity 0.25s ease;
+  transition: opacity var(--motion-slow) ease;
 }
 

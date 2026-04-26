@@ -170,14 +170,37 @@
     strToB64, b64ToBytes,
   } = window.__A2A_TERM__.pty;
 
-  const xtermTheme = {
-    background: '#14110f', foreground: '#f5ede2', cursor: '#d97757',
-    black: '#2a231e',   red: '#d4604a',  green: '#7fb069',   yellow: '#e8a857',
-    blue:  '#6b9bc9',   magenta: '#a788c4', cyan: '#6ab5a3',  white: '#a69583',
-    brightBlack: '#4a3d34', brightRed: '#e07a63', brightGreen: '#9dc285',
-    brightYellow: '#f0be7a', brightBlue: '#84afd9', brightMagenta: '#bb9fd5',
-    brightCyan: '#83c9b9', brightWhite: '#f5ede2',
-  };
+  // xterm.js palettes (default / rose-pine-dawn / rose-pine-moon) live in
+  // ui/terminal/xterm-themes.js — pure data, exposed via __A2A_TERM__.
+  // Only the "apply to all live terminals" loop stays here because it walks
+  // the IIFE-scoped `tabs` Map.
+  const currentXtermTheme = window.__A2A_TERM__.xtermThemes.current;
+  const currentXtermFontSize = window.__A2A_TERM__.xtermThemes.fontSize;
+  const currentXtermFontFamily = window.__A2A_TERM__.xtermThemes.fontFamily;
+  function applyXtermThemeToAll() {
+    const theme = currentXtermTheme();
+    const fontSize = currentXtermFontSize();
+    const fontFamily = currentXtermFontFamily();
+    for (const tab of tabs.values()) {
+      if (!tab.term) continue;
+      tab.term.options.theme = theme;
+      let metricsChanged = false;
+      if (tab.term.options.fontSize !== fontSize) {
+        tab.term.options.fontSize = fontSize;
+        metricsChanged = true;
+      }
+      if (tab.term.options.fontFamily !== fontFamily) {
+        tab.term.options.fontFamily = fontFamily;
+        metricsChanged = true;
+      }
+      if (metricsChanged && tab.fitAddon) {
+        // Cell size or glyph atlas changed → refit so cols/rows match.
+        try { tab.fitAddon.fit(); } catch {}
+        sendResize(tab);
+      }
+    }
+  }
+  document.addEventListener('a2a:theme-changed', applyXtermThemeToAll);
 
   // Reserved name for the human's pinned shell tmux session. Matches Rust's
   // SHELL_SESSION_NAME. Never filtered by room, never closed from the UI.
@@ -263,15 +286,28 @@
     tabEl.innerHTML =
       '<span class="state-dot"></span>' +
       '<span class="tab-label"></span>' +
+      '<span class="open-editor" title="Open editor at this agent\'s cwd">' +
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+          '<rect x="3" y="4" width="18" height="16" rx="2"/>' +
+          '<line x1="3" y1="9" x2="21" y2="9"/>' +
+          '<line x1="7" y1="13" x2="11" y2="13"/>' +
+          '<line x1="13" y1="13" x2="17" y2="13"/>' +
+          '<line x1="7" y1="17" x2="14" y2="17"/>' +
+        '</svg>' +
+      '</span>' +
       '<span class="close-x" title="Kill session">×</span>';
     tabEl.querySelector('.tab-label').textContent = agent;
     tabEl.addEventListener('click', (e) => {
-      if (e.target.classList.contains('close-x')) return;
+      if (e.target.closest('.close-x') || e.target.closest('.open-editor')) return;
       focusTab(agent);
     });
     tabEl.querySelector('.close-x').addEventListener('click', async (e) => {
       e.stopPropagation();
       await handleKill(agent);
+    });
+    tabEl.querySelector('.open-editor').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await handleOpenEditor(agent);
     });
     tabsEl.insertBefore(tabEl, tabsEl.querySelector('.terminal-tab-new'));
 
@@ -390,9 +426,9 @@
       }
     }
     const term = new window.Terminal({
-      theme: xtermTheme,
-      fontFamily: "'CaskaydiaMono Nerd Font', 'JetBrains Mono', 'SF Mono', Menlo, 'Apple Symbols', 'Apple Color Emoji', monospace",
-      fontSize: 12,
+      theme: currentXtermTheme(),
+      fontFamily: currentXtermFontFamily(),
+      fontSize: currentXtermFontSize(),
       cursorBlink: true,
       convertEol: false,
       scrollback: 10000,
@@ -580,6 +616,24 @@
       alert(`Launch failed: ${e?.message ?? e}`);
       removeTab(agent);
       reconcile();
+    }
+  }
+
+  async function handleOpenEditor(agent) {
+    if (!invoke) return;
+    try {
+      const cwd = await invoke('open_in_editor', { agent });
+      if (typeof window.showCopyToast === 'function') {
+        window.showCopyToast(`Editor opened: ${cwd}`);
+      }
+    } catch (e) {
+      const msg = (e && e.message) || String(e);
+      console.error('[terminal] open_in_editor failed:', msg);
+      if (typeof window.showCopyToast === 'function') {
+        window.showCopyToast(`Editor failed: ${msg}`);
+      } else {
+        alert(`Editor failed: ${msg}`);
+      }
     }
   }
 

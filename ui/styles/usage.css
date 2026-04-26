@@ -6,22 +6,22 @@
 .usage-pill {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 10px;
+  gap: var(--sp-8);
+  padding: var(--sp-4) var(--sp-10);
   background: var(--bg-elev);
-  border: 1px solid var(--line);
-  border-radius: 999px;
+  border: var(--border-1) solid var(--line);
+  border-radius: var(--radius-round);
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--text-muted);
   cursor: default;
 }
 .usage-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--sp-5);
   cursor: pointer;
-  padding: 0 2px;
+  padding: 0 var(--sp-2);
 }
 .usage-chip[data-empty="1"] { opacity: 0.45; cursor: default; }
 .usage-chip[data-stale="1"] { opacity: 0.55; }

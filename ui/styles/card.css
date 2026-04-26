@@ -6,20 +6,20 @@
 .handoff-card,
 .interrupt-card,
 .permission-card {
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 11px 12px;
-  font-size: 12.5px;
+  border: var(--border-1) solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-11) var(--sp-12);
+  font-size: var(--fs-lg);
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 6px 12px;
+  gap: var(--sp-6) var(--sp-12);
 }
 
 .handoff-header,
 .interrupt-header,
 .permission-header {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-8);
   align-items: center;
   font-family: var(--mono);
 }
@@ -33,9 +33,9 @@
 .handoff-header .status-badge,
 .interrupt-header .status-badge,
 .permission-header .status-badge {
-  font-size: 10px;
-  padding: 2px 7px;
-  border-radius: 3px;
+  font-size: var(--fs-2xs);
+  padding: var(--sp-2) var(--sp-7);
+  border-radius: var(--radius-sm);
   letter-spacing: 0.06em;
 }
 
@@ -44,7 +44,7 @@
 .permission-meta {
   color: var(--text-dim);
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .handoff-actions,
@@ -53,15 +53,15 @@
   grid-column: 1 / -1;
   display: flex;
   justify-content: flex-end;
-  gap: 6px;
+  gap: var(--sp-6);
 }
 
 .handoff-replay-badge,
 .interrupt-replay-badge,
 .permission-replay-badge {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   color: var(--text-dim);
-  margin-left: 4px;
+  margin-left: var(--sp-4);
   font-weight: 400;
 }

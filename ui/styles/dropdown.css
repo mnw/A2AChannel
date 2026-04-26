@@ -13,63 +13,63 @@
 .room-display {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px 6px 12px;
+  gap: var(--sp-8);
+  padding: var(--sp-6) var(--sp-10) var(--sp-6) var(--sp-12);
   background: var(--bg-elev);
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  border: var(--border-1) solid var(--line);
+  border-radius: var(--radius-lg);
   color: var(--text-muted);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   cursor: pointer;
   outline: none;
-  min-width: 130px;
-  transition: border-color 0.15s, color 0.15s;
+  min-width: var(--size-130);
+  transition: border-color var(--motion-fast), color var(--motion-fast);
 }
 .room-display:hover { border-color: var(--line-hover); color: var(--text); }
 .room-display[aria-expanded="true"] { border-color: var(--orange); color: var(--text); }
 .room-display-text { flex: 1; text-align: left; }
-.room-display svg { opacity: 0.7; transition: transform 0.15s; }
+.room-display svg { opacity: 0.7; transition: transform var(--motion-fast); }
 .room-display[aria-expanded="true"] svg { transform: rotate(180deg); }
 
 .room-menu {
   position: absolute;
-  top: calc(100% + 6px);
+  top: calc(100% + var(--sp-6));
   right: 0;
-  min-width: 180px;
-  max-width: 260px;
-  max-height: 360px;
+  min-width: var(--size-180);
+  max-width: var(--size-260);
+  max-height: var(--size-360);
   overflow-y: auto;
   display: none;
   flex-direction: column;
-  padding: 4px;
+  padding: var(--sp-4);
   background: var(--bg-elev);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-  z-index: 30;
+  border: var(--border-1) solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  z-index: var(--z-dropdown);
 }
 .room-menu.open { display: flex; }
 
 .room-option {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
+  gap: var(--sp-8);
+  padding: var(--sp-7) var(--sp-10);
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: var(--fs-md);
   color: var(--text-muted);
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   white-space: nowrap;
 }
 .room-option:hover { background: color-mix(in oklab, var(--orange) 12%, transparent); color: var(--text); }
 .room-option.selected { background: color-mix(in oklab, var(--orange) 16%, transparent); color: var(--text); }
-.room-option.selected::before { content: "✓"; color: var(--orange); font-weight: 700; margin-right: 2px; }
+.room-option.selected::before { content: "✓"; color: var(--orange); font-weight: 700; margin-right: var(--sp-2); }
 
 .room-menu-divider {
-  height: 1px;
-  margin: 4px 2px;
+  height: var(--size-1);
+  margin: var(--sp-4) var(--sp-2);
   background: var(--line);
 }
 
@@ -82,56 +82,56 @@
 }
 .spawn-room-combo input {
   flex: 1;
-  border-radius: 6px 0 0 6px;
+  border-radius: var(--radius-lg) 0 0 var(--radius-lg);
   border-right: none;
 }
 .spawn-room-picker-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
+  width: var(--size-32);
   padding: 0;
   background: var(--bg-elev);
-  border: 1px solid var(--line);
-  border-left: 1px solid var(--line);
-  border-radius: 0 6px 6px 0;
+  border: var(--border-1) solid var(--line);
+  border-left: var(--border-1) solid var(--line);
+  border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
   color: var(--text-muted);
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
+  transition: color var(--motion-fast), border-color var(--motion-fast);
 }
 .spawn-room-picker-btn:hover { color: var(--text); border-color: var(--line-hover); }
 .spawn-room-picker-btn[aria-expanded="true"] { color: var(--orange); border-color: var(--orange); }
-.spawn-room-picker-btn svg { transition: transform 0.15s; }
+.spawn-room-picker-btn svg { transition: transform var(--motion-fast); }
 .spawn-room-picker-btn[aria-expanded="true"] svg { transform: rotate(180deg); }
 
 .spawn-room-menu {
   position: absolute;
-  top: calc(100% + 4px);
+  top: calc(100% + var(--sp-4));
   right: 0;
-  min-width: 200px;
+  min-width: var(--size-200);
   max-width: 100%;
-  max-height: 240px;
+  max-height: var(--size-240);
   overflow-y: auto;
   display: none;
   flex-direction: column;
-  padding: 4px;
+  padding: var(--sp-4);
   background: var(--bg-elev);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-  z-index: 40;
+  border: var(--border-1) solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  z-index: var(--z-dropdown-menu);
 }
 .spawn-room-menu.open { display: flex; }
 .spawn-room-option {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
+  gap: var(--sp-8);
+  padding: var(--sp-7) var(--sp-10);
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: var(--fs-md);
   color: var(--text-muted);
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   white-space: nowrap;
 }
 .spawn-room-option:hover { background: color-mix(in oklab, var(--orange) 12%, transparent); color: var(--text); }
@@ -141,25 +141,25 @@
 .status-pill {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 11px 6px 9px;
+  gap: var(--sp-8);
+  padding: var(--sp-6) var(--sp-11) var(--sp-6) var(--sp-9);
   background: color-mix(in oklab, var(--green) 8%, transparent);
-  border: 1px solid color-mix(in oklab, var(--green) 22%, transparent);
-  border-radius: 6px;
+  border: var(--border-1) solid color-mix(in oklab, var(--green) 22%, transparent);
+  border-radius: var(--radius-lg);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   color: var(--green-strong);
 }
 /* #dot + #status-text live inside .status-pill (JS writes to both). */
 .status-pill .dot {
-  width: 6px; height: 6px; border-radius: 50%;
+  width: var(--size-6); height: var(--size-6); border-radius: var(--radius-circle);
   background: var(--green);
-  box-shadow: 0 0 0 3px color-mix(in oklab, var(--green) 15%, transparent);
-  animation: pulse 2s ease-in-out infinite;
+  box-shadow: 0 0 0 var(--size-3) color-mix(in oklab, var(--green) 15%, transparent);
+  animation: pulse var(--motion-pulse) ease-in-out infinite;
 }
 .status-pill .dot.error {
   background: var(--red);
-  box-shadow: 0 0 0 3px color-mix(in oklab, var(--red) 15%, transparent);
+  box-shadow: 0 0 0 var(--size-3) color-mix(in oklab, var(--red) 15%, transparent);
 }
 .status-pill .dot.live { background: var(--green); }
 .status-pill #status-text { color: inherit; }
@@ -171,15 +171,15 @@
 }
 
 .icon-btn {
-  width: 30px; height: 30px;
-  border-radius: 6px;
-  border: 1px solid var(--line);
+  width: var(--size-30); height: var(--size-30);
+  border-radius: var(--radius-lg);
+  border: var(--border-1) solid var(--line);
   background: var(--bg-elev);
   display: grid;
   place-items: center;
   color: var(--text-muted);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--motion-fast);
   padding: 0;
 }
 .icon-btn:hover {
@@ -187,7 +187,7 @@
   border-color: var(--line-hover);
   background: var(--bg-hover);
 }
-.icon-btn svg { width: 14px; height: 14px; }
+.icon-btn svg { width: var(--size-14); height: var(--size-14); }
 
 /* ── Custom target dropdown ────────────────────────────────── */
 /* The native <select id="target"> stays in the DOM (visually hidden) as the
@@ -198,66 +198,66 @@
 .target-display {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px 8px 12px;
+  gap: var(--sp-8);
+  padding: var(--sp-8) var(--sp-10) var(--sp-8) var(--sp-12);
   background: var(--bg-elev);
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  border: var(--border-1) solid var(--line);
+  border-radius: var(--radius-lg);
   color: var(--text-muted);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   cursor: pointer;
   outline: none;
-  min-width: 140px;
-  transition: border-color 0.15s, color 0.15s;
+  min-width: var(--size-140);
+  transition: border-color var(--motion-fast), color var(--motion-fast);
 }
 .target-display:hover { border-color: var(--line-hover); color: var(--text); }
 .target-display[aria-expanded="true"] { border-color: var(--orange); color: var(--text); }
 .target-display-text { flex: 1; text-align: left; }
-.target-display svg { opacity: 0.7; transition: transform 0.15s; }
+.target-display svg { opacity: 0.7; transition: transform var(--motion-fast); }
 .target-display[aria-expanded="true"] svg { transform: rotate(180deg); }
 
 .target-menu {
   position: absolute;
-  bottom: calc(100% + 6px);
+  bottom: calc(100% + var(--sp-6));
   left: 0;
-  min-width: 200px;
-  max-width: 280px;
-  max-height: 360px;
+  min-width: var(--size-200);
+  max-width: var(--size-280);
+  max-height: var(--size-360);
   overflow-y: auto;
   display: none;
   flex-direction: column;
-  padding: 4px;
+  padding: var(--sp-4);
   background: var(--bg-elev);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-  z-index: 20;
+  border: var(--border-1) solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  z-index: var(--z-overlay);
 }
 .target-menu.open { display: flex; }
 
 .target-option {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
+  gap: var(--sp-8);
+  padding: var(--sp-7) var(--sp-10);
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: var(--fs-md);
   color: var(--text-muted);
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-md);
   white-space: nowrap;
 }
 .target-option:hover { background: color-mix(in oklab, var(--orange) 12%, transparent); color: var(--text); }
 .target-option.selected { background: color-mix(in oklab, var(--orange) 16%, transparent); color: var(--text); }
-.target-option.selected::before { content: "✓"; color: var(--orange); font-weight: 700; margin-right: 2px; }
+.target-option.selected::before { content: "✓"; color: var(--orange); font-weight: 700; margin-right: var(--sp-2); }
 .target-option.interrupt { color: var(--red-hover); }
 .target-option.interrupt:hover { background: color-mix(in oklab, var(--red) 12%, transparent); color: var(--red-strong); }
-.target-option .prefix { color: var(--text-dim); font-size: 10.5px; }
+.target-option .prefix { color: var(--text-dim); font-size: var(--fs-xs); }
 .target-option.interrupt .prefix { color: inherit; opacity: 0.8; }
 
 .target-menu-divider {
-  height: 1px;
-  margin: 4px 2px;
+  height: var(--size-1);
+  margin: var(--sp-4) var(--sp-2);
   background: var(--line);
 }

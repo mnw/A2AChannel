@@ -33,7 +33,19 @@ struct HubInfo {
     token: String,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Serialize, Default, Clone)]
+struct FontsConfig {
+    // Sans/proportional font: body text, chat, modals.
+    #[serde(default)]
+    ui: Option<String>,
+    // Monospace font: UI labels (kbd, code, status pills) AND terminal panes.
+    // The protected fallback chain (Nerd Font, Apple Symbols, Apple Color
+    // Emoji) is always behind the user value.
+    #[serde(default)]
+    mono: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Default, Clone)]
 struct AppConfig {
     #[serde(default)]
     attachments_dir: Option<String>,
@@ -48,7 +60,33 @@ struct AppConfig {
     claude_path: Option<String>,
     #[serde(default)]
     anthropic_api_key: Option<String>,
+    #[serde(default)]
+    theme: Option<String>,
+    #[serde(default)]
+    font_scale: Option<f32>,
+    #[serde(default)]
+    fonts: Option<FontsConfig>,
+    #[serde(default)]
+    editor: Option<String>,
 }
+
+#[derive(Serialize, Clone, Default)]
+struct UiFonts {
+    ui: String,
+    mono: String,
+}
+
+#[derive(Serialize, Clone)]
+struct UiSettings {
+    theme: String,
+    font_scale: f32,
+    fonts: UiFonts,
+}
+
+const VALID_THEMES: &[&str] = &["default", "rose-pine-dawn", "rose-pine-moon"];
+const FONT_SCALE_MIN: f32 = 0.85;
+const FONT_SCALE_MAX: f32 = 1.25;
+const FONT_NAME_MAX: usize = 64;
 
 const RESERVED_NAMES: &[&str] = &["you", "all", "system"];
 
@@ -108,6 +146,10 @@ fn token_file() -> PathBuf {
 }
 
 fn config_file() -> PathBuf {
+    app_data_dir().join("config.yml")
+}
+
+fn legacy_config_file() -> PathBuf {
     app_data_dir().join("config.json")
 }
 
@@ -127,7 +169,7 @@ fn validate_human_name(name: &str) -> Result<(), String> {
     {
         return Err(format!(
             "human_name '{name}' collides with a reserved word ({}). \
-             Choose a different name in config.json.",
+             Choose a different name in config.yml.",
             RESERVED_NAMES.join(", ")
         ));
     }
@@ -203,17 +245,94 @@ pub fn resolve_anthropic_api_key() -> Option<String> {
 fn load_config() -> AppConfig {
     let path = config_file();
     match fs::read_to_string(&path) {
-        Ok(s) => match serde_json::from_str::<AppConfig>(&s) {
+        Ok(s) => match serde_yml::from_str::<AppConfig>(&s) {
             Ok(cfg) => cfg,
             Err(e) => {
                 eprintln!(
-                    "[setup] config.json exists but failed to parse ({}), using defaults: {e}",
+                    "[setup] config.yml exists but failed to parse ({}), using defaults: {e}",
                     path.display()
                 );
                 AppConfig::default()
             }
         },
         Err(_) => AppConfig::default(),
+    }
+}
+
+// Read the legacy config.json once (if config.yml does not yet exist) so the
+// migrator can carry forward existing values into the new file.
+fn load_legacy_json_config() -> Option<AppConfig> {
+    let path = legacy_config_file();
+    let s = fs::read_to_string(&path).ok()?;
+    match serde_json::from_str::<AppConfig>(&s) {
+        Ok(cfg) => Some(cfg),
+        Err(e) => {
+            eprintln!(
+                "[setup] legacy config.json present but failed to parse ({}): {e}",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+fn resolve_theme() -> String {
+    let cfg = load_config();
+    let raw = cfg
+        .theme
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "default".to_string());
+    if VALID_THEMES.iter().any(|t| *t == raw) {
+        raw
+    } else {
+        eprintln!(
+            "[setup] theme '{raw}' not in {VALID_THEMES:?}; falling back to default"
+        );
+        "default".to_string()
+    }
+}
+
+fn resolve_font_scale() -> f32 {
+    let cfg = load_config();
+    let raw = cfg.font_scale.unwrap_or(1.0);
+    if !raw.is_finite() {
+        return 1.0;
+    }
+    raw.clamp(FONT_SCALE_MIN, FONT_SCALE_MAX)
+}
+
+// Conservative whitelist for font names — covers every real font ID without
+// allowing characters that could break out of the CSS string the webview
+// composes around it. Anything else is dropped (with a stderr warning).
+fn sanitize_font_name(raw: Option<String>) -> String {
+    let Some(s) = raw else { return String::new() };
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.len() > FONT_NAME_MAX {
+        eprintln!("[setup] font name '{trimmed}' exceeds {FONT_NAME_MAX} chars; ignored");
+        return String::new();
+    }
+    let ok = trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '_' | '-'));
+    if !ok {
+        eprintln!(
+            "[setup] font name '{trimmed}' contains characters outside [A-Za-z0-9 ._-]; ignored"
+        );
+        return String::new();
+    }
+    trimmed.to_string()
+}
+
+fn resolve_fonts() -> UiFonts {
+    let cfg = load_config();
+    let f = cfg.fonts.unwrap_or_default();
+    UiFonts {
+        ui:   sanitize_font_name(f.ui),
+        mono: sanitize_font_name(f.mono),
     }
 }
 
@@ -229,8 +348,8 @@ fn resolve_attachments_dir_and_seed(human_name: &str, extensions: &[String]) -> 
     let pick = |opt: Option<String>| -> Option<String> {
         opt.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
     };
-    let dir = pick(cfg.attachments_dir)
-        .or_else(|| pick(cfg.images_dir))
+    let dir = pick(cfg.attachments_dir.clone())
+        .or_else(|| pick(cfg.images_dir.clone()))
         .map(PathBuf::from)
         .unwrap_or_else(default_attachments_dir);
     if let Err(e) = fs::create_dir_all(&dir) {
@@ -238,24 +357,164 @@ fn resolve_attachments_dir_and_seed(human_name: &str, extensions: &[String]) -> 
     }
     let cfg_path = config_file();
     if !cfg_path.exists() {
-        let seed = json!({
-            "human_name": human_name,
-            "attachments_dir": serde_json::Value::Null,
-            "attachment_extensions": extensions,
-            "claude_path": "~/.claude/local/claude",
-            "anthropic_api_key": "",
-        });
+        // Carry forward values from legacy config.json (if any) on first launch
+        // after the upgrade — do not silently lose user-set keys.
+        let legacy = load_legacy_json_config().unwrap_or_default();
+        let seed_human_name = legacy
+            .human_name
+            .as_deref()
+            .unwrap_or(human_name);
+        let seed_attachments_dir = legacy
+            .attachments_dir
+            .or(legacy.images_dir)
+            .unwrap_or_default();
+        let seed_extensions: Vec<String> = legacy
+            .attachment_extensions
+            .unwrap_or_else(|| extensions.to_vec());
+        let seed_claude_path = legacy
+            .claude_path
+            .unwrap_or_else(|| "~/.claude/local/claude".to_string());
+        let seed_api_key = legacy.anthropic_api_key.unwrap_or_default();
+        let seed_theme = legacy
+            .theme
+            .filter(|s| VALID_THEMES.iter().any(|t| *t == s.as_str()))
+            .unwrap_or_else(|| "default".to_string());
+        let seed_font_scale = legacy
+            .font_scale
+            .filter(|f| f.is_finite())
+            .map(|f| f.clamp(FONT_SCALE_MIN, FONT_SCALE_MAX))
+            .unwrap_or(1.0);
+        let legacy_fonts = legacy.fonts.unwrap_or_default();
+        let seed_fonts = UiFonts {
+            ui:   sanitize_font_name(legacy_fonts.ui),
+            mono: sanitize_font_name(legacy_fonts.mono),
+        };
+        let seed_editor = legacy
+            .editor
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+
+        let yaml = render_seed_yaml(
+            seed_human_name,
+            &seed_attachments_dir,
+            &seed_extensions,
+            &seed_claude_path,
+            &seed_api_key,
+            &seed_theme,
+            seed_font_scale,
+            &seed_fonts,
+            &seed_editor,
+        );
+
         if let Err(e) = fs::create_dir_all(cfg_path.parent().unwrap_or(&PathBuf::from("/tmp"))) {
             eprintln!("[setup] create config dir failed: {e}");
         }
-        if let Err(e) = fs::write(
-            &cfg_path,
-            serde_json::to_string_pretty(&seed).unwrap_or_default() + "\n",
-        ) {
-            eprintln!("[setup] seed config.json at {} failed: {e}", cfg_path.display());
+        if let Err(e) = fs::write(&cfg_path, yaml) {
+            eprintln!("[setup] seed config.yml at {} failed: {e}", cfg_path.display());
+        } else {
+            println!("[setup] seeded config.yml at {}", cfg_path.display());
         }
     }
     dir
+}
+
+// Hand-rolled YAML so the file ships with comments. serde_yml::to_string drops
+// them. Keep lines ≤80 chars and comments to one short line each.
+#[allow(clippy::too_many_arguments)]
+fn render_seed_yaml(
+    human_name: &str,
+    attachments_dir: &str,
+    extensions: &[String],
+    claude_path: &str,
+    api_key: &str,
+    theme: &str,
+    font_scale: f32,
+    fonts: &UiFonts,
+    editor: &str,
+) -> String {
+    let attachments_line = if attachments_dir.is_empty() {
+        "attachments_dir: null".to_string()
+    } else {
+        format!("attachments_dir: {}", yaml_string(attachments_dir))
+    };
+    let mut ext_block = String::from("attachment_extensions:\n");
+    for e in extensions {
+        ext_block.push_str(&format!("  - {e}\n"));
+    }
+    let api_line = if api_key.is_empty() {
+        "anthropic_api_key: \"\"".to_string()
+    } else {
+        format!("anthropic_api_key: {}", yaml_string(api_key))
+    };
+
+    format!(
+        "# A2AChannel config. Applied on launch; click Reload to re-read.\n\
+         \n\
+         # Identity shown in the roster.\n\
+         human_name: {human_name}\n\
+         \n\
+         # Path to the claude binary. ~ expands to your home dir.\n\
+         claude_path: {claude_path}\n\
+         \n\
+         # Optional. Exported to spawned claude sessions if non-empty.\n\
+         {api_line}\n\
+         \n\
+         # Where uploaded files persist. null → ~/a2a-attachments.\n\
+         {attachments_line}\n\
+         \n\
+         # Allowed upload extensions. Lowercase, no leading dot.\n\
+         {ext_block}\
+         \n\
+         # Theme: default | rose-pine-dawn | rose-pine-moon.\n\
+         theme: {theme}\n\
+         \n\
+         # Multiplier on every UI text size. 1 = default.\n\
+         # 0.85 = smaller, 1.25 = larger. Values outside that range\n\
+         # are clamped.\n\
+         font_scale: {font_scale}\n\
+         \n\
+         # Override fonts. Name must match a font installed on this Mac\n\
+         # (case-sensitive). Each value is PREPENDED to the built-in chain;\n\
+         # Claude Code's required fonts (Nerd Font for box-drawing, Apple\n\
+         # Symbols, Apple Color Emoji) are always retained as fallbacks and\n\
+         # cannot be removed. Allowed chars: A-Z a-z 0-9 space . _ -\n\
+         # Empty = use the built-in default.\n\
+         #   ui   — chat / modals / proportional UI text\n\
+         #   mono — code, labels, terminal panes\n\
+         fonts:\n  \
+         ui: \"{ui}\"\n  \
+         mono: \"{mono}\"\n\
+         \n\
+         # Editor opened by the agent tab's editor button.\n\
+         # Cwd of the agent's tmux pane is appended as the last arg.\n\
+         # Examples:\n\
+         #   editor: code           # VS Code CLI in PATH\n\
+         #   editor: cursor         # Cursor CLI in PATH\n\
+         #   editor: subl           # Sublime Text CLI in PATH\n\
+         #   editor: open -a Cursor # macOS app bundle launcher\n\
+         # Empty disables the button.\n\
+         editor: \"{editor}\"\n",
+        ui     = fonts.ui,
+        mono   = fonts.mono,
+        editor = editor,
+    )
+}
+
+// Minimal YAML string quoting: quote if the value contains anything that would
+// confuse the parser (start with special, contain colons/hashes, etc.).
+fn yaml_string(v: &str) -> String {
+    let needs_quote = v.is_empty()
+        || v.starts_with(|c: char| c.is_whitespace() || "!&*?|>%@`".contains(c))
+        || v.contains(':')
+        || v.contains('#')
+        || v.contains('"')
+        || v.contains('\'')
+        || v.contains('\n');
+    if needs_quote {
+        format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        v.to_string()
+    }
 }
 
 fn logs_dir() -> PathBuf {
@@ -455,7 +714,7 @@ fn open_config_file() -> Result<(), String> {
     Ok(())
 }
 
-// Re-read config.json, kill the hub sidecar, restart it on a new port with fresh env.
+// Re-read config.yml, kill the hub sidecar, restart it on a new port with fresh env.
 // Returns the new {url, token} so the UI can hot-swap without relaunching the app.
 #[tauri::command]
 fn reload_settings(
@@ -523,6 +782,59 @@ fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+// UI settings sourced from config.yml. The webview reads these on boot and
+// after Reload to apply theme + font scale; tokens.css multiplies every
+// --fs-* value by var(--ui-font-scale).
+#[tauri::command]
+fn get_ui_settings() -> UiSettings {
+    UiSettings {
+        theme: resolve_theme(),
+        font_scale: resolve_font_scale(),
+        fonts: resolve_fonts(),
+    }
+}
+
+// Open the configured editor in the agent's current working directory.
+// "Current" = whatever directory the agent's tmux pane is at right now,
+// so it tracks `cd` commands. Editor command from config.yml `editor:` —
+// supports leading args (e.g. "open -a Cursor") so Mac .app launchers and
+// CLI editors both work. The cwd is appended as the last argument.
+#[tauri::command]
+fn open_in_editor(agent: String) -> Result<String, String> {
+    let cfg = load_config();
+    let raw_editor = cfg
+        .editor
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            "editor not configured — set `editor:` in config.yml".to_string()
+        })?;
+
+    let cwd = pty::pane_current_path(&agent)?;
+    if !cwd.exists() {
+        return Err(format!("cwd does not exist: {}", cwd.display()));
+    }
+
+    // Split on whitespace so "open -a Cursor" works as well as bare "code".
+    // First token may use ~ for $HOME; remaining tokens are passed verbatim.
+    let mut parts = raw_editor.split_whitespace();
+    let cmd_token = parts
+        .next()
+        .ok_or_else(|| "editor value is empty after trimming".to_string())?;
+    let cmd_path = expand_tilde(cmd_token);
+    let leading_args: Vec<&str> = parts.collect();
+
+    let mut command = std::process::Command::new(&cmd_path);
+    for a in &leading_args {
+        command.arg(a);
+    }
+    command.arg(&cwd);
+    command
+        .spawn()
+        .map_err(|e| format!("spawn '{cmd_token}' failed: {e}"))?;
+    Ok(cwd.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 fn get_mcp_template() -> Result<String, String> {
     let a2a_bin = resolve_a2a_bin()?;
@@ -564,7 +876,9 @@ pub fn run() {
             get_app_version,
             get_mcp_template,
             get_human_name,
+            get_ui_settings,
             open_config_file,
+            open_in_editor,
             reload_settings,
             pty::pty_spawn,
             pty::pty_write,

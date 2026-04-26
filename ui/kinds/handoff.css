@@ -1,15 +1,15 @@
 /* ── Handoff cards ─────────────────────────────────────────── */
 .handoff-card {
   background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-left: 3px solid var(--orange);
-  border-radius: 6px;
-  padding: 11px 12px;
-  margin: 6px 0;
-  font-size: 12.5px;
+  border: var(--border-1) solid var(--line);
+  border-left: var(--border-3) solid var(--orange);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-11) var(--sp-12);
+  margin: var(--sp-6) 0;
+  font-size: var(--fs-lg);
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 6px 12px;
+  gap: var(--sp-6) var(--sp-12);
 }
 .handoff-card.status-pending   { border-left-color: var(--amber); background: color-mix(in oklab, var(--amber) 4%, transparent); }
 .handoff-card.status-accepted  { border-left-color: var(--green); }
@@ -19,19 +19,19 @@
 
 .handoff-header {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-8);
   align-items: center;
   font-weight: 500;
   color: var(--text-muted);
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 .handoff-header .route { color: var(--orange); font-weight: 600; }
 .handoff-header .status-badge {
   font-family: var(--mono);
-  font-size: 10px;
-  padding: 2px 7px;
-  border-radius: 3px;
+  font-size: var(--fs-2xs);
+  padding: var(--sp-2) var(--sp-7);
+  border-radius: var(--radius-sm);
   background: color-mix(in oklab, var(--amber) 12%, transparent);
   color: var(--amber);
   text-transform: uppercase;
@@ -42,45 +42,45 @@
 .handoff-card.status-cancelled .status-badge { background: color-mix(in oklab, var(--orange) 12%, transparent);  color: var(--orange); }
 .handoff-card.status-expired   .status-badge { background: color-mix(in oklab, var(--text-dim) 18%, transparent);   color: var(--text-dim); }
 
-.handoff-task   { color: var(--text); font-weight: 500; font-size: 12.5px; line-height: 1.45; }
-.handoff-reason { color: var(--text-muted); font-size: 12px; font-style: italic; }
-.handoff-meta   { color: var(--text-dim); font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.02em; }
+.handoff-task   { color: var(--text); font-weight: 500; font-size: var(--fs-lg); line-height: var(--lh-base); }
+.handoff-reason { color: var(--text-muted); font-size: var(--fs-base); font-style: italic; }
+.handoff-meta   { color: var(--text-dim); font-family: var(--mono); font-size: var(--fs-xs); letter-spacing: 0.02em; }
 
 .handoff-context details {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   color: var(--text-muted);
   background: var(--bg-elev);
-  border-radius: 4px;
-  padding: 6px 8px;
+  border-radius: var(--radius-md);
+  padding: var(--sp-6) var(--sp-8);
 }
 .handoff-context summary { cursor: pointer; color: var(--text-muted); }
 .handoff-context pre {
-  margin-top: 6px;
+  margin-top: var(--sp-6);
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--text-muted);
-  max-height: 180px;
+  max-height: var(--size-180);
   overflow-y: auto;
 }
 
 .handoff-actions {
   grid-column: 1 / -1;
   display: flex;
-  gap: 6px;
+  gap: var(--sp-6);
   justify-content: flex-end;
   flex-wrap: wrap;
 }
 .handoff-actions button {
   font-family: var(--mono);
-  font-size: 11px;
-  padding: 5px 12px;
-  border-radius: 4px;
+  font-size: var(--fs-sm);
+  padding: var(--sp-5) var(--sp-12);
+  border-radius: var(--radius-md);
   background: var(--bg-elev);
-  border: 1px solid var(--line);
+  border: var(--border-1) solid var(--line);
   color: var(--text-muted);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all var(--motion-fast);
 }
 .handoff-actions button:hover { background: var(--bg-hover); color: var(--text); }
 .handoff-actions .accept {
@@ -97,14 +97,14 @@
 
 .handoff-countdown {
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   color: var(--text-dim);
 }
 .handoff-replay-badge {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   color: var(--text-dim);
-  margin-left: 4px;
+  margin-left: var(--sp-4);
   font-weight: 400;
   letter-spacing: 0.02em;
 }
