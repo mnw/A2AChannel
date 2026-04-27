@@ -152,6 +152,17 @@ header {
   transition: color var(--motion-fast), border-color var(--motion-fast);
 }
 .add-agent:hover { color: var(--text-muted); border-color: var(--line-hover); }
+/* SDK-pivot agent button — visually distinguished from the tmux "+ agent"
+   so the two paths don't get confused while the spike runs side-by-side. */
+.add-agent.add-agent-sdk {
+  border-color: color-mix(in oklab, var(--orange) 35%, var(--line));
+  color: color-mix(in oklab, var(--orange) 60%, var(--text-dim));
+  margin-left: var(--sp-4);
+}
+.add-agent.add-agent-sdk:hover {
+  border-color: var(--orange);
+  color: var(--orange);
+}
 
 
 /* ── Nutshell strip ────────────────────────────────────────── */

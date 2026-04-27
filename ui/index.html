@@ -56,6 +56,7 @@
       <span class="roster-label">Room</span>
       <div class="legend" id="legend"></div>
       <button type="button" class="add-agent" id="add-agent-btn" title="Launch a new agent">+ agent</button>
+      <button type="button" class="add-agent add-agent-sdk" id="add-sdk-agent-btn" title="Register an SDK-driven agent (no tmux; chat-only)">+ SDK</button>
     </div>
 
     <div class="status-cluster">
@@ -208,6 +209,36 @@
   </div>
 </div>
 
+<!-- SDK-pivot spawn modal (spike v1). Simpler than the tmux spawn modal:
+     no session-mode radio (SDK handles resume internally via session_id
+     captured on first turn), no PTY/tmux plumbing — just identity, cwd,
+     room. Submits via authedFetch POST /sdk/agents to register with the
+     hub-side orchestrator. -->
+<div class="modal-backdrop" id="spawn-sdk-modal">
+  <div class="modal">
+    <h2>Register SDK agent <span style="font-family:var(--mono); font-size:11px; color:var(--text-dim); letter-spacing:0.1em; text-transform:uppercase;">α</span></h2>
+    <p>
+      No tmux, no xterm tab. Each chat message addressed to this agent
+      runs an Anthropic Agent SDK turn against its session in the chosen
+      directory. Responses stream back into the chat as messages from
+      the agent.
+    </p>
+    <label>Agent name</label>
+    <input id="spawn-sdk-name" spellcheck="false" autocomplete="off" placeholder="bob" style="width:100%;" />
+    <label>Working directory</label>
+    <div style="display:flex; gap:6px; align-items:center;">
+      <input id="spawn-sdk-cwd" spellcheck="false" autocomplete="off" placeholder="/Users/you/project" style="flex:1;" readonly />
+      <button type="button" id="spawn-sdk-cwd-pick">Pick…</button>
+    </div>
+    <label>Room</label>
+    <input id="spawn-sdk-room" spellcheck="false" autocomplete="off" placeholder="defaults to room of last selection" style="width:100%;" />
+    <div class="modal-actions">
+      <button type="button" id="spawn-sdk-cancel">Cancel</button>
+      <button type="button" id="spawn-sdk-submit">Register</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="confirm-modal">
   <div class="modal">
     <h2 id="confirm-title">Confirm</h2>
@@ -281,6 +312,7 @@
 <script src="features/composer.js"></script>
 <script src="features/mcp-modal.js"></script>
 <script src="features/theme.js"></script>
+<script src="features/spawn-sdk.js"></script>
 
 <!-- Tier 3: orchestrator + kinds + pill + terminal -->
 <script src="main.js"></script>
