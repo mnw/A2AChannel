@@ -79,6 +79,13 @@ async function handleEvent(ctx: TailContext, evt: ChannelEvent): Promise<void> {
         `Attachments dir: ${evt.attachments_dir}. Incoming files arrive as [attachment: <path>] suffixes you can Read directly.`,
       );
     }
+    // (Slash-command mirror policy was here. Removed because A2AChannel's
+    // composer-side capture (slash-send.js) already extracts the response
+    // from the PTY byte stream and posts it to chat as `[a2a-capture]`.
+    // Claude's mirror via mcp__chatbridge__post was redundant AND inferior
+    // because claude composes from its truncated alt-buffer view, while the
+    // capture renders the full byte stream through an oversized headless
+    // xterm. If the capture path is removed in future, restore this nudge.)
     if (evt.nutshell && evt.nutshell.trim()) {
       parts.push(`Current project summary (nutshell for room "${room}"):\n${evt.nutshell.trim()}`);
     }

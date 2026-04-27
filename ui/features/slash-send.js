@@ -5,18 +5,19 @@
 // from the agent. Tier 2 of index.html.
 //
 // Depends on (declared earlier):
-//   from state.js — input, sendBtn, HUMAN_NAME
+//   from state.js — input, sendBtn, HUMAN_NAME, SELECTED_ROOM
 //   from messages.js — addMessage
 //   from slash-mode.js — parseSlashMessage, resolveTargets
-//   from slash-discovery.js — DESTRUCTIVE_SLASH_COMMANDS
+//   from slash-discovery.js — DESTRUCTIVE_SLASH_COMMANDS,
+//                              discoverCommandsForRoom
 //   window.__A2A_TERM__.pty.{ptyWrite, strToB64, b64ToBytes}
 //   askConfirm — declared in core/state.js (custom confirm modal)
 //
 // Exposes:
 //   sendSlash, formatSlashAuditText, captureSlashResponse, stripAnsi
 
-const _SLASH_QUIET_MS      = 6000;   // close window after this much silence
-const _SLASH_HARD_MS       = 60000;  // absolute cap (network-bound commands)
+const _SLASH_QUIET_MS      = 12000;  // close window after this much silence
+const _SLASH_HARD_MS       = 90000;  // absolute cap (network-bound commands)
 const _SLASH_FIRST_BYTE_MS = 12000;  // wait this long for first byte before giving up
 
 function _ptyWriter() {
@@ -41,7 +42,14 @@ function _formatTimestamp(d = new Date()) {
 // than enough for any TUI panel. We sniff which buffer (alt vs normal)
 // claude ended up writing to and prefer alt (TUI panels live there);
 // inline output (e.g. /cost) lands in normal.
-async function captureViaHeadless(rawText) {
+//
+// After choosing a buffer, slice the output between two anchors:
+//   - START: the line where the typed slash command appears (e.g. `❯ /context`)
+//   - END:   the last divider line `─────────…` that frames claude's
+//            prompt area (the visible UI footer below the response)
+// Everything between those anchors is the actual command output. This
+// strips the prompt-frame cruft that otherwise contaminates the mirror.
+async function captureViaHeadless(rawText, slashCommand) {
   const Terminal = window.Terminal;
   if (!Terminal || !rawText) return null;
   const div = document.createElement('div');
@@ -61,16 +69,76 @@ async function captureViaHeadless(rawText) {
         const normBuf = term.buffer.normal;
         const altLines = altBuf ? readBufferLines(altBuf) : [];
         const normLines = normBuf ? readBufferLines(normBuf) : [];
-        // Prefer alt buffer when it has any content — TUI panels render
-        // there. Fall back to normal for inline-output commands.
-        const chosen = altLines.length ? altLines : normLines;
-        resolve(chosen.length ? chosen.join('\n') : null);
+        // Pick the buffer that actually contains the typed slash command.
+        // Some commands write into normal buffer (inline output, /context,
+        // /usage with `⎿` tool-result prefix), some into alt (full-screen
+        // modal panels like /model, /clear-confirm). The wrong-buffer
+        // pick produces stale content.
+        const sliceN = sliceBetweenSlashAndPromptFrame(normLines, slashCommand);
+        const sliceA = sliceBetweenSlashAndPromptFrame(altLines, slashCommand);
+        // Prefer whichever slice is longer — if both contain the cmd, the
+        // one with more content wins (full panel vs partial echo).
+        const choice =
+          (sliceN && sliceA)
+            ? (sliceN.length >= sliceA.length ? sliceN : sliceA)
+            : (sliceN || sliceA);
+        resolve(choice);
       } finally {
         try { term.dispose(); } catch {}
         try { div.remove(); } catch {}
       }
     });
   });
+}
+
+// Strip ANSI from raw PTY bytes, split into lines, and slice between the
+// typed `/cmd` line and the last prompt-frame divider. Returns the clean
+// content or null if the slice is empty. This is the primary capture
+// path — chosen over the headless-xterm renderer because the latter
+// faithfully reproduces claude's at-width cursor-positioning overlays
+// (visual collisions like "(0.9%)" landing at col 0 of the next row).
+// Stripping ANSI discards positioning entirely, leaving just text chars
+// in write order — coarse but uncorrupted.
+function stripAndSlice(rawText, slashCommand) {
+  const stripped = stripAnsi(rawText);
+  if (!stripped) return null;
+  const lines = stripped.split('\n');
+  // Collapse runs of repeated whitespace inside each line so two-column
+  // gaps look readable but don't break word identity.
+  const tightened = lines.map((l) => l.replace(/\s{2,}/g, '  '));
+  return sliceBetweenSlashAndPromptFrame(tightened, slashCommand);
+}
+
+// Slice between the slash-command anchor (or first non-empty line, if
+// anchor not found) and the prompt-frame divider above the `❯` input
+// area. Drops surrounding cruft (claude TUI's "shortcuts" hint, prompt
+// frame, autocompact buffer line, etc.).
+function sliceBetweenSlashAndPromptFrame(lines, slashCommand) {
+  if (!Array.isArray(lines) || !lines.length) return null;
+  // START anchor: first line containing the typed slash command after
+  // claude's prompt indicator (`❯` or `>`). Match on `slashCommand` as a
+  // word boundary so we don't false-positive on substrings.
+  let start = 0;
+  if (slashCommand) {
+    const escaped = slashCommand.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const slashRe = new RegExp(`(^|[^A-Za-z0-9_:-])${escaped}(\\s|$)`);
+    for (let i = 0; i < lines.length; i++) {
+      if (slashRe.test(lines[i])) { start = i; break; }
+    }
+  }
+  // END anchor: scan from the bottom up for the LAST horizontal divider
+  // line that's >= 30 box-drawing dashes — that's claude's prompt frame.
+  // Everything below is the input area + shortcuts hint, not response.
+  const dividerRe = /^[\s─]{30,}$/;
+  let end = lines.length;
+  for (let i = lines.length - 1; i >= start; i--) {
+    if (dividerRe.test(lines[i])) { end = i; break; }
+  }
+  let sliced = lines.slice(start, end);
+  // Trim leading/trailing blank lines that survived the slice.
+  while (sliced.length && !sliced[0].trim()) sliced.shift();
+  while (sliced.length && !sliced[sliced.length - 1].trim()) sliced.pop();
+  return sliced.length ? sliced.join('\n') : null;
 }
 
 // Snapshot baseline state of the agent's xterm BEFORE writing the slash
@@ -163,7 +231,20 @@ function readBufferLines(buffer) {
 function stripAnsi(text) {
   if (!text) return '';
   let s = text;
-  // CSI: ESC [ params... intermediates final
+  // BEFORE CSI strip: convert cursor-position moves to newlines so content
+  // written to different rows doesn't run together. Claude's TUI uses
+  // \x1B[<row>;<col>H (or \x1B[<row>H, or \x1B[H for home) to move between
+  // rows. We treat each absolute-position move as a row separator, which
+  // gives us "one logical line per claude-row" without needing a real
+  // terminal emulator. Same for vertical moves: \x1B[<n>A (up), \x1B[<n>B
+  // (down), \x1B[<n>E (next line), \x1B[<n>F (prev line) — row changes.
+  // Horizontal-only moves (\x1B[<n>C, \x1B[<n>D, \x1B[<n>G) become a
+  // single space so columns don't smash but rows don't proliferate.
+  s = s.replace(/\x1B\[(\d*);?\d*H/g, '\n');     // CUP / HVP — absolute position
+  s = s.replace(/\x1B\[\d*[ABEF]/g, '\n');         // CUU / CUD / CNL / CPL — row delta
+  s = s.replace(/\x1B\[\d*[CDG]/g, ' ');           // CUF / CUB / CHA — column-only
+  s = s.replace(/\x1B\[s|\x1B\[u/g, '');           // SCP / RCP — save/restore (drop)
+  // CSI: ESC [ params... intermediates final  (color codes, modes, etc.)
   s = s.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
   // OSC ... BEL or ST
   s = s.replace(/\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)/g, '');
@@ -172,8 +253,26 @@ function stripAnsi(text) {
   s = s.replace(/\x1B[ -/]*[0-~]/g, '');
   // Any remaining stray ESC.
   s = s.replace(/\x1B/g, '');
-  // CR alone (not part of CRLF) → drop; CRLF → LF.
-  s = s.replace(/\r\n/g, '\n').replace(/\r/g, '');
+  // CRLF → LF (single newline, no overwrite semantics).
+  s = s.replace(/\r\n/g, '\n');
+  // Process bare CR per-line as "cursor to col 0; subsequent chars overwrite
+  // from there" — preserving the visible final state of progressive
+  // re-renders (e.g. [READY]\r[VERIFIED] → [VERIFIED], not [READY][VERIFIED]).
+  // If the new segment is shorter than the existing line, the tail of the
+  // existing line remains visible (matches terminal-emulator behavior).
+  s = s.split('\n').map((line) => {
+    if (line.indexOf('\r') < 0) return line;
+    let result = '';
+    for (const segment of line.split('\r')) {
+      if (!segment) continue;
+      if (segment.length >= result.length) {
+        result = segment;
+      } else {
+        result = segment + result.slice(segment.length);
+      }
+    }
+    return result;
+  }).join('\n');
   // Strip backspaces by collapsing them with the preceding character.
   s = s.replace(/.\x08/g, '');
   // Drop other C0 controls except \n and \t.
@@ -182,6 +281,14 @@ function stripAnsi(text) {
   s = s.split('\n').map((l) => l.replace(/\s+$/, '')).join('\n');
   // Collapse 3+ consecutive blank lines to 2.
   s = s.replace(/\n{3,}/g, '\n\n');
+  // De-duplicate consecutive identical lines — claude often re-renders the
+  // same line during progressive loading (e.g. /usage's "Scanning sessions…"
+  // updates 5 times in 1 second). Keeping each render in chat is noise.
+  s = s.split('\n').reduce((acc, line) => {
+    if (acc.length && acc[acc.length - 1] === line) return acc;
+    acc.push(line);
+    return acc;
+  }, []).join('\n');
   return s.trim();
 }
 
@@ -256,12 +363,39 @@ function formatSlashAuditText({ slashCommand, args, target, resolved, skipped })
 }
 
 async function sendSlash({ slashCommand, target, args }) {
-  const { resolved, skipped } = resolveTargets(target, SELECTED_ROOM);
+  let { resolved, skipped } = resolveTargets(target, SELECTED_ROOM);
   if (!resolved.length) {
     addMessage({
       from: 'system',
       to: HUMAN_NAME,
       text: `Slash send aborted: no live target for ${slashCommand} @${target} in room`,
+      ts: _formatTimestamp(),
+    });
+    return false;
+  }
+
+  // Pre-flight availability filter: only target agents whose command
+  // discovery (BUILTIN_SLASH_COMMANDS + .claude/commands/ + .claude/skills/
+  // per cwd) actually contains this slash command. Otherwise we'd type
+  // /unknown into agents that just respond with "Unknown command" — visible
+  // failure for the user and noise in the chat audit.
+  const roomMap = await discoverCommandsForRoom(SELECTED_ROOM);
+  const supportSet = new Set();
+  const unsupported = [];
+  for (const agent of resolved) {
+    const cmds = roomMap.get(agent);
+    if (cmds && cmds.has(slashCommand)) supportSet.add(agent);
+    else unsupported.push({ name: agent, reason: `doesn't have ${slashCommand}` });
+  }
+  resolved = resolved.filter((n) => supportSet.has(n));
+  skipped = [...skipped, ...unsupported];
+
+  if (!resolved.length) {
+    const checked = unsupported.length ? unsupported.map((u) => u.name).join(', ') : '(none live)';
+    addMessage({
+      from: 'system',
+      to: HUMAN_NAME,
+      text: `Slash send aborted: no agent in this room has ${slashCommand} — checked: ${checked}`,
       ts: _formatTimestamp(),
     });
     return false;
@@ -332,27 +466,30 @@ async function sendSlash({ slashCommand, target, args }) {
     const cap = captures.get(agent);
     if (!cap) continue;
     cap.then(async (raw) => {
-      // Primary: render captured raw bytes into oversized headless xterm.
-      // Sidesteps the alt-buffer truncation in the visible 30-row terminal.
-      let body = await captureViaHeadless(raw);
+      // Primary: render captured raw bytes through an oversized headless
+      // xterm.js (200×200, 1000 lines scrollback). xterm.js processes the
+      // cursor-positioning escapes the same way the visible terminal does,
+      // so the resulting buffer mirrors what the human sees in xterm —
+      // including aligned columns, padded grids, and the prompt frame.
+      // We then slice between the typed /cmd line and the prompt-frame
+      // divider, and trim trailing whitespace per row.
+      let body = await captureViaHeadless(raw, slashCommand);
       if (!body) {
-        // Fallback A: diff against the visible terminal's pre-write state.
-        body = snapshotResponse(agent, baselines.get(agent));
+        // Fallback A: ANSI-strip with row-tracking + CR-overwrite handling.
+        // Loses 2D layout but recovers content for cases where the headless
+        // render produces nothing (e.g. claude wrote only to alt-buffer and
+        // we're reading normal-buffer or vice versa).
+        body = stripAndSlice(raw, slashCommand);
       }
       if (!body) {
-        // Fallback B: ANSI-strip the raw bytes (column layout collapses).
-        body = stripAnsi(raw);
-        const echo = (args ? `${slashCommand} ${args}` : slashCommand);
-        const echoIdx = body.indexOf(echo);
-        if (echoIdx >= 0 && echoIdx < 200) {
-          body = body.slice(echoIdx + echo.length).replace(/^\s+/, '');
-        }
+        // Fallback B: visible terminal buffer diff (last resort).
+        body = snapshotResponse(agent, baselines.get(agent));
       }
       if (!body || !body.trim()) return;
       addMessage({
         from: agent,
         to: HUMAN_NAME,
-        text: '```\n' + body + '\n```',
+        text: '**[a2a-capture]** PTY → headless render → slice\n```\n' + body + '\n```',
         ts: _formatTimestamp(),
       });
     });

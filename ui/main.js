@@ -225,6 +225,22 @@ if (settingsBtn) {
   });
 }
 
+const mcpGlobalBtn = document.getElementById('mcp-global-btn');
+if (mcpGlobalBtn) {
+  mcpGlobalBtn.addEventListener('click', async () => {
+    try {
+      await tauriInvoke('open_global_mcp_config');
+    } catch (e) {
+      addMessage({
+        from: 'system',
+        to: HUMAN_NAME,
+        text: `Open MCP config failed: ${e?.message ?? e}`,
+        ts: '',
+      });
+    }
+  });
+}
+
 const reloadBtn = document.getElementById('reload-btn');
 if (reloadBtn) {
   reloadBtn.addEventListener('click', async () => {

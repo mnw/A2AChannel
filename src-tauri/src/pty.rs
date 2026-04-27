@@ -97,9 +97,61 @@ fn mcp_configs_dir() -> PathBuf {
     app_data_dir().join("mcp-configs")
 }
 
+// User-editable global MCP config. Standard `.mcp.json` schema:
+//   { "mcpServers": { "<name>": { "command": "...", "args": [...], "env": {...},
+//                                  "prompts": ["..."]?  // optional, for picker hints
+//                                } } }
+// Loaded by write_mcp_config_for() and merged into every per-agent .mcp.json
+// at spawn time. The chatbridge server is ALWAYS injected by us with the
+// agent's room/name; users cannot add or override a "chatbridge" entry —
+// we silently strip it from their config to keep the integrity of our own
+// channel scaffolding. The non-standard `prompts` array (per server) lets
+// the picker know which slash-prompts the server exposes without doing a
+// JSON-RPC handshake; absent → user must type `/mcp__server__prompt` blind.
+pub fn global_mcp_config_path() -> PathBuf {
+    app_data_dir().join("mcp.json")
+}
+
+// Reserved server name owned by A2AChannel. User entries with this name are
+// silently dropped from the global config before merging.
+const RESERVED_MCP_SERVER: &str = "chatbridge";
+
+// Read the user's global mcp.json and return its `mcpServers` map with the
+// reserved name stripped. Returns an empty map when the file is missing,
+// malformed, or has no servers — never an error (best-effort).
+pub fn read_global_mcp_servers() -> serde_json::Map<String, serde_json::Value> {
+    let path = global_mcp_config_path();
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => return Default::default(),
+    };
+    let parsed: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[mcp] {} parse failed: {e}", path.display());
+            return Default::default();
+        }
+    };
+    let mut servers = match parsed.get("mcpServers").and_then(|v| v.as_object()) {
+        Some(m) => m.clone(),
+        None => return Default::default(),
+    };
+    if servers.remove(RESERVED_MCP_SERVER).is_some() {
+        eprintln!("[mcp] dropped reserved server name '{RESERVED_MCP_SERVER}' from global config");
+    }
+    servers
+}
+
 // Written (0600) on every spawn so stale values self-heal. Loaded additively via `--mcp-config`;
 // the user's cwd `.mcp.json` is still honored. `room` is baked into the env so channel-bin
 // scopes its /agent-stream subscription correctly.
+//
+// Composition order:
+//   1. Start with global servers from ~/Library/Application Support/A2AChannel/mcp.json
+//      (with `chatbridge` already stripped — see read_global_mcp_servers)
+//   2. Force-inject the chatbridge entry with this agent's identity. Always
+//      wins over any name collision. Internal scaffolding the user can't
+//      see or break.
 fn write_mcp_config_for(agent: &str, room: &str) -> Result<PathBuf, String> {
     use std::os::unix::fs::PermissionsExt;
     let dir = mcp_configs_dir();
@@ -108,19 +160,32 @@ fn write_mcp_config_for(agent: &str, room: &str) -> Result<PathBuf, String> {
     let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
     let path = dir.join(format!("{agent}.json"));
     let a2a_bin = resolve_a2a_bin()?;
-    let cfg = serde_json::json!({
-        "mcpServers": {
-            "chatbridge": {
-                "command": a2a_bin.to_string_lossy(),
-                "args": [],
-                "env": {
-                    "A2A_MODE": "channel",
-                    "CHATBRIDGE_AGENT": agent,
-                    "CHATBRIDGE_ROOM": room
-                }
-            }
+
+    // Start with the user's global servers (chatbridge already stripped).
+    // The non-standard `prompts` annotation is dropped before writing — it's
+    // for our picker only, not part of the .mcp.json contract claude reads.
+    let mut servers = read_global_mcp_servers();
+    for (_, server_cfg) in servers.iter_mut() {
+        if let Some(obj) = server_cfg.as_object_mut() {
+            obj.remove("prompts");
         }
-    });
+    }
+
+    // Force-inject chatbridge LAST so it always wins on name collision.
+    servers.insert(
+        RESERVED_MCP_SERVER.to_string(),
+        serde_json::json!({
+            "command": a2a_bin.to_string_lossy(),
+            "args": [],
+            "env": {
+                "A2A_MODE": "channel",
+                "CHATBRIDGE_AGENT": agent,
+                "CHATBRIDGE_ROOM": room
+            }
+        }),
+    );
+
+    let cfg = serde_json::json!({ "mcpServers": servers });
     let text = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
     std::fs::write(&path, text)
         .map_err(|e| format!("write {}: {e}", path.display()))?;
@@ -141,11 +206,20 @@ fn claude_command(agent: &str, room: &str, session_mode: Option<&str>) -> Result
     };
     let claude_path = resolve_claude_path();
     let claude_escaped = claude_path.to_string_lossy().replace('\'', r"'\''");
-    // Pre-allow ack_permission so peer verdicts don't trigger a local permission
-    // prompt on the acker — required for the peer-vote design in permission-relay.
-    // Without this the feature is broken: a human would have to ack the ack.
+    // Pre-allow chatbridge tools that the briefing actively encourages the
+    // agent to use:
+    //   - ack_permission: required so peer verdicts don't trigger a permission
+    //     prompt on the acker (peer-vote design from permission-relay; without
+    //     this the feature is broken: a human would have to ack the ack).
+    //   - post: the slash-command-mirror policy in the briefing instructs every
+    //     agent to mirror /command results back to chat. Without pre-allow,
+    //     each mirror raises a permission card the human must accept; the
+    //     resulting JSON notification floods the agent's terminal too.
+    //   - post_file: same UX argument — agents post files in normal chat flow,
+    //     the permission card adds friction without protection (the human
+    //     can already see the file path in the resulting chat row).
     Ok(format!(
-        "'{claude_escaped}' {mode_part}--mcp-config '{path_str}' --allowed-tools 'mcp__chatbridge__ack_permission' --dangerously-load-development-channels server:chatbridge"
+        "'{claude_escaped}' {mode_part}--mcp-config '{path_str}' --allowed-tools 'mcp__chatbridge__ack_permission,mcp__chatbridge__post,mcp__chatbridge__post_file' --dangerously-load-development-channels server:chatbridge"
     ))
 }
 

@@ -714,6 +714,35 @@ fn open_config_file() -> Result<(), String> {
     Ok(())
 }
 
+// Open (or create + open) the user's global MCP config. Seeds the file with
+// a commented template on first open so the user has a working example.
+// chatbridge is INTENTIONALLY not in the template — it's our internal
+// scaffolding, force-injected into every per-agent config and stripped from
+// any user attempt to override it. Documented in the seed comments.
+#[tauri::command]
+fn open_global_mcp_config() -> Result<(), String> {
+    let path = pty::global_mcp_config_path();
+    if !path.exists() {
+        let template = serde_json::to_string_pretty(&json!({
+            "_comment": "Global MCP servers shared by all A2AChannel agents. Standard .mcp.json schema. \
+                         Each server may carry an optional non-standard `prompts: [\"name\", ...]` array \
+                         which lets the slash picker show /mcp__<server>__<name> as a discoverable command. \
+                         The `chatbridge` server is reserved by A2AChannel; entries with that name are \
+                         silently dropped on save.",
+            "mcpServers": {}
+        })).map_err(|e| e.to_string())?;
+        std::fs::write(&path, template)
+            .map_err(|e| format!("create {}: {e}", path.display()))?;
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    std::process::Command::new("open")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| format!("open {}: {e}", path.display()))?;
+    Ok(())
+}
+
 // Re-read config.yml, kill the hub sidecar, restart it on a new port with fresh env.
 // Returns the new {url, token} so the UI can hot-swap without relaunching the app.
 #[tauri::command]
@@ -841,9 +870,15 @@ struct SlashCommandEntry {
     description: String,
 }
 
-// Discover slash commands available to a single agent. Scans the agent's
-// live cwd `.claude/commands/*.md` and `.claude/skills/*/SKILL.md`, plus the
-// personal `~/.claude/commands/*.md` and `~/.claude/skills/*/SKILL.md`.
+// Discover slash commands available to a single agent. Scans:
+//   - agent's live cwd `.claude/commands/*.md` and `.claude/skills/*/SKILL.md`
+//   - personal `~/.claude/commands/*.md` and `~/.claude/skills/*/SKILL.md`
+//   - global MCP config (`~/Library/Application Support/A2AChannel/mcp.json`)
+//     for any server with a `prompts: [...]` annotation — yielded as
+//     `mcp__<server>__<prompt>` so the picker shows them as
+//     `/mcp__<server>__<prompt>`. Universally available across all agents
+//     (every agent's per-agent .mcp.json is generated from the same global
+//     config) so per-agent badges will always show N/N.
 // Returns `{name, description}` per command — name without the leading `/`,
 // description parsed from the YAML frontmatter `description:` field if
 // present (empty string otherwise). Built-ins are NOT included here; the UI
@@ -862,6 +897,24 @@ fn slash_discover_for_agent(agent: String) -> Vec<SlashCommandEntry> {
     for root in &roots {
         scan_commands_dir(&root.join("commands"), &mut out);
         scan_skills_dir(&root.join("skills"), &mut out);
+    }
+    // Append global MCP-prompt names (chatbridge already stripped by reader).
+    let global_servers = pty::read_global_mcp_servers();
+    for (server_name, server_cfg) in global_servers.iter() {
+        let prompts = server_cfg.get("prompts").and_then(|v| v.as_array());
+        let description = server_cfg
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if let Some(arr) = prompts {
+            for p in arr {
+                if let Some(prompt_name) = p.as_str() {
+                    let full = format!("mcp__{server_name}__{prompt_name}");
+                    out.entry(full).or_insert_with(|| description.clone());
+                }
+            }
+        }
     }
     out.into_iter()
         .map(|(name, description)| SlashCommandEntry { name, description })
@@ -981,6 +1034,7 @@ pub fn run() {
             get_human_name,
             get_ui_settings,
             open_config_file,
+            open_global_mcp_config,
             open_in_editor,
             reload_settings,
             pty::pty_spawn,
