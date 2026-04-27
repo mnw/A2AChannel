@@ -69,6 +69,29 @@ Any agent can ack any pending permission via `ack_permission({ request_id, behav
 
 **Chat-first** is the clean path — chatbridge relays the verdict upstream and Claude Code closes its own xterm dialog. **Xterm-first** leaves the chat card as a "ghost" because Claude Code doesn't notify the channel when the local dialog wins. Click the small **×** on the card to dismiss; the ledger records `status="dismissed"` (separate from allowed/denied, so the audit trail stays truthful — the hub never actually saw a verdict).
 
+### Slash commands from chat
+
+Type `/` at the start of the composer to drive an agent's slash commands without leaving the chat. A picker opens listing every command available across the live agents in the **currently-selected room** — built-ins (`/clear`, `/compact`, `/help`, `/cost`, `/model`, …) plus whatever lives under `.claude/commands/` and `.claude/skills/` for each agent's cwd, plus your personal `~/.claude/...`. Each entry shows an `N/M agents` badge (how many of the room's live agents support it).
+
+Sends require explicit targeting:
+
+| Composer text | What happens |
+|---|---|
+| `/clear` | refused — `specify @agent or @all` |
+| `/clear @builder` | bytes typed into `builder`'s xterm |
+| `/clear @all` | bytes typed into every live, non-busy agent in the room |
+
+Routing: `/`-prefixed messages bypass the channel entirely and write raw bytes to the agent's tmux PTY (via the existing `pty_write` Tauri command). They do **not** become MCP `notifications/claude/channel` messages.
+
+Guardrails:
+
+- Slash mode is **disabled** when the room dropdown is on `All rooms` — pick a concrete room first. Cross-room slash broadcasts are intentionally not possible.
+- Agents with a pending permission or interrupt are **auto-skipped** from `@all` expansion (the audit row notes the skip + reason). Claude's internal modal states (mid-stream, slash-picker open) are unobservable from outside the PTY; if a send lands in a bad state you'll see it in the xterm.
+- `/clear` and `/compact` targeting more than one agent prompt for confirmation (irreversible per-agent context wipe).
+- `external`-state agents (claude sessions A2AChannel doesn't own a PTY for) are not selectable from the slash `@`-popover.
+
+Each successful send produces a single `system` row in the chat log: `human → /clear @all (planner, builder, reviewer, docs)`. The audit row is in-memory only — lost on hub restart.
+
 ## Quickstart
 
 1. Install: `brew tap mnw/a2achannel && brew install --cask a2achannel`. Launch the app.

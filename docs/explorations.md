@@ -58,15 +58,18 @@ The architecture is technically sound. The commercial model isn't compatible wit
 
 ## Decision
 
-Slash commands stay in the terminal. The xterm tab next to each agent is the canonical surface for `/`-prefixed input. No chat-side picker, no response capture, no SDK orchestrator on main.
+Slash commands stay in the terminal. The xterm tab next to each agent is the canonical surface for `/`-prefixed input. The chat-side picker / response capture / SDK orchestrator lines of work are not being developed further.
 
 What survives from the exploration:
 
-- **Two branches preserved on GitHub** — `commands` and `sdk-pivot` — as documented dead-ends with working code anyone can read or run.
+- **Both branches preserved on GitHub** — `commands` and `sdk-pivot` — as documented dead-ends with working code anyone can read or rerun.
 - **Architectural map** of what an SDK-native A2AChannel would look like (smaller codebase, terminal-quality back-and-forth in chat, clean structured tool-call rendering) — kept on `sdk-pivot` for the day Anthropic ships subscription auth for the SDK.
 - **Hard-won knowledge** that the chatbridge MCP sidecar + tmux + PTY model isn't accidental — it's the *only* path that uses the user's existing Max subscription without commercial repackaging. The complexity buys the auth model.
 
-What stays on `main`:
+What lives on `main` after PR #2 was merged:
 
-- v0.9.12 — last known-good state before either exploration.
-- The terminal pane, with proper xterm tab focus + tmux session per agent, is the slash-command UX.
+- **v0.9.13 chat→PTY send capability** is shipped — the composer recognizes `/`-prefixed messages and writes them to the agent's PTY with explicit `@target` routing. Useful for multi-agent broadcast (`/clear @all`) and for the audit trail of what was sent. Keep using it.
+- **The capture-iteration code from the `commands` branch** also landed in PR #2 (markdown rendering, headless terminal capture, ANSI strip refinements). This is the part that proved fragile and should not be relied on for slash-command output rendering — the terminal pane is where you see the actual response.
+- **No SDK orchestrator** — `sdk-pivot` is not merged and won't be unless the auth-model story changes upstream.
+
+The split: chat is the *send* surface (with multi-target broadcast and audit), terminal is the *response* surface (full fidelity, lossless, no scraping).

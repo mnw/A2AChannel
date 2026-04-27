@@ -63,12 +63,13 @@ function addMessage(data) {
   }
   content.appendChild(header);
 
-  // innerHTML is safe here: all user-controlled text goes through escHtml before linkify/highlight.
+  // innerHTML is safe here: renderChatMarkdown escapes all prose and code
+  // body content before assembling. linkify/highlight run on prose only.
   const safeAttachment = data.image && isSafeAttachmentSrc(data.image) ? data.image : null;
   const attachmentHtml = safeAttachment ? renderAttachmentHtml(safeAttachment) : '';
   const body = document.createElement('div');
   body.className = 'msg-body';
-  body.innerHTML = highlightMentions(linkify(escHtml(data.text || ''))) + attachmentHtml;
+  body.innerHTML = renderChatMarkdown(data.text || '') + attachmentHtml;
 
   // Copy-to-clipboard affordance on agent messages (not human / not system).
   // Two buttons — top-right and bottom-right — both copy the raw text. Hover-only,
