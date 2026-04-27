@@ -113,9 +113,13 @@ describe("stripAnsi", () => {
     const t = slashSend.stripAnsi("\x1B[2J\x1B[H\x1B]0;title\x07hello");
     expect(t).toBe("hello");
   });
-  test("normalizes CRLF and drops bare CR", () => {
+  test("normalizes CRLF and processes bare CR as in-place overwrite", () => {
+    // CRLF → LF; bare CR moves cursor to col 0 of current line, the
+    // following chars overwrite from there. "b\rc" → "c" (c overwrites b).
+    // Matches terminal CR semantics — same byte-stream interpretation
+    // claude relies on for progressive re-renders ([READY]\r[VERIFIED]).
     const t = slashSend.stripAnsi("a\r\nb\rc");
-    expect(t).toBe("a\nbc");
+    expect(t).toBe("a\nc");
   });
   test("collapses 3+ blank lines to 2", () => {
     const t = slashSend.stripAnsi("a\n\n\n\nb");

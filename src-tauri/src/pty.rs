@@ -618,3 +618,416 @@ pub fn pane_current_path(agent: &str) -> Result<PathBuf, String> {
     }
     Ok(PathBuf::from(trimmed))
 }
+
+// =============================================================================
+// pty_capture_turn — deterministic single-turn TUI capture
+// =============================================================================
+//
+// Three coordinated layers solve the "scrape claude's TUI panel" problem:
+//
+//   1. GEOMETRY. Forces tmux to CAPTURE_COLS × CAPTURE_ROWS (240×100) before
+//      claude renders. Wide enough that claude's layout engine doesn't
+//      overlap cells — the bytes claude emits are clean. Restored to
+//      `latest` (active client size) on cleanup so the user's xterm.js
+//      snaps back to its actual viewport.
+//
+//   2. CAPTURE. `tmux pipe-pane -o` tees the agent's output stream to a
+//      per-capture file under /tmp/a2a/<agent>/captures/turn-<epoch>.log.
+//      Pipe-pane is enabled AFTER the resize settles (200ms) so the
+//      resize-redraw bytes don't pollute the captured stream.
+//
+//   3. COMPLETION. Content-based, not time-based. Three signals in priority:
+//        (a) ALT_SCREEN_EXIT (`ESC[?1049l`) — strongest. Modal panels like
+//            /usage and /context use the alt-buffer; the 8-byte exit
+//            sequence is written exactly once on dismissal.
+//        (b) IDLE_PROMPT — inline commands (no alt-buffer) end by drawing
+//            a horizontal divider, the `❯` prompt, and a cursor-show
+//            (`ESC[?25h`). Detected by byte-substring match in sequence.
+//        (c) QUIESCENCE — circuit breaker. Fires only if neither marker
+//            arrived AND output has been stable for STABLE_MS after a
+//            minimum capture window. Last-resort, log-only.
+//      Hard timeout (default 15s) is the absolute ceiling.
+
+const CAPTURE_COLS: u16 = 240;
+const CAPTURE_ROWS: u16 = 100;
+const CAPTURE_RESIZE_SETTLE_MS: u64 = 200;
+const CAPTURE_POLL_MS: u64 = 50;
+const CAPTURE_DEFAULT_TIMEOUT_MS: u32 = 15_000;
+const CAPTURE_KEEP_RECENT: usize = 10;
+const CAPTURE_QUIESCENCE_MIN_MS: u64 = 1_500;
+const CAPTURE_QUIESCENCE_STABLE_MS: u64 = 1_500;
+const CAPTURE_READ_MAX_BYTES: usize = 256 * 1024;
+
+const ALT_SCREEN_ENTER: &[u8] = b"\x1B[?1049h";
+const ALT_SCREEN_EXIT: &[u8] = b"\x1B[?1049l";
+const CURSOR_SHOW: &[u8] = b"\x1B[?25h";
+
+#[derive(Serialize, Clone)]
+pub struct CaptureResult {
+    log_path: String,
+    start_ms: u64,
+    end_ms: u64,
+    /// Completion reason: "alt-exit" | "idle-prompt" | "quiescence" | "timeout"
+    status: String,
+}
+
+fn captures_dir(agent: &str) -> PathBuf {
+    PathBuf::from("/tmp/a2a").join(agent).join("captures")
+}
+
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+// Find first occurrence of `needle` in `haystack` starting at `from`.
+fn find_subsequence(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    if from >= haystack.len() || needle.is_empty() || needle.len() > haystack.len() - from {
+        return None;
+    }
+    haystack[from..]
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|i| i + from)
+}
+
+// Idle-prompt heuristic for inline (non-alt-screen) commands. Returns true
+// if the buffer (after `from` byte offset) contains a horizontal divider
+// followed by the `❯ ` prompt followed by a CURSOR_SHOW — claude's
+// "ready for next input" signature in normal-buffer mode.
+//
+// Uses a byte-by-byte scan rather than regex to avoid pulling in the
+// regex crate as a dependency.
+fn detect_idle_prompt(buf: &[u8], from: usize) -> bool {
+    // Find "❯ " (E2 9D AF in UTF-8) anywhere after `from`.
+    const PROMPT_GLYPH: &[u8] = "❯ ".as_bytes();
+    const DIVIDER_GLYPH: &[u8] = "─".as_bytes();
+    let mut search_from = from;
+    while let Some(p) = find_subsequence(buf, PROMPT_GLYPH, search_from) {
+        // Walk back from `p` to find a preceding newline, then check that
+        // the line just above it is a divider (≥ 30 ─ chars or whitespace
+        // ending in newline).
+        let prompt_line_start = buf[..p].iter().rposition(|&c| c == b'\n').unwrap_or(0);
+        if prompt_line_start > 0 {
+            // Look one line up: from rposition('\n') in buf[..prompt_line_start]
+            let above_end = prompt_line_start;
+            let above_start = buf[..above_end].iter().rposition(|&c| c == b'\n')
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            let above_line = &buf[above_start..above_end];
+            // Count divider glyphs in the above line (ignoring whitespace).
+            let mut divider_count = 0usize;
+            let mut i = 0;
+            while i + DIVIDER_GLYPH.len() <= above_line.len() {
+                if &above_line[i..i + DIVIDER_GLYPH.len()] == DIVIDER_GLYPH {
+                    divider_count += 1;
+                    i += DIVIDER_GLYPH.len();
+                } else {
+                    i += 1;
+                }
+            }
+            if divider_count >= 30 {
+                // Now confirm a CURSOR_SHOW appears AFTER the prompt within
+                // the next 256 bytes (typical claude footer-render envelope).
+                let scan_end = (p + 256).min(buf.len());
+                if find_subsequence(&buf[..scan_end], CURSOR_SHOW, p).is_some() {
+                    return true;
+                }
+            }
+        }
+        search_from = p + PROMPT_GLYPH.len();
+    }
+    false
+}
+
+fn prune_captures(dir: &std::path::Path, keep: usize) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let mut logs: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            let name = p.file_name()?.to_str()?;
+            if !name.ends_with(".log") || name.contains(".partial") {
+                return None;
+            }
+            let mtime = e.metadata().ok()?.modified().ok()?;
+            Some((mtime, p))
+        })
+        .collect();
+    logs.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
+    for (_, p) in logs.into_iter().skip(keep) {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+#[tauri::command]
+pub fn pty_capture_turn(
+    state: State<'_, PtyRegistry>,
+    agent: String,
+    input: String,
+    timeout_ms: Option<u32>,
+) -> Result<CaptureResult, String> {
+    if !valid_agent_name(&agent) {
+        return Err(format!("invalid agent: {agent}"));
+    }
+    let timeout = timeout_ms.unwrap_or(CAPTURE_DEFAULT_TIMEOUT_MS) as u64;
+
+    let cap_dir = captures_dir(&agent);
+    std::fs::create_dir_all(&cap_dir)
+        .map_err(|e| format!("mkdir {}: {e}", cap_dir.display()))?;
+
+    // Cleanup closures — geometry restore runs on every exit path including
+    // panic-via-error so the user's terminal is always handed back to tmux's
+    // client-driven sizing.
+    let cleanup_geometry = || {
+        if let Err(e) = tmux_run(&["set-option", "-w", "-t", &agent, "window-size", "latest"]) {
+            eprintln!("[capture] restore window-size failed: {e}");
+        }
+        if let Err(e) = tmux_run(&["resize-window", "-t", &agent, "-A"]) {
+            eprintln!("[capture] resize -A failed: {e}");
+        }
+        if let Err(e) = tmux_run(&["refresh-client", "-t", &agent, "-S"]) {
+            eprintln!("[capture] refresh-client failed: {e}");
+        }
+    };
+    let cleanup_pipe = || {
+        let _ = tmux_run(&["pipe-pane", "-t", &agent]);
+    };
+
+    // 1. Force capture geometry FIRST so the resize redraw doesn't pollute
+    //    the captured stream. Order: set-option manual → resize → settle.
+    if let Err(e) = tmux_run(&["set-option", "-w", "-t", &agent, "window-size", "manual"]) {
+        return Err(format!("set window-size manual: {e}"));
+    }
+    if let Err(e) = tmux_run(&[
+        "resize-window", "-t", &agent,
+        "-x", &CAPTURE_COLS.to_string(),
+        "-y", &CAPTURE_ROWS.to_string(),
+    ]) {
+        cleanup_geometry();
+        return Err(format!("resize-window: {e}"));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(CAPTURE_RESIZE_SETTLE_MS));
+
+    // 2. Touch the log file so pipe-pane has a target to append to.
+    let start_ms = epoch_ms();
+    let log_path = cap_dir.join(format!("turn-{start_ms}.log"));
+    if let Err(e) = std::fs::write(&log_path, b"") {
+        cleanup_geometry();
+        return Err(format!("touch {}: {e}", log_path.display()));
+    }
+
+    // 3. Enable pipe-pane (BEFORE inject so we don't miss leading bytes).
+    let pipe_target = format!(
+        "cat >> '{}'",
+        log_path.to_string_lossy().replace('\'', r"'\''")
+    );
+    if let Err(e) = tmux_run(&["pipe-pane", "-o", "-t", &agent, &pipe_target]) {
+        cleanup_geometry();
+        return Err(format!("pipe-pane on: {e}"));
+    }
+
+    // 4. Inject input via the agent's PTY master.
+    let bytes = input.as_bytes().to_vec();
+    let write_result = (|| -> Result<(), String> {
+        let handle_arc = {
+            let map = state.0.lock().unwrap();
+            map.get(&agent).cloned().ok_or_else(|| format!("unknown agent: {agent}"))?
+        };
+        let mut h = handle_arc.lock().unwrap();
+        h.writer.write_all(&bytes).map_err(|e| format!("write: {e}"))?;
+        h.writer.flush().map_err(|e| format!("flush: {e}"))?;
+        Ok(())
+    })();
+    if let Err(e) = write_result {
+        cleanup_pipe();
+        cleanup_geometry();
+        return Err(format!("inject: {e}"));
+    }
+
+    // 5. Tail the capture log via a buffered reader, scanning appended
+    //    chunks for completion markers.
+    let mut buf: Vec<u8> = Vec::with_capacity(8192);
+    let mut file_handle = match std::fs::File::open(&log_path) {
+        Ok(f) => f,
+        Err(e) => {
+            cleanup_pipe();
+            cleanup_geometry();
+            return Err(format!("open {}: {e}", log_path.display()));
+        }
+    };
+    let inject_instant = std::time::Instant::now();
+    let deadline = inject_instant + std::time::Duration::from_millis(timeout);
+    let mut last_change = inject_instant;
+    let mut alt_screen_seen = false;
+    let mut status: Option<&'static str> = None;
+
+    while std::time::Instant::now() < deadline {
+        // Append new bytes (BufReader at EOF returns Ok(0); read_to_end keeps
+        // the file open for next tick).
+        let mut chunk = Vec::with_capacity(4096);
+        if file_handle.read_to_end(&mut chunk).is_ok() && !chunk.is_empty() {
+            buf.extend_from_slice(&chunk);
+            last_change = std::time::Instant::now();
+        }
+
+        // Track alt-screen state — only the FIRST exit after an enter counts.
+        if !alt_screen_seen && find_subsequence(&buf, ALT_SCREEN_ENTER, 0).is_some() {
+            alt_screen_seen = true;
+        }
+
+        // Marker 1: alt-screen exit (only valid if we entered alt-screen).
+        if alt_screen_seen {
+            // Find last enter, then look for exit after it.
+            let mut last_enter = 0usize;
+            let mut search = 0usize;
+            while let Some(p) = find_subsequence(&buf, ALT_SCREEN_ENTER, search) {
+                last_enter = p;
+                search = p + ALT_SCREEN_ENTER.len();
+            }
+            if find_subsequence(&buf, ALT_SCREEN_EXIT, last_enter + ALT_SCREEN_ENTER.len()).is_some() {
+                status = Some("alt-exit");
+                break;
+            }
+        }
+
+        // Marker 2: idle-prompt (inline mode — never seen alt-screen).
+        if !alt_screen_seen && detect_idle_prompt(&buf, 0) {
+            status = Some("idle-prompt");
+            break;
+        }
+
+        // Marker 3: quiescence circuit breaker.
+        let elapsed = inject_instant.elapsed().as_millis() as u64;
+        let stable = last_change.elapsed().as_millis() as u64;
+        if !buf.is_empty()
+            && elapsed >= CAPTURE_QUIESCENCE_MIN_MS
+            && stable >= CAPTURE_QUIESCENCE_STABLE_MS
+        {
+            status = Some("quiescence");
+            break;
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(CAPTURE_POLL_MS));
+    }
+    let final_status = status.unwrap_or("timeout");
+
+    // 6. Restore geometry + close pipe (always — even on timeout).
+    cleanup_pipe();
+    cleanup_geometry();
+
+    // 7. Prune older successful captures (timeouts retained for debug).
+    if final_status != "timeout" {
+        prune_captures(&cap_dir, CAPTURE_KEEP_RECENT);
+    }
+
+    Ok(CaptureResult {
+        log_path: log_path.to_string_lossy().to_string(),
+        start_ms,
+        end_ms: epoch_ms(),
+        status: final_status.to_string(),
+    })
+}
+
+// Read a capture log file. Restricts to /tmp/a2a/ paths so a misuse from JS
+// can't be leveraged into an arbitrary file read; caps size to avoid pulling
+// a runaway-large log into the webview.
+#[tauri::command]
+pub fn pty_read_capture(log_path: String, max_bytes: Option<u32>) -> Result<String, String> {
+    let cap = max_bytes.map(|n| n as usize).unwrap_or(CAPTURE_READ_MAX_BYTES);
+    let path = std::path::Path::new(&log_path);
+    if !path.starts_with("/tmp/a2a/") {
+        return Err(format!("path outside capture dir: {log_path}"));
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("read {log_path}: {e}"))?;
+    let trimmed = if bytes.len() > cap { &bytes[..cap] } else { &bytes[..] };
+    Ok(String::from_utf8_lossy(trimmed).to_string())
+}
+
+#[cfg(test)]
+mod capture_tests {
+    use super::*;
+
+    #[test]
+    fn alt_screen_exit_substring_match() {
+        let buf = b"prefix\x1B[?1049henter then content \x1B[?1049l done";
+        assert!(find_subsequence(buf, ALT_SCREEN_ENTER, 0).is_some());
+        assert!(find_subsequence(buf, ALT_SCREEN_EXIT, 0).is_some());
+        // Exit must be after enter.
+        let enter_pos = find_subsequence(buf, ALT_SCREEN_ENTER, 0).unwrap();
+        let exit_pos = find_subsequence(buf, ALT_SCREEN_EXIT, 0).unwrap();
+        assert!(exit_pos > enter_pos);
+    }
+
+    #[test]
+    fn idle_prompt_detects_divider_prompt_cursor() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"some prior content\n");
+        for _ in 0..40 {
+            buf.extend_from_slice("─".as_bytes());
+        }
+        buf.extend_from_slice(b"\n\xE2\x9D\xAF \x1B[?25h");
+        assert!(detect_idle_prompt(&buf, 0));
+    }
+
+    #[test]
+    fn idle_prompt_rejects_short_divider() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"text\n");
+        for _ in 0..10 {
+            buf.extend_from_slice("─".as_bytes());
+        }
+        buf.extend_from_slice(b"\n\xE2\x9D\xAF \x1B[?25h");
+        assert!(!detect_idle_prompt(&buf, 0));
+    }
+
+    #[test]
+    fn idle_prompt_requires_cursor_show_after_prompt() {
+        let mut buf = Vec::new();
+        for _ in 0..40 {
+            buf.extend_from_slice("─".as_bytes());
+        }
+        buf.extend_from_slice(b"\n\xE2\x9D\xAF no cursor follows");
+        assert!(!detect_idle_prompt(&buf, 0));
+    }
+
+    #[test]
+    fn prune_keeps_n_most_recent_logs() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("a2a-prune-test-{}-{}", epoch_ms(), n));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Create 5 files with stepping mtimes (oldest first).
+        for i in 0..5 {
+            let p = dir.join(format!("turn-{i}.log"));
+            std::fs::write(&p, b"x").unwrap();
+            // Use stepping mtimes via filetime-equivalent: we sleep a hair so
+            // SystemTime ordering is deterministic.
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        prune_captures(&dir, 3);
+        let remaining: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+        assert_eq!(remaining.len(), 3);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prune_ignores_partial_files() {
+        let dir = std::env::temp_dir().join(format!("a2a-prune-partial-{}", epoch_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("turn-1.log"), b"x").unwrap();
+        std::fs::write(dir.join("turn-2.partial.log"), b"x").unwrap();
+        std::fs::write(dir.join("turn-3.log"), b"x").unwrap();
+        prune_captures(&dir, 1);
+        // .partial.log retained, plus 1 of 2 .log files.
+        let remaining: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+        assert_eq!(remaining.len(), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

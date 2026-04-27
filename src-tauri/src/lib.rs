@@ -1044,7 +1044,9 @@ pub fn run() {
             pty::pty_list,
             pty::resolve_default_room,
             pty::pty_spawn_shell,
-            pty::pty_shell_exists
+            pty::pty_shell_exists,
+            pty::pty_capture_turn,
+            pty::pty_read_capture
         ])
         .setup(|app| {
             let handle = app.handle().clone();
