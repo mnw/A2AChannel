@@ -885,4 +885,14 @@
     new MutationObserver(() => { if (paneEnabled()) reconcile(); })
       .observe(legend, { childList: true });
   }
+
+  // Public read-only accessor for slash-send's response capture: returns the
+  // xterm.js Terminal instance for the named agent if mounted, else null.
+  // The capture path snapshots the visible buffer to extract the rendered
+  // panel content (with cursor moves already resolved into a flat grid),
+  // which is the only reliable way to reconstruct claude's TUI panels.
+  window.__A2A_TERM__.getTerm = (agent) => {
+    const tab = tabs.get(agent);
+    return tab?.term || null;
+  };
 })();

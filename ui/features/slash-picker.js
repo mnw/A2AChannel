@@ -65,16 +65,16 @@ function slashPickerUpdate() {
     return;
   }
 
-  const union = commandUnion(_slashPickerRoomMap);
-  const builtins = new Set(BUILTIN_SLASH_COMMANDS);
+  const union = commandUnion(_slashPickerRoomMap);  // Map<cmd, description>
+  const builtins = BUILTIN_SLASH_COMMANDS;          // Map<cmd, description>
   // Filter by what user has typed after the leading `/`.
   const parsed = parseSlashMessage(input.value);
   const typed = (parsed.slashCommand || input.value || '').toLowerCase();
   const list = [];
-  for (const cmd of union) {
+  for (const [cmd, desc] of union.entries()) {
     if (typed && typed !== '/' && !cmd.toLowerCase().startsWith(typed)) continue;
     const avail = commandAvailability(cmd, _slashPickerRoomMap);
-    list.push({ command: cmd, ...avail });
+    list.push({ command: cmd, description: desc || '', ...avail });
   }
   // Built-ins first, then alpha within each group.
   list.sort((a, b) => {
@@ -98,8 +98,15 @@ function slashPickerUpdate() {
                     (unavailable ? ' unavailable' : '');
     if (unavailable) row.title = 'no live agents have this command';
     else if (entry.missingFrom.length) row.title = 'missing from: ' + entry.missingFrom.join(', ');
+    const safeDesc = (entry.description || '').replace(/[&<>"']/g, (c) => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
+    const safeCmd = entry.command.replace(/[&<>"']/g, (c) => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
     row.innerHTML =
-      `<span class="slash-cmd">${entry.command}</span>` +
+      `<span class="slash-cmd">${safeCmd}</span>` +
+      (safeDesc ? `<span class="slash-desc">${safeDesc}</span>` : '') +
       `<span class="slash-badge">${entry.available}/${entry.total}</span>`;
     row.addEventListener('mousedown', (e) => {
       e.preventDefault();

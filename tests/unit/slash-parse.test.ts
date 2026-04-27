@@ -85,8 +85,45 @@ beforeAll(() => {
       DESTRUCTIVE_SLASH_COMMANDS: new Set(),
       askConfirm: async () => true,
     },
-    ["sendSlash", "formatSlashAuditText"]
+    ["sendSlash", "formatSlashAuditText", "stripAnsi"]
   );
+});
+
+describe("stripAnsi (extended ANSI cases)", () => {
+  test("removes ESC ( B charset selection", () => {
+    const t = slashSend.stripAnsi("\x1B(Bplain text");
+    expect(t).toBe("plain text");
+  });
+  test("removes ESC = and ESC > keypad mode toggles", () => {
+    const t = slashSend.stripAnsi("\x1B=app\x1B>norm");
+    expect(t).toBe("appnorm");
+  });
+  test("removes ESC 7 / ESC 8 cursor save/restore", () => {
+    const t = slashSend.stripAnsi("\x1B7saved\x1B8");
+    expect(t).toBe("saved");
+  });
+});
+
+describe("stripAnsi", () => {
+  test("removes CSI color codes", () => {
+    const t = slashSend.stripAnsi("\x1B[31mred\x1B[0m text");
+    expect(t).toBe("red text");
+  });
+  test("removes cursor moves and OSC sequences", () => {
+    const t = slashSend.stripAnsi("\x1B[2J\x1B[H\x1B]0;title\x07hello");
+    expect(t).toBe("hello");
+  });
+  test("normalizes CRLF and drops bare CR", () => {
+    const t = slashSend.stripAnsi("a\r\nb\rc");
+    expect(t).toBe("a\nbc");
+  });
+  test("collapses 3+ blank lines to 2", () => {
+    const t = slashSend.stripAnsi("a\n\n\n\nb");
+    expect(t).toBe("a\n\nb");
+  });
+  test("returns empty for whitespace-only input", () => {
+    expect(slashSend.stripAnsi("\x1B[2J   \n\n")).toBe("");
+  });
 });
 
 describe("isSlashMode", () => {
@@ -150,23 +187,26 @@ describe("parseSlashMessage", () => {
 });
 
 describe("commandUnion + commandAvailability", () => {
-  test("union across agents", () => {
-    const map = new Map([
-      ["a", new Set(["/clear", "/refactor"])],
-      ["b", new Set(["/clear", "/compact"])],
+  test("union across agents preserves first non-empty description", () => {
+    const map = new Map<string, Map<string, string>>([
+      ["a", new Map([["/clear", "wipe context"], ["/refactor", "rewrite code"]])],
+      ["b", new Map([["/clear", ""], ["/compact", "summarize"]])],
     ]);
     const u = slashDiscovery.commandUnion(map);
     expect(u.has("/clear")).toBe(true);
     expect(u.has("/refactor")).toBe(true);
     expect(u.has("/compact")).toBe(true);
     expect(u.size).toBe(3);
+    expect(u.get("/clear")).toBe("wipe context");
+    expect(u.get("/refactor")).toBe("rewrite code");
+    expect(u.get("/compact")).toBe("summarize");
   });
 
   test("availability counts and missingFrom list", () => {
-    const map = new Map([
-      ["a", new Set(["/clear", "/refactor"])],
-      ["b", new Set(["/clear"])],
-      ["c", new Set(["/clear"])],
+    const map = new Map<string, Map<string, string>>([
+      ["a", new Map([["/clear", ""], ["/refactor", ""]])],
+      ["b", new Map([["/clear", ""]])],
+      ["c", new Map([["/clear", ""]])],
     ]);
     const all = slashDiscovery.commandAvailability("/clear", map);
     expect(all).toEqual({ available: 3, total: 3, missingFrom: [] });

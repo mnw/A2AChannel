@@ -835,15 +835,23 @@ fn open_in_editor(agent: String) -> Result<String, String> {
     Ok(cwd.to_string_lossy().to_string())
 }
 
-// Discover slash commands available to a single agent: built-ins are not
-// included here (the UI prepends those). Scans the agent's live cwd
-// `.claude/commands/*.md` and `.claude/skills/*/SKILL.md`, plus the personal
-// `~/.claude/commands/*.md` and `~/.claude/skills/*/SKILL.md`. Returns
-// command names without the leading `/`. Best-effort: any error reading a
-// directory yields an empty contribution rather than propagating.
+#[derive(Serialize, Clone)]
+struct SlashCommandEntry {
+    name: String,
+    description: String,
+}
+
+// Discover slash commands available to a single agent. Scans the agent's
+// live cwd `.claude/commands/*.md` and `.claude/skills/*/SKILL.md`, plus the
+// personal `~/.claude/commands/*.md` and `~/.claude/skills/*/SKILL.md`.
+// Returns `{name, description}` per command — name without the leading `/`,
+// description parsed from the YAML frontmatter `description:` field if
+// present (empty string otherwise). Built-ins are NOT included here; the UI
+// seeds those from a hardcoded list. Best-effort: any directory error
+// yields an empty contribution rather than propagating.
 #[tauri::command]
-fn slash_discover_for_agent(agent: String) -> Vec<String> {
-    let mut out: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+fn slash_discover_for_agent(agent: String) -> Vec<SlashCommandEntry> {
+    let mut out: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     let cwd = pty::pane_current_path(&agent).ok();
     let home = dirs::home_dir();
     let roots: Vec<PathBuf> = [cwd.as_deref(), home.as_deref()]
@@ -855,10 +863,12 @@ fn slash_discover_for_agent(agent: String) -> Vec<String> {
         scan_commands_dir(&root.join("commands"), &mut out);
         scan_skills_dir(&root.join("skills"), &mut out);
     }
-    out.into_iter().collect()
+    out.into_iter()
+        .map(|(name, description)| SlashCommandEntry { name, description })
+        .collect()
 }
 
-fn scan_commands_dir(dir: &Path, out: &mut std::collections::BTreeSet<String>) {
+fn scan_commands_dir(dir: &Path, out: &mut std::collections::BTreeMap<String, String>) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -868,13 +878,16 @@ fn scan_commands_dir(dir: &Path, out: &mut std::collections::BTreeSet<String>) {
         if path.extension().and_then(|s| s.to_str()) != Some("md") {
             continue;
         }
-        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-            out.insert(stem.to_string());
-        }
+        let stem = match path.file_stem().and_then(|s| s.to_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let desc = read_frontmatter_description(&path).unwrap_or_default();
+        out.entry(stem).or_insert(desc);
     }
 }
 
-fn scan_skills_dir(dir: &Path, out: &mut std::collections::BTreeSet<String>) {
+fn scan_skills_dir(dir: &Path, out: &mut std::collections::BTreeMap<String, String>) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -884,13 +897,44 @@ fn scan_skills_dir(dir: &Path, out: &mut std::collections::BTreeSet<String>) {
         if !path.is_dir() {
             continue;
         }
-        if !path.join("SKILL.md").is_file() {
+        let skill_md = path.join("SKILL.md");
+        if !skill_md.is_file() {
             continue;
         }
-        if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-            out.insert(name.to_string());
+        let name = match path.file_name().and_then(|s| s.to_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let desc = read_frontmatter_description(&skill_md).unwrap_or_default();
+        out.entry(name).or_insert(desc);
+    }
+}
+
+// Parse a small YAML frontmatter block at the head of a markdown file and
+// return the value of the `description:` key. Tolerant — only handles the
+// shape Claude Code uses (single-line value, optional quotes). Returns None
+// if the file has no frontmatter or no `description` line.
+fn read_frontmatter_description(path: &Path) -> Option<String> {
+    let raw = fs::read_to_string(path).ok()?;
+    let mut lines = raw.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            break;
+        }
+        if let Some(rest) = trimmed.strip_prefix("description:") {
+            let v = rest.trim().trim_matches(|c: char| c == '"' || c == '\'');
+            if !v.is_empty() {
+                // Truncate to ~120 chars so the picker stays compact.
+                let truncated: String = v.chars().take(120).collect();
+                return Some(truncated);
+            }
         }
     }
+    None
 }
 
 #[tauri::command]
