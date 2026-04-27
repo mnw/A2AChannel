@@ -79,6 +79,40 @@ reasonModalInput?.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); reasonModalOk.click(); }
 });
 
+// ── Confirm modal — promoted from terminal.js so the slash-send path (and
+// future cross-module code) can use it without depending on terminal.js's
+// IIFE scope. terminal.js wires its own kill-session confirms through this
+// shared helper too.
+const _confirmModal   = document.getElementById('confirm-modal');
+const _confirmTitle   = document.getElementById('confirm-title');
+const _confirmPrompt  = document.getElementById('confirm-prompt');
+const _confirmOk      = document.getElementById('confirm-ok');
+const _confirmCancel  = document.getElementById('confirm-cancel');
+let _confirmResolve = null;
+function askConfirm(title, prompt) {
+  return new Promise((resolve) => {
+    _confirmResolve = resolve;
+    if (_confirmTitle)  _confirmTitle.textContent  = title;
+    if (_confirmPrompt) _confirmPrompt.textContent = prompt;
+    _confirmModal?.classList.add('open');
+    setTimeout(() => _confirmOk?.focus(), 0);
+  });
+}
+function _closeConfirm(result) {
+  _confirmModal?.classList.remove('open');
+  const r = _confirmResolve;
+  _confirmResolve = null;
+  if (r) r(result);
+}
+_confirmOk?.addEventListener('click',     () => _closeConfirm(true));
+_confirmCancel?.addEventListener('click', () => _closeConfirm(false));
+_confirmModal?.addEventListener('click', (e) => {
+  if (e.target === _confirmModal) _closeConfirm(false);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && _confirmModal?.classList.contains('open')) _closeConfirm(false);
+});
+
 // ── Element handles. DOMContentLoaded already fired by the time this script
 // runs (it's a classic <script>, not deferred / async). Stable for the app's
 // lifetime — the DOM is built once at HTML parse.

@@ -133,6 +133,37 @@
   border-radius: var(--radius-sm);
   color: var(--code-text);
 }
+/* Fenced code blocks (md-code wrapper around <pre><code>). When a message
+   contains a fenced code block, the bubble grows to span the full width of
+   the messages column (minus the avatar gutter); the code block itself
+   has no frame of its own — the bubble's existing 1px border is the only
+   frame, and the code area sits flush inside it. */
+.msg-body:has(pre.md-code) {
+  width: 100%;
+  max-width: 100%;
+  padding: var(--sp-6) var(--sp-8);
+}
+.msg-body pre.md-code {
+  margin: 0;
+  padding: var(--sp-2) 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  overflow-x: auto;
+  max-width: 100%;
+}
+.msg-body pre.md-code code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  white-space: pre;
+  display: block;
+  font-size: var(--fs-base);
+  line-height: 1.5;
+}
+.msg-body code.md-inline {
+  font-size: var(--fs-base);
+}
 
 /* Self (human) messages — right-aligned with orange-tinted bubble
    whose tail sits on the upper-right corner. */
