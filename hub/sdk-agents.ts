@@ -30,6 +30,8 @@
 
 import { query, createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { readFileSync, statSync } from "node:fs";
+import { dirname, resolve as pathResolve } from "node:path";
 import type { Database } from "bun:sqlite";
 
 import type { Entry } from "./core/types";
@@ -66,6 +68,59 @@ export type SdkOrchestratorDeps = {
 
 const SDK_AGENT_TYPE = "sdk" as const;
 const sdkAgents = new Map<string, SdkAgent>();
+
+// The user's claude_path config often points at a bash wrapper script
+// (the official installer creates `~/.claude/local/claude` as a shell
+// script that execs the real Mach-O binary at
+// `~/.claude/local/node_modules/@anthropic-ai/claude-code/bin/claude.exe`).
+// The SDK expects pathToClaudeCodeExecutable to be the actual binary or
+// a JS entrypoint — bash wrappers have been observed to fail. Resolve
+// through the wrapper to the underlying binary at hub startup. Cached
+// so we do this once per process.
+let _resolvedClaudePath: string | null | undefined;
+function resolveClaudeBinaryPath(rawPath: string): string | null {
+  if (_resolvedClaudePath !== undefined) return _resolvedClaudePath;
+  if (!rawPath) {
+    _resolvedClaudePath = null;
+    return null;
+  }
+  try {
+    const stat = statSync(rawPath);
+    if (!stat.isFile()) {
+      _resolvedClaudePath = rawPath;
+      return rawPath;
+    }
+    // Try to detect shell-script wrappers and follow their exec target.
+    // Read first 4 KiB; bash wrappers are typically a few lines.
+    const head = readFileSync(rawPath, { encoding: "utf-8" }).slice(0, 4096);
+    if (!head.startsWith("#!")) {
+      _resolvedClaudePath = rawPath;
+      return rawPath;
+    }
+    // Look for `exec "/path/to/binary"` or `exec /path/to/binary`.
+    const execMatch = head.match(/^\s*exec\s+(?:"([^"]+)"|'([^']+)'|(\S+))/m);
+    const target = execMatch?.[1] ?? execMatch?.[2] ?? execMatch?.[3];
+    if (target) {
+      const abs = target.startsWith("/")
+        ? target
+        : pathResolve(dirname(rawPath), target);
+      try {
+        if (statSync(abs).isFile()) {
+          console.log(`[sdk] resolved claude wrapper: ${rawPath} → ${abs}`);
+          _resolvedClaudePath = abs;
+          return abs;
+        }
+      } catch { /* fall through */ }
+    }
+    // Wrapper but couldn't parse exec target — fall back to wrapper itself.
+    _resolvedClaudePath = rawPath;
+    return rawPath;
+  } catch (e) {
+    console.warn(`[sdk] resolveClaudeBinaryPath('${rawPath}') failed:`, e);
+    _resolvedClaudePath = null;
+    return null;
+  }
+}
 
 export function isSdkAgent(name: string): boolean {
   return sdkAgents.has(name);
@@ -164,6 +219,8 @@ async function runOneTurn(
       env.ANTHROPIC_API_KEY = deps.anthropicApiKey;
     }
 
+    const resolvedClaudePath = resolveClaudeBinaryPath(deps.claudePath);
+    console.log(`[sdk] runOneTurn ${agent.name} cwd=${agent.cwd} raw=${JSON.stringify(deps.claudePath)} resolved=${JSON.stringify(resolvedClaudePath)} sessionId=${agent.sessionId ?? "<new>"}`);
     const queryOpts: Parameters<typeof query>[0]["options"] = {
       cwd: agent.cwd,
       env,
@@ -171,7 +228,7 @@ async function runOneTurn(
       // Spike v1: bypassPermissions to keep the loop simple. Wire to UI
       // permission cards via canUseTool callback in a follow-up.
       permissionMode: "bypassPermissions",
-      pathToClaudeCodeExecutable: deps.claudePath,
+      pathToClaudeCodeExecutable: resolvedClaudePath || undefined,
       ...(agent.sessionId ? { resume: agent.sessionId } : {}),
     };
 
