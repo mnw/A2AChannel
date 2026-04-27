@@ -755,7 +755,14 @@ fn reload_settings(
         .env("A2A_ATTACHMENTS_DIR", attachments_dir.to_string_lossy().to_string())
         .env("A2A_LEDGER_DB", ledger_path.to_string_lossy().to_string())
         .env("A2A_HUMAN_NAME", &human_name)
-        .env("A2A_ALLOWED_EXTENSIONS", extensions.join(","));
+        .env("A2A_ALLOWED_EXTENSIONS", extensions.join(","))
+        // SDK-pivot: hub-bin needs the resolved claude binary path (so the
+        // SDK-driven sdk-agents can invoke the same claude install the
+        // tmux flow uses) and the optional API key (for explicit API-key
+        // billing; absent means SDK uses on-disk Max auth from the bundled
+        // claude binary).
+        .env("A2A_CLAUDE_PATH", resolve_claude_path().to_string_lossy().to_string())
+        .envs(resolve_anthropic_api_key().map(|k| ("ANTHROPIC_API_KEY".to_string(), k)));
     let (rx, child) = cmd.spawn().map_err(|e| format!("spawn a2a-bin: {e}"))?;
 
     let new_info = HubInfo {

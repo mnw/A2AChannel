@@ -59,6 +59,14 @@ import {
 } from "./kinds/handoff";
 import { permissionKind } from "./kinds/permission";
 import {
+  registerSdkAgent,
+  unregisterSdkAgent,
+  isSdkAgent,
+  listSdkAgents,
+  dispatchToSdkAgent,
+  type SdkOrchestratorDeps,
+} from "./sdk-agents";
+import {
   AGENT_NAME_RE,
   RESERVED_NAMES,
   randomId,
@@ -362,11 +370,81 @@ function agentEntry(entry: Entry): Entry {
 }
 
 function enqueueTo(name: string, entry: Entry): void {
+  // SDK-pivot agents intercept here: their PTY/channel-bin model is replaced
+  // with in-process Anthropic Agent SDK queries. Instead of pushing the
+  // entry into a queue (which no sidecar would tail), dispatch the message
+  // text as a new turn against the agent's persistent session.
+  if (isSdkAgent(name)) {
+    const text = (entry.text ?? "").toString();
+    if (text) {
+      dispatchToSdkAgent(name, text, sdkDeps).catch((err) => {
+        console.error(`[sdk] dispatch to ${name} failed:`, err);
+      });
+    }
+    return;
+  }
   // Permanent members have no channel-bin draining their queue; they read via /stream instead.
   if (permanentAgents.has(name)) return;
   const q = agentQueues.get(name);
   if (!q) return; // agent was removed between target resolution and dispatch
   q.push(entry);
+}
+
+// SDK-pivot orchestrator dependencies. Assembled lazily via a getter so the
+// db/auth callbacks can reference module-level let-bindings that may be
+// set after this declaration. The orchestrator only fires after the human
+// triggers it, so by then everything's in place.
+const sdkDeps: SdkOrchestratorDeps = {
+  get db() {
+    if (!ledgerDb) throw new Error("ledger not open");
+    return ledgerDb;
+  },
+  agents,
+  broadcastUI,
+  agentEntry,
+  claudePath: process.env.A2A_CLAUDE_PATH || "",
+  anthropicApiKey: process.env.ANTHROPIC_API_KEY || undefined,
+} as SdkOrchestratorDeps;
+
+// SDK-pivot HTTP endpoints. All gated by the same bearer auth as other
+// mutating routes — the Tauri shell calls them after the human picks
+// "+ sdk agent" in the UI and supplies name + cwd + room.
+async function handleSdkAgentRegister(req: Request): Promise<Response> {
+  const body = (await req.json().catch(() => ({}))) as {
+    name?: string;
+    cwd?: string;
+    room?: string;
+  };
+  const name = (body.name ?? "").trim();
+  const cwd = (body.cwd ?? "").trim();
+  const room = (body.room ?? "").trim() || DEFAULT_ROOM;
+  if (!name) return json({ error: "name required" }, { status: 400 });
+  if (!cwd) return json({ error: "cwd required" }, { status: 400 });
+  try {
+    const agent = registerSdkAgent({ name, cwd, room }, sdkDeps);
+    broadcastRoster();
+    broadcastPresence();
+    return json({ ok: true, agent });
+  } catch (e) {
+    return json(
+      { error: (e as Error)?.message ?? "register failed" },
+      { status: 400 },
+    );
+  }
+}
+async function handleSdkAgentUnregister(req: Request): Promise<Response> {
+  const body = (await req.json().catch(() => ({}))) as { name?: string };
+  const name = (body.name ?? "").trim();
+  if (!name) return json({ error: "name required" }, { status: 400 });
+  const removed = unregisterSdkAgent(name, sdkDeps);
+  if (removed) {
+    broadcastRoster();
+    broadcastPresence();
+  }
+  return json({ ok: removed });
+}
+function handleSdkAgentList(): Response {
+  return json({ agents: listSdkAgents() });
 }
 
 // corsHeaders, json, ALLOWED_ORIGINS, ctEquals — see core/auth.ts
@@ -702,6 +780,21 @@ const server = Bun.serve({
       if (req.method === "POST" && pathname === "/remove") {
         const authFail = requireAuth(req);
         return authFail ?? (await handleRemove(req));
+      }
+      // SDK-pivot endpoints (spike v1). Add/remove/list sdk-agents — the
+      // parallel agent type that runs Anthropic Agent SDK queries instead
+      // of via tmux+channel-bin.
+      if (req.method === "POST" && pathname === "/sdk/agents") {
+        const authFail = requireAuth(req);
+        return authFail ?? (await handleSdkAgentRegister(req));
+      }
+      if (req.method === "DELETE" && pathname === "/sdk/agents") {
+        const authFail = requireAuth(req);
+        return authFail ?? (await handleSdkAgentUnregister(req));
+      }
+      if (req.method === "GET" && pathname === "/sdk/agents") {
+        const authFail = requireReadAuth(req, url);
+        return authFail ?? handleSdkAgentList();
       }
       if (req.method === "POST" && pathname === "/upload") {
         const authFail = requireAuth(req);
