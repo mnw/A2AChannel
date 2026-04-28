@@ -75,7 +75,7 @@ footer {
   transition: max-height var(--motion-base) ease, margin-top var(--motion-base) ease, opacity var(--motion-base) ease;
 }
 .chat-col footer:focus-within .hint {
-  max-height: var(--size-32);
+  max-height: var(--size-64);
   margin-top: var(--sp-8);
   opacity: 1;
 }
