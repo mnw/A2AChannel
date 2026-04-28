@@ -43,6 +43,7 @@ import {
   listOptedInRooms,
 } from "./core/ledger";
 import * as transcript from "./core/transcript";
+import * as permissionSnapshots from "./core/permission-snapshots";
 import type {
   Scope,
   Agent as AgentType,

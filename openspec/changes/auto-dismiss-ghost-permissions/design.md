@@ -29,6 +29,51 @@ This change adds a third scraper for permission-dialog presence/absence detectio
 
 ## Decisions
 
+### D0. `pty_await_pattern` as a reusable Rust-side primitive
+
+Inspired by `terminal-control-mcp`'s `await_output`. New Tauri commands in `pty.rs`:
+
+```rust
+pub fn pty_await_pattern(
+    agent: String,
+    pattern: String,         // regex
+    timeout_ms: Option<u32>,
+    poll_interval_ms: Option<u32>,
+) -> Result<AwaitResult, String>;
+
+pub fn pty_await_pattern_absent(
+    agent: String,
+    pattern: String,
+    timeout_ms: Option<u32>,
+    confirmations: Option<u32>,    // consecutive absent snapshots
+    poll_interval_ms: Option<u32>,
+) -> Result<AwaitResult, String>;
+
+pub struct AwaitResult {
+    matched: bool,                 // true = appeared (or absent N times); false = timeout
+    elapsed_ms: u64,
+    last_snapshot: String,         // the pane bytes at the moment the result fired
+    matched_text: Option<String>,  // for the positive-match form, the regex match span
+}
+```
+
+Both call `tmux capture-pane -p -t <agent>` per tick. Defaults: `timeout_ms = 60_000`, `poll_interval_ms = 100`, `confirmations = 4`.
+
+**Why factor this out, not inline it in the scraper:**
+
+- The scraper's two waits ("see dialog markers", "see them gone for N ticks") are the exact use case; expressed as primitives, the state machine is one-liner-per-state instead of an interval-callback dance.
+- Other features want the same primitive: a future "agent finished its task" detector waits for the prompt-frame to reappear; a future "wait for compaction to complete" detector watches for `/compact` finishing. We've already ad-hoc'd similar logic three times in `pty_capture_turn` (alt-screen exit, idle-prompt, quiescence). Factoring out the primitive lets the next feature compose, not copy.
+- It mirrors a pattern already validated in production by `terminal-control-mcp`. We're not inventing a new abstraction; we're adopting one.
+- Keeps regex compilation in Rust (cheaper, leverages the `regex` crate when added) rather than JS-level loops calling `pty_tap_read` repeatedly.
+
+**What stays in JS, not Rust:**
+
+- The state machine itself (`PENDING → SEEN_DIALOG → GHOST_WATCH → AUTO_DISMISSED`). Stays in `hub/core/scraper.ts` because it touches the kind module's terminal-state transition path.
+- The marker construction (combining the event payload's tool name with the disjunction of selector patterns into a single regex). Stays JS-side because it's keyed off broadcast events.
+- Snapshot file write + retention pruning. Stays JS-side for parallelism with the existing transcript module.
+
+**Cost of adding the primitive:** one new dependency on the `regex` crate (≈ 100 KB compiled), ~80 LoC of Rust, two new Tauri commands. Pays back the moment a second consumer lands.
+
 ### D1. PermissionResolver interface as the abstraction boundary
 
 A single TypeScript interface separates "did the dialog get resolved outside chat?" from "how did we detect that?":

@@ -71,6 +71,15 @@ struct AppConfig {
     // as the per-agent context-replay budget.
     #[serde(default)]
     chat_history_limit: Option<u32>,
+    #[serde(default)]
+    permission_scraper: Option<PermissionScraperConfig>,
+}
+
+#[derive(Deserialize, Serialize, Default, Clone)]
+struct PermissionScraperConfig {
+    // Off by default; opt-in only because auto-dismissal is destructive.
+    #[serde(default)]
+    enabled: Option<bool>,
 }
 
 #[derive(Serialize, Clone, Default)]
@@ -141,6 +150,13 @@ fn resolve_chat_history_limit() -> u32 {
         .chat_history_limit
         .unwrap_or(CHAT_HISTORY_LIMIT_DEFAULT);
     raw.clamp(CHAT_HISTORY_LIMIT_MIN, CHAT_HISTORY_LIMIT_MAX)
+}
+
+fn resolve_permission_scraper_enabled() -> bool {
+    load_config()
+        .permission_scraper
+        .and_then(|p| p.enabled)
+        .unwrap_or(false)
 }
 
 fn target_triple() -> String {
@@ -409,6 +425,10 @@ fn resolve_attachments_dir_and_seed(human_name: &str, extensions: &[String]) -> 
             .chat_history_limit
             .map(|n| n.clamp(CHAT_HISTORY_LIMIT_MIN, CHAT_HISTORY_LIMIT_MAX))
             .unwrap_or(CHAT_HISTORY_LIMIT_DEFAULT);
+        let seed_scraper_enabled = legacy
+            .permission_scraper
+            .and_then(|p| p.enabled)
+            .unwrap_or(false);
 
         let yaml = render_seed_yaml(
             seed_human_name,
@@ -421,6 +441,7 @@ fn resolve_attachments_dir_and_seed(human_name: &str, extensions: &[String]) -> 
             &seed_fonts,
             &seed_editor,
             seed_chat_history_limit,
+            seed_scraper_enabled,
         );
 
         if let Err(e) = fs::create_dir_all(cfg_path.parent().unwrap_or(&PathBuf::from("/tmp"))) {
@@ -448,6 +469,7 @@ fn render_seed_yaml(
     fonts: &UiFonts,
     editor: &str,
     chat_history_limit: u32,
+    scraper_enabled: bool,
 ) -> String {
     let attachments_line = if attachments_dir.is_empty() {
         "attachments_dir: null".to_string()
@@ -517,11 +539,23 @@ fn render_seed_yaml(
          # are reloaded from JSONL into memory and replayed to reconnecting\n\
          # agents (token cost in their context window). Default 1000. Clamped\n\
          # to [10, 100000].\n\
-         chat_history_limit: {chat_history_limit}\n",
+         chat_history_limit: {chat_history_limit}\n\
+         \n\
+         # Auto-dismiss \"ghost\" permission cards left behind when the human\n\
+         # resolves a dialog directly in the agent's xterm. Default OFF — opt\n\
+         # in only after you've used the manual × button enough to want\n\
+         # automation. Fail-closed by design: dialogs that never appear in the\n\
+         # pane are not auto-dismissed; manual × always works as fallback.\n\
+         # Captured pane snapshots (for forensic review of any wrong\n\
+         # auto-dismissal) live at ~/Library/Application Support/A2AChannel/\n\
+         # permission-snapshots/<id>.txt, mode 0600. They may contain secrets.\n\
+         permission_scraper:\n  \
+         enabled: {scraper_enabled}\n",
         ui                 = fonts.ui,
         mono               = fonts.mono,
         editor             = editor,
         chat_history_limit = chat_history_limit,
+        scraper_enabled    = if scraper_enabled { "true" } else { "false" },
     )
 }
 
@@ -724,6 +758,11 @@ fn get_human_name(state: State<HubState>) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn get_permission_scraper_enabled() -> bool {
+    resolve_permission_scraper_enabled()
+}
+
+#[tauri::command]
 fn open_config_file() -> Result<(), String> {
     let path = config_file();
     if !path.exists() {
@@ -772,6 +811,7 @@ fn reload_settings(
     let attachments_dir = resolve_attachments_dir_and_seed(&human_name, &extensions);
     let ledger_path = ledger_file();
     let chat_history_limit = resolve_chat_history_limit();
+    let scraper_enabled = resolve_permission_scraper_enabled();
 
     let port = pick_free_port()?;
     let url = format!("http://127.0.0.1:{port}");
@@ -803,7 +843,8 @@ fn reload_settings(
         .env("A2A_LEDGER_DB", ledger_path.to_string_lossy().to_string())
         .env("A2A_HUMAN_NAME", &human_name)
         .env("A2A_ALLOWED_EXTENSIONS", extensions.join(","))
-        .env("A2A_CHAT_HISTORY_LIMIT", chat_history_limit.to_string());
+        .env("A2A_CHAT_HISTORY_LIMIT", chat_history_limit.to_string())
+        .env("A2A_PERMISSION_SCRAPER_ENABLED", if scraper_enabled { "1" } else { "0" });
     let (rx, child) = cmd.spawn().map_err(|e| format!("spawn a2a-bin: {e}"))?;
 
     let new_info = HubInfo {
@@ -1027,6 +1068,7 @@ pub fn run() {
             get_mcp_template,
             slash_discover_for_agent,
             get_human_name,
+            get_permission_scraper_enabled,
             get_ui_settings,
             open_config_file,
             open_global_mcp_config,
@@ -1043,7 +1085,9 @@ pub fn run() {
             pty::pty_capture_turn,
             pty::pty_read_capture,
             pty::pty_heal_geometry,
-            pty::pty_tap_read
+            pty::pty_tap_read,
+            pty::pty_await_pattern,
+            pty::pty_await_pattern_absent
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -1082,6 +1126,9 @@ pub fn run() {
             let chat_history_limit = resolve_chat_history_limit();
             println!("[setup] chat history limit: {chat_history_limit}");
 
+            let scraper_enabled = resolve_permission_scraper_enabled();
+            println!("[setup] permission scraper: {}", if scraper_enabled { "enabled" } else { "disabled" });
+
             let ledger_path = ledger_file();
             println!("[setup] ledger: {}", ledger_path.display());
 
@@ -1096,7 +1143,8 @@ pub fn run() {
                 .env("A2A_LEDGER_DB", ledger_path.to_string_lossy().to_string())
                 .env("A2A_HUMAN_NAME", &human_name)
                 .env("A2A_ALLOWED_EXTENSIONS", extensions.join(","))
-                .env("A2A_CHAT_HISTORY_LIMIT", chat_history_limit.to_string());
+                .env("A2A_CHAT_HISTORY_LIMIT", chat_history_limit.to_string())
+                .env("A2A_PERMISSION_SCRAPER_ENABLED", if scraper_enabled { "1" } else { "0" });
 
             let (rx, child) = cmd.spawn().map_err(|e| format!("spawn a2a-bin: {e}"))?;
 

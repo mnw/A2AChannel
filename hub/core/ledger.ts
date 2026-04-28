@@ -4,7 +4,7 @@ import { Database } from "bun:sqlite";
 import { chmodSync } from "node:fs";
 import { randomId } from "./ids";
 
-export const LEDGER_SCHEMA_VERSION = 8;
+export const LEDGER_SCHEMA_VERSION = 9;
 
 export type LedgerOpenResult =
   | { db: Database; enabled: true }
@@ -259,6 +259,17 @@ export function migrateLedger(db: Database): void {
       db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '8')");
     })();
     console.log(`[ledger] applied migration v8`);
+  }
+  if (current < 9) {
+    // v9: scraper-based auto-dismissal columns on permissions.
+    db.transaction(() => {
+      db.exec(`
+        ALTER TABLE permissions ADD COLUMN snapshot_path TEXT;
+        ALTER TABLE permissions ADD COLUMN dismissed_by_scraper INTEGER NOT NULL DEFAULT 0;
+      `);
+      db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '9')");
+    })();
+    console.log(`[ledger] applied migration v9`);
   }
 }
 

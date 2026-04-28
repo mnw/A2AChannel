@@ -827,6 +827,110 @@ pub fn pty_heal_geometry(agent: String) -> Result<(), String> {
     Ok(())
 }
 
+// =============================================================================
+// pty_await_pattern — generic regex-poll-with-timeout primitive
+// =============================================================================
+//
+// Mirrors `terminal-control-mcp`'s `await_output` shape. First consumer is the
+// permission-scraper; future "wait for build to finish" / "detect prompt
+// return" detectors compose this rather than carrying their own poll loops.
+
+const AWAIT_DEFAULT_TIMEOUT_MS: u32 = 60_000;
+const AWAIT_DEFAULT_POLL_MS: u32 = 100;
+const AWAIT_DEFAULT_CONFIRMATIONS: u32 = 4;
+
+#[derive(Serialize, Clone)]
+pub struct AwaitResult {
+    matched: bool,
+    elapsed_ms: u64,
+    last_snapshot: String,
+    matched_text: Option<String>,
+}
+
+fn capture_pane(agent: &str) -> String {
+    tmux_run(&["capture-pane", "-p", "-t", agent]).unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn pty_await_pattern(
+    agent: String,
+    pattern: String,
+    timeout_ms: Option<u32>,
+    poll_interval_ms: Option<u32>,
+) -> Result<AwaitResult, String> {
+    if !valid_agent_name(&agent) {
+        return Err(format!("invalid agent: {agent}"));
+    }
+    let re = regex::Regex::new(&pattern).map_err(|e| format!("regex compile: {e}"))?;
+    let timeout = timeout_ms.unwrap_or(AWAIT_DEFAULT_TIMEOUT_MS) as u64;
+    let poll = poll_interval_ms.unwrap_or(AWAIT_DEFAULT_POLL_MS).max(20) as u64;
+    let started = std::time::Instant::now();
+    let deadline = started + std::time::Duration::from_millis(timeout);
+    let mut last_snapshot = String::new();
+    while std::time::Instant::now() < deadline {
+        last_snapshot = capture_pane(&agent);
+        if let Some(m) = re.find(&last_snapshot) {
+            return Ok(AwaitResult {
+                matched: true,
+                elapsed_ms: started.elapsed().as_millis() as u64,
+                matched_text: Some(m.as_str().to_string()),
+                last_snapshot,
+            });
+        }
+        std::thread::sleep(std::time::Duration::from_millis(poll));
+    }
+    Ok(AwaitResult {
+        matched: false,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+        matched_text: None,
+        last_snapshot,
+    })
+}
+
+#[tauri::command]
+pub fn pty_await_pattern_absent(
+    agent: String,
+    pattern: String,
+    timeout_ms: Option<u32>,
+    confirmations: Option<u32>,
+    poll_interval_ms: Option<u32>,
+) -> Result<AwaitResult, String> {
+    if !valid_agent_name(&agent) {
+        return Err(format!("invalid agent: {agent}"));
+    }
+    let re = regex::Regex::new(&pattern).map_err(|e| format!("regex compile: {e}"))?;
+    let timeout = timeout_ms.unwrap_or(AWAIT_DEFAULT_TIMEOUT_MS) as u64;
+    let needed = confirmations.unwrap_or(AWAIT_DEFAULT_CONFIRMATIONS).max(1);
+    let poll = poll_interval_ms.unwrap_or(AWAIT_DEFAULT_POLL_MS).max(20) as u64;
+    let started = std::time::Instant::now();
+    let deadline = started + std::time::Duration::from_millis(timeout);
+    let mut absent_count: u32 = 0;
+    let mut last_snapshot = String::new();
+    while std::time::Instant::now() < deadline {
+        last_snapshot = capture_pane(&agent);
+        if re.is_match(&last_snapshot) {
+            absent_count = 0;
+        } else {
+            absent_count += 1;
+            if absent_count >= needed {
+                return Ok(AwaitResult {
+                    matched: true,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    matched_text: None,
+                    last_snapshot,
+                });
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(poll));
+    }
+    Ok(AwaitResult {
+        matched: false,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+        matched_text: None,
+        last_snapshot,
+    })
+}
+
 // `capture-pane -p` returns FULL current state (replaced a pipe-pane tap that missed the footer redraw).
 #[tauri::command]
 pub fn pty_tap_read(agent: String, duration_ms: Option<u32>) -> Result<String, String> {

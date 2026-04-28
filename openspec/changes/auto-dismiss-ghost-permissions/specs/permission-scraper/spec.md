@@ -19,6 +19,45 @@ The system SHALL run the permission scraper only when `permission_scraper.enable
 - **THEN** the hub starts with the scraper resolver active
 - **AND** subsequent `permission.new` events register a watcher
 
+### Requirement: `pty_await_pattern` Primitive — Positive Match
+
+The system SHALL expose a Tauri command `pty_await_pattern(agent, pattern, timeout_ms?, poll_interval_ms?)` returning `{ matched: bool, elapsed_ms, last_snapshot, matched_text? }`. The command SHALL poll `tmux capture-pane -p -t <agent>` at `poll_interval_ms` (default 100) intervals, applying the supplied regex; SHALL resolve as soon as the pattern matches; SHALL return `matched=false` and the last snapshot on `timeout_ms` expiry. Regex compilation failure SHALL return an error result.
+
+#### Scenario: Pattern matches before timeout
+
+- **WHEN** the caller invokes `pty_await_pattern` for an agent whose pane content matches the pattern within the timeout
+- **THEN** the result has `matched=true`, `matched_text` set to the regex's match span, and `elapsed_ms` reflecting the time to first match
+
+#### Scenario: Timeout without match
+
+- **WHEN** the timeout elapses without the pattern matching
+- **THEN** the result has `matched=false`, `last_snapshot` set to the most recent capture, and `elapsed_ms` equal to the timeout
+
+#### Scenario: Regex compile failure
+
+- **WHEN** the caller supplies an invalid regex
+- **THEN** the command returns an error result before any polling begins
+
+### Requirement: `pty_await_pattern_absent` Primitive — Inverse Match
+
+The system SHALL expose a Tauri command `pty_await_pattern_absent(agent, pattern, timeout_ms?, confirmations?, poll_interval_ms?)` with the same return shape. The command SHALL resolve `matched=true` when the pattern has been ABSENT for `confirmations` (default 4) consecutive snapshots. The absence counter SHALL reset to zero whenever the pattern reappears mid-watch.
+
+#### Scenario: Confirmed absence resolves matched=true
+
+- **WHEN** the pattern was visible at watch start, then disappears for 4 consecutive snapshots
+- **THEN** the result has `matched=true` (= confirmed-absent) and `last_snapshot` is one of the absent snapshots
+
+#### Scenario: Reappearance resets the counter
+
+- **WHEN** the pattern disappears for 3 snapshots, then reappears in snapshot 4
+- **AND** then disappears again for 4 more consecutive snapshots
+- **THEN** the result fires after that second four-in-a-row absent run, NOT after the original three
+
+#### Scenario: Outer timeout expires
+
+- **WHEN** the timeout expires while the absence counter has not reached confirmations
+- **THEN** the result has `matched=false`
+
 ### Requirement: PermissionResolver Interface
 
 The system SHALL define a `PermissionResolver` interface with `watch(id, agent, room)`, `unwatch(id)`, and `onResolved(id, verdict, evidence)` callback. `ScraperResolver` SHALL be the only implementation in this change. A future `ChannelResolver` MAY be added without changing the interface or its consumers.
