@@ -88,6 +88,12 @@
   <button type="button" class="nutshell-edit-btn" id="nutshell-edit-btn" title="Propose a nutshell edit">Edit</button>
 </div>
 
+<div class="room-persistence" id="room-persistence" style="display:none;">
+  <label class="rp-toggle"><input type="checkbox" id="rp-toggle-input"> Persist chat transcript</label>
+  <div class="rp-meta" id="rp-meta"></div>
+  <button type="button" class="rp-clear-btn" id="rp-clear-btn" style="display:none;" title="Delete every transcript file for this room">Clear transcript</button>
+</div>
+
 <div class="nutshell-editor" id="nutshell-editor">
   <div class="box">
     <h2>Propose nutshell edit</h2>
@@ -279,6 +285,7 @@
 <script src="features/rooms.js"></script>
 <script src="features/roster.js"></script>
 <script src="features/nutshell.js"></script>
+<script src="features/room-persistence.js"></script>
 <script src="features/mentions.js"></script>
 <script src="features/emoji.js"></script>
 <script src="features/attachments.js"></script>

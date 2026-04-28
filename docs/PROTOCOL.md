@@ -740,3 +740,22 @@ The embedded terminal pane introduced in v0.7 is **not part of this protocol**. 
 3. A user who prefers their own terminal never loses access to any coordination feature.
 
 If a future release needs to coordinate claude sessions programmatically (e.g., "restart this agent"), the right protocol shape is a new message kind the agent acts on, not a pane-specific command. v0.8+ scope.
+
+---
+
+# Room transcript persistence (v0.10) — opt-in JSONL
+
+Per-room durable chat history. Off by default; flipped on per room via the settings route. Lives at `~/Library/Application Support/A2AChannel/transcripts/<hash8>-<sanitized>.jsonl` (active) plus `<hash8>-<sanitized>.<6-digit-seq>.jsonl` (rotated chunks). Active file rotates at 10,000 lines; rotated chunks are preserved until `clear-transcript`.
+
+**Routes:**
+
+- `GET /rooms/:room/settings` — current opt-in flag plus active-file stats and chunk list. Read-auth.
+- `PUT /rooms/:room/settings` — body `{ "persist_transcript": boolean }`. Mutating-auth.
+- `GET /rooms/:room/transcripts` — `{ active: { path, lines, sizeBytes }, chunks: [{ seq, path, sizeBytes }], totalBytes }`. Read-auth.
+- `POST /rooms/:room/clear-transcript` — deletes active + every rotated chunk for the room, atomically filters chatLog. Mutating-auth.
+
+**Line schema (JSONL):** `{"v": 1, ...Entry}`. The `v` field is mandatory; readers tolerate higher versions by skipping with one warning per file. Truncated final lines (crash mid-write) are silently dropped; mid-file parse errors throw.
+
+**Hub restart hydration:** on startup, opted-in rooms have their **active chunk** tail-loaded into `chatLog` (rotated chunks are NOT loaded). Subsequent SSE replay on `/stream` covers the hydrated entries.
+
+**SQLite invariant:** `room_settings` (added in ledger schema v8) holds the opt-in flag only; rotation size is a code-level constant (`ROTATION_LINES = 10_000`). Kinds (`handoff`, `interrupt`, `permission`, `nutshell`) remain exclusively in SQLite — the JSONL never carries kind state, only chat entries.

@@ -232,7 +232,29 @@ Full protocol schemas, endpoints, and state machines: [`docs/PROTOCOL.md`](docs/
 
 - **macOS ARM64 only.** No Windows, Linux, or Intel Mac builds.
 - **Research-preview dependency.** Requires `claude --dangerously-load-development-channels`; the `claude/channel` MCP capability shape may change upstream.
-- **In-memory roster.** Agent names and presence reset on app restart. Handoffs/interrupts/nutshell persist (SQLite); chat log does not.
+- **In-memory roster.** Agent names and presence reset on app restart. Handoffs/interrupts/nutshell persist (SQLite); chat log persists only when a room opts in (see *Persistent transcripts* below).
+
+## Persistent transcripts (opt-in)
+
+Off by default. Per-room toggle in the room area shows a `Persist chat transcript` checkbox; flipping it on writes every subsequent chat entry to `~/Library/Application Support/A2AChannel/transcripts/<basename>.jsonl` (mode 0600, line-delimited JSON, `v: 1` schema).
+
+When the active file hits 10,000 lines it's renamed to `<basename>.000001.jsonl` and a fresh active file starts. Rotated chunks are preserved indefinitely — the only path that deletes transcript data is the `Clear transcript` button (which removes active + every chunk atomically).
+
+```
+~/Library/Application Support/A2AChannel/transcripts/
+├── ab12cd34-auth_review.jsonl              ← active, ≤ 10,000 lines
+├── ab12cd34-auth_review.000001.jsonl       ← rotated chunk
+└── ab12cd34-auth_review.000002.jsonl       ← rotated chunk
+```
+
+Each line: `{"v":1,"id":42,"from":"planner","to":"human","text":"...","ts":"...","room":"auth-review"}`. Grep, cat, scp, jq — standard text tooling works.
+
+On hub restart, the active chunk hydrates back into the live chat log so reconnecting clients see continuity. Rotated chunks are kept on disk as archive; access them directly when needed.
+
+**Caveats**
+
+- Anything pasted into chat (tokens, API keys, debug dumps) ends up on disk in plain text. There is no auto-redaction; opting in means accepting that trade.
+- Rotated chunks accumulate without bounds; a busy room over months can reach hundreds of MB. Move chunks out of the data dir periodically if you want capped history without losing data.
 
 ## License
 

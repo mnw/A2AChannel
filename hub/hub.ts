@@ -35,7 +35,14 @@ import {
 } from "./chat";
 import { createDispatcher } from "./core/dispatcher";
 import { insertEvent } from "./core/events";
-import { openLedger as openLedgerCore, LEDGER_SCHEMA_VERSION } from "./core/ledger";
+import {
+  openLedger as openLedgerCore,
+  LEDGER_SCHEMA_VERSION,
+  getRoomSettings,
+  setRoomSettings,
+  listOptedInRooms,
+} from "./core/ledger";
+import * as transcript from "./core/transcript";
 import type {
   Scope,
   Agent as AgentType,
@@ -153,6 +160,38 @@ function openLedger(): void {
 }
 
 openLedger();
+hydrateOptedInRooms();
+
+// On startup, replay each opted-in room's active JSONL chunk into chatLog so
+// SSE clients reconnecting after a hub restart see continuity. Rotated chunks
+// stay on disk as archive — only the active chunk feeds the in-memory cache.
+function hydrateOptedInRooms(): void {
+  if (!ledgerDb) return;
+  try {
+    transcript.init();
+  } catch (e) {
+    console.error("[transcript] init failed:", e);
+    return;
+  }
+  const rooms = listOptedInRooms(ledgerDb);
+  if (!rooms.length) return;
+  let total = 0;
+  for (const room of rooms) {
+    try {
+      const tail = transcript.tailActive(room, HISTORY_LIMIT);
+      for (const entry of tail) {
+        if (typeof entry.id !== "number") entry.id = ++entrySeq;
+        else if (entry.id > entrySeq) entrySeq = entry.id;
+        if (chatLog.length >= HISTORY_LIMIT) chatLog.shift();
+        chatLog.push(entry);
+      }
+      total += tail.length;
+    } catch (e) {
+      console.error(`[transcript] hydrate ${room} failed:`, e);
+    }
+  }
+  if (total) console.log(`[transcript] hydrated ${total} entries from ${rooms.length} room(s)`);
+}
 
 function expireHandoff(id: string): HandoffSnapshot | null {
   if (!ledgerDb) return null;
@@ -177,7 +216,23 @@ function broadcastUI(entry: Entry): void {
   entry.id = ++entrySeq;
   if (chatLog.length >= HISTORY_LIMIT) chatLog.shift();
   chatLog.push(entry);
+  persistEntry(entry);
   for (const q of uiSubscribers) q.push(entry);
+}
+
+// Write-through to opt-in JSONL transcript. Entries without a concrete room
+// (super-user broadcasts from human) are skipped — there's no room to file under.
+function persistEntry(entry: Entry): void {
+  if (!ledgerDb) return;
+  const room = typeof entry.room === "string" && entry.room ? entry.room : null;
+  if (!room) return;
+  const settings = getRoomSettings(ledgerDb, room);
+  if (!settings?.persist_transcript) return;
+  try {
+    transcript.appendEntry(room, entry);
+  } catch (e) {
+    console.error(`[transcript] append failed for ${room}:`, e);
+  }
 }
 
 // Scopes: broadcast | to-agents | ui-only | room. Permanent agents (human) skipped — they read /stream.
@@ -492,6 +547,60 @@ function handleGetNutshell(url: URL): Response {
   return json(readNutshell(room));
 }
 
+function handleGetRoomSettings(room: string): Response {
+  const guard = ledgerGuard();
+  if (guard) return guard;
+  const settings = getRoomSettings(ledgerDb!, room) ?? {
+    room,
+    persist_transcript: false,
+    updated_at: 0,
+  };
+  const stats = settings.persist_transcript ? transcript.activeStats(room) : null;
+  const chunks = settings.persist_transcript ? transcript.listChunks(room) : [];
+  return json({ settings, active: stats, chunks });
+}
+
+async function handlePutRoomSettings(req: Request, room: string): Promise<Response> {
+  const guard = ledgerGuard();
+  if (guard) return guard;
+  const sizeCheck = requireJsonBody(req);
+  if (sizeCheck) return sizeCheck;
+  let body: { persist_transcript?: unknown };
+  try {
+    body = (await req.json()) as { persist_transcript?: unknown };
+  } catch {
+    return json({ error: "invalid json" }, { status: 400 });
+  }
+  const partial: { persist_transcript?: boolean } = {};
+  if ("persist_transcript" in body) {
+    if (typeof body.persist_transcript !== "boolean") {
+      return json({ error: "persist_transcript must be boolean" }, { status: 400 });
+    }
+    partial.persist_transcript = body.persist_transcript;
+  }
+  setRoomSettings(ledgerDb!, room, partial);
+  return handleGetRoomSettings(room);
+}
+
+function handleGetRoomTranscripts(room: string): Response {
+  const active = transcript.activeStats(room);
+  const chunks = transcript.listChunks(room);
+  const totalBytes = active.sizeBytes + chunks.reduce((s, c) => s + c.sizeBytes, 0);
+  return json({ active, chunks, totalBytes });
+}
+
+function handlePostClearTranscript(room: string): Response {
+  const guard = ledgerGuard();
+  if (guard) return guard;
+  const settings = getRoomSettings(ledgerDb!, room);
+  const result = transcript.clearRoom(room);
+  // Filter same-room entries from the in-memory chatLog so SSE replay matches disk.
+  for (let i = chatLog.length - 1; i >= 0; i--) {
+    if (chatLog[i].room === room) chatLog.splice(i, 1);
+  }
+  return json({ removed: result.removed, persistence: settings?.persist_transcript ?? false });
+}
+
 async function handleSaveSession(req: Request): Promise<Response> {
   const guard = ledgerGuard();
   if (guard) return guard;
@@ -637,6 +746,36 @@ const server = Bun.serve({
       if (req.method === "GET" && pathname === "/room-default") {
         const authFail = requireReadAuth(req, url);
         return authFail ?? json({ room: DEFAULT_ROOM });
+      }
+      // Per-room settings + transcript management.
+      const roomSettingsMatch = /^\/rooms\/([^/]+)\/settings$/.exec(pathname);
+      if (roomSettingsMatch) {
+        const room = decodeURIComponent(roomSettingsMatch[1]);
+        if (!validRoomLabel(room)) return json({ error: "invalid room label" }, { status: 400 });
+        if (req.method === "GET") {
+          const authFail = requireReadAuth(req, url);
+          return authFail ?? handleGetRoomSettings(room);
+        }
+        if (req.method === "PUT") {
+          const authFail = requireAuth(req);
+          return authFail ?? (await handlePutRoomSettings(req, room));
+        }
+      }
+      const roomTranscriptsMatch = /^\/rooms\/([^/]+)\/transcripts$/.exec(pathname);
+      if (roomTranscriptsMatch && req.method === "GET") {
+        const authFail = requireReadAuth(req, url);
+        if (authFail) return authFail;
+        const room = decodeURIComponent(roomTranscriptsMatch[1]);
+        if (!validRoomLabel(room)) return json({ error: "invalid room label" }, { status: 400 });
+        return handleGetRoomTranscripts(room);
+      }
+      const roomClearMatch = /^\/rooms\/([^/]+)\/clear-transcript$/.exec(pathname);
+      if (roomClearMatch && req.method === "POST") {
+        const authFail = requireAuth(req);
+        if (authFail) return authFail;
+        const room = decodeURIComponent(roomClearMatch[1]);
+        if (!validRoomLabel(room)) return json({ error: "invalid room label" }, { status: 400 });
+        return handlePostClearTranscript(room);
       }
       if (req.method === "POST" && pathname === "/sessions") {
         const authFail = requireAuth(req);

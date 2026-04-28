@@ -4,7 +4,7 @@ import { Database } from "bun:sqlite";
 import { chmodSync } from "node:fs";
 import { randomId } from "./ids";
 
-export const LEDGER_SCHEMA_VERSION = 7;
+export const LEDGER_SCHEMA_VERSION = 8;
 
 export type LedgerOpenResult =
   | { db: Database; enabled: true }
@@ -246,4 +246,54 @@ export function migrateLedger(db: Database): void {
     })();
     console.log(`[ledger] applied migration v7`);
   }
+  if (current < 8) {
+    // v8: per-room transcript persistence opt-in flag.
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS room_settings (
+          room                TEXT    PRIMARY KEY,
+          persist_transcript  INTEGER NOT NULL DEFAULT 0,
+          updated_at          INTEGER NOT NULL
+        );
+      `);
+      db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '8')");
+    })();
+    console.log(`[ledger] applied migration v8`);
+  }
+}
+
+export function getRoomSettings(
+  db: Database,
+  room: string,
+): { room: string; persist_transcript: boolean; updated_at: number } | null {
+  const row = db
+    .query<{ room: string; persist_transcript: number; updated_at: number }, [string]>(
+      "SELECT room, persist_transcript, updated_at FROM room_settings WHERE room = ?",
+    )
+    .get(room);
+  if (!row) return null;
+  return { room: row.room, persist_transcript: !!row.persist_transcript, updated_at: row.updated_at };
+}
+
+export function setRoomSettings(
+  db: Database,
+  room: string,
+  partial: { persist_transcript?: boolean },
+): void {
+  const current = getRoomSettings(db, room);
+  const persist = partial.persist_transcript ?? current?.persist_transcript ?? false;
+  db.run(
+    `INSERT INTO room_settings (room, persist_transcript, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(room) DO UPDATE SET persist_transcript = excluded.persist_transcript, updated_at = excluded.updated_at`,
+    [room, persist ? 1 : 0, Date.now()],
+  );
+}
+
+export function listOptedInRooms(db: Database): string[] {
+  const rows = db
+    .query<{ room: string }, []>(
+      "SELECT room FROM room_settings WHERE persist_transcript = 1",
+    )
+    .all();
+  return rows.map((r) => r.room);
 }
