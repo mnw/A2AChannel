@@ -118,6 +118,28 @@ export function appendEntry(room: string, entry: Entry): void {
   }
 }
 
+// Force-rotate the active file to the next chunk seq, leaving rotated chunks
+// untouched. Non-destructive equivalent of "clear" — the chat window appears
+// fresh (chatLog gets filtered hub-side) and restart replay sees an empty
+// active file (no agent context replay), but historical data is archived
+// rather than deleted.
+export function rotateActive(room: string): { archivedTo: string | null } {
+  const active = activePath(room);
+  if (!existsSync(active)) return { archivedTo: null };
+  const seq = nextChunkSeq(room);
+  const target = chunkPath(room, seq);
+  try {
+    renameSync(active, target);
+    return { archivedTo: target };
+  } catch (e) {
+    console.error(`[transcript] rotateActive ${active} → ${target}:`, e);
+    return { archivedTo: null };
+  }
+}
+
+// Hard-delete: removes active + every rotated chunk. Currently unused by the
+// UI (the button calls rotateActive); kept as a building block for users who
+// genuinely want to wipe history.
 export function clearRoom(room: string): { removed: string[] } {
   const removed: string[] = [];
   const active = activePath(room);

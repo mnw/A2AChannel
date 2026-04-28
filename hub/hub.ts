@@ -88,7 +88,12 @@ const ATTACHMENTS_DIR = (
 const LEDGER_DB = (process.env.A2A_LEDGER_DB ?? "").trim();
 const HUMAN_NAME = (process.env.A2A_HUMAN_NAME ?? "human").trim();
 const DEFAULT_ROOM = (process.env.A2A_DEFAULT_ROOM ?? "default").trim() || "default";
-const HISTORY_LIMIT = 1000;
+const HISTORY_LIMIT = (() => {
+  const raw = process.env.A2A_CHAT_HISTORY_LIMIT;
+  const n = raw ? Number(raw) : NaN;
+  if (Number.isFinite(n) && n >= 10 && n <= 100_000) return Math.floor(n);
+  return 1000;
+})();
 const AGENT_QUEUE_MAX = 500;
 const UI_QUEUE_MAX = 500;
 const STALE_AGENT_MS = 15_000;
@@ -593,12 +598,15 @@ function handlePostClearTranscript(room: string): Response {
   const guard = ledgerGuard();
   if (guard) return guard;
   const settings = getRoomSettings(ledgerDb!, room);
-  const result = transcript.clearRoom(room);
-  // Filter same-room entries from the in-memory chatLog so SSE replay matches disk.
+  // Non-destructive: rotate the active file to a numbered chunk so historical
+  // data is archived. Subsequent appends start a fresh active file. ChatLog is
+  // filtered so the visible chat window resets and restart hydration replays
+  // nothing into reconnecting agents.
+  const result = transcript.rotateActive(room);
   for (let i = chatLog.length - 1; i >= 0; i--) {
     if (chatLog[i].room === room) chatLog.splice(i, 1);
   }
-  return json({ removed: result.removed, persistence: settings?.persist_transcript ?? false });
+  return json({ archivedTo: result.archivedTo, persistence: settings?.persist_transcript ?? false });
 }
 
 async function handleSaveSession(req: Request): Promise<Response> {

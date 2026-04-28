@@ -9,7 +9,7 @@ export const IMAGE_MAX_BYTES = 8 * 1024 * 1024;
 
 export const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 

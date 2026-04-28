@@ -306,27 +306,65 @@
   display: flex;
   align-items: center;
   gap: var(--sp-12);
-  padding: var(--sp-6) var(--sp-12);
+  padding: var(--sp-8) var(--sp-12);
   border-bottom: var(--border-1) solid var(--line);
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-base);
+  color: var(--text);
+}
+.room-persistence .rp-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-8);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  font-weight: 500;
+}
+.room-persistence .rp-toggle-track {
+  position: relative;
+  display: inline-block;
+  width: 32px;
+  height: 18px;
+  background: var(--bg-elev);
+  border: var(--border-1) solid var(--line);
+  border-radius: 9px;
+  transition: background var(--motion-base) ease;
+}
+.room-persistence .rp-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  background: var(--text-dim);
+  border-radius: 50%;
+  transition: transform var(--motion-base) ease, background var(--motion-base) ease;
+}
+.room-persistence .rp-toggle-btn[aria-pressed="true"] .rp-toggle-track {
+  background: color-mix(in oklab, var(--orange) 30%, transparent);
+  border-color: var(--orange);
+}
+.room-persistence .rp-toggle-btn[aria-pressed="true"] .rp-toggle-thumb {
+  transform: translateX(14px);
+  background: var(--orange);
+}
+.room-persistence .rp-meta {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
   color: var(--text-dim);
 }
-.room-persistence .rp-toggle {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-4);
-  cursor: pointer;
-  user-select: none;
-}
-.room-persistence .rp-meta { flex: 1; font-family: var(--mono); }
 .room-persistence .rp-clear-btn {
   background: transparent;
   border: var(--border-1) solid var(--line);
   color: var(--text-dim);
-  padding: var(--sp-2) var(--sp-8);
+  padding: var(--sp-4) var(--sp-12);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-sm);
 }
 .room-persistence .rp-clear-btn:hover { color: var(--red); border-color: var(--red); }
 

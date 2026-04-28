@@ -66,6 +66,11 @@ struct AppConfig {
     fonts: Option<FontsConfig>,
     #[serde(default)]
     editor: Option<String>,
+    // In-memory chat history ring-buffer cap. Also bounds how many entries get
+    // hydrated from a persisted JSONL transcript on hub restart, so it doubles
+    // as the per-agent context-replay budget.
+    #[serde(default)]
+    chat_history_limit: Option<u32>,
 }
 
 #[derive(Serialize, Clone, Default)]
@@ -123,6 +128,19 @@ fn resolve_attachment_extensions() -> Vec<String> {
         return default_attachment_extensions();
     }
     clean
+}
+
+// Default 1000 entries; clamped to [10, 100_000] so a misconfig can't crash the
+// hub or starve agents on reconnect.
+const CHAT_HISTORY_LIMIT_DEFAULT: u32 = 1000;
+const CHAT_HISTORY_LIMIT_MIN: u32 = 10;
+const CHAT_HISTORY_LIMIT_MAX: u32 = 100_000;
+
+fn resolve_chat_history_limit() -> u32 {
+    let raw = load_config()
+        .chat_history_limit
+        .unwrap_or(CHAT_HISTORY_LIMIT_DEFAULT);
+    raw.clamp(CHAT_HISTORY_LIMIT_MIN, CHAT_HISTORY_LIMIT_MAX)
 }
 
 fn target_triple() -> String {
@@ -387,6 +405,10 @@ fn resolve_attachments_dir_and_seed(human_name: &str, extensions: &[String]) -> 
             .editor
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
+        let seed_chat_history_limit = legacy
+            .chat_history_limit
+            .map(|n| n.clamp(CHAT_HISTORY_LIMIT_MIN, CHAT_HISTORY_LIMIT_MAX))
+            .unwrap_or(CHAT_HISTORY_LIMIT_DEFAULT);
 
         let yaml = render_seed_yaml(
             seed_human_name,
@@ -398,6 +420,7 @@ fn resolve_attachments_dir_and_seed(human_name: &str, extensions: &[String]) -> 
             seed_font_scale,
             &seed_fonts,
             &seed_editor,
+            seed_chat_history_limit,
         );
 
         if let Err(e) = fs::create_dir_all(cfg_path.parent().unwrap_or(&PathBuf::from("/tmp"))) {
@@ -424,6 +447,7 @@ fn render_seed_yaml(
     font_scale: f32,
     fonts: &UiFonts,
     editor: &str,
+    chat_history_limit: u32,
 ) -> String {
     let attachments_line = if attachments_dir.is_empty() {
         "attachments_dir: null".to_string()
@@ -486,10 +510,18 @@ fn render_seed_yaml(
          #   editor: subl           # Sublime Text CLI in PATH\n\
          #   editor: open -a Cursor # macOS app bundle launcher\n\
          # Empty disables the button.\n\
-         editor: \"{editor}\"\n",
-        ui     = fonts.ui,
-        mono   = fonts.mono,
-        editor = editor,
+         editor: \"{editor}\"\n\
+         \n\
+         # In-memory chat ring-buffer size. Doubles as the replay budget on hub\n\
+         # restart: when a room has persistent transcripts on, this many entries\n\
+         # are reloaded from JSONL into memory and replayed to reconnecting\n\
+         # agents (token cost in their context window). Default 1000. Clamped\n\
+         # to [10, 100000].\n\
+         chat_history_limit: {chat_history_limit}\n",
+        ui                 = fonts.ui,
+        mono               = fonts.mono,
+        editor             = editor,
+        chat_history_limit = chat_history_limit,
     )
 }
 
@@ -739,6 +771,7 @@ fn reload_settings(
     let extensions = resolve_attachment_extensions();
     let attachments_dir = resolve_attachments_dir_and_seed(&human_name, &extensions);
     let ledger_path = ledger_file();
+    let chat_history_limit = resolve_chat_history_limit();
 
     let port = pick_free_port()?;
     let url = format!("http://127.0.0.1:{port}");
@@ -769,7 +802,8 @@ fn reload_settings(
         .env("A2A_ATTACHMENTS_DIR", attachments_dir.to_string_lossy().to_string())
         .env("A2A_LEDGER_DB", ledger_path.to_string_lossy().to_string())
         .env("A2A_HUMAN_NAME", &human_name)
-        .env("A2A_ALLOWED_EXTENSIONS", extensions.join(","));
+        .env("A2A_ALLOWED_EXTENSIONS", extensions.join(","))
+        .env("A2A_CHAT_HISTORY_LIMIT", chat_history_limit.to_string());
     let (rx, child) = cmd.spawn().map_err(|e| format!("spawn a2a-bin: {e}"))?;
 
     let new_info = HubInfo {
@@ -1045,6 +1079,9 @@ pub fn run() {
             let attachments_dir = resolve_attachments_dir_and_seed(&human_name, &extensions);
             println!("[setup] attachments dir: {}", attachments_dir.display());
 
+            let chat_history_limit = resolve_chat_history_limit();
+            println!("[setup] chat history limit: {chat_history_limit}");
+
             let ledger_path = ledger_file();
             println!("[setup] ledger: {}", ledger_path.display());
 
@@ -1058,7 +1095,8 @@ pub fn run() {
                 .env("A2A_ATTACHMENTS_DIR", attachments_dir.to_string_lossy().to_string())
                 .env("A2A_LEDGER_DB", ledger_path.to_string_lossy().to_string())
                 .env("A2A_HUMAN_NAME", &human_name)
-                .env("A2A_ALLOWED_EXTENSIONS", extensions.join(","));
+                .env("A2A_ALLOWED_EXTENSIONS", extensions.join(","))
+                .env("A2A_CHAT_HISTORY_LIMIT", chat_history_limit.to_string());
 
             let (rx, child) = cmd.spawn().map_err(|e| format!("spawn a2a-bin: {e}"))?;
 

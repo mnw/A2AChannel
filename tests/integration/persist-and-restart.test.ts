@@ -89,18 +89,21 @@ describe("room transcript persistence", () => {
     sender.close();
   });
 
-  test("POST /rooms/:room/clear-transcript removes file", async () => {
+  test("POST /rooms/:room/clear-transcript archives active to a chunk (non-destructive)", async () => {
     const room = "clear-room";
     await putJson(hub, `/rooms/${room}/settings`, { persist_transcript: true });
     const sender = await registerAgent(hub, "clear1", { room });
-    await postJson(hub, "/post", { from: "clear1", to: "human", text: "to be cleared", room });
+    await postJson(hub, "/post", { from: "clear1", to: "human", text: "to be archived", room });
     await new Promise((r) => setTimeout(r, 100));
-    let files = readdirSync(transcriptsDir).filter((n) => n.includes(room.replace(/-/g, "-")));
-    expect(files.length).toBeGreaterThan(0);
+    const before = readdirSync(transcriptsDir).filter((n) => n.includes(room.replace(/-/g, "-")));
+    expect(before.length).toBe(1);
+    expect(before.some((n) => /^[0-9a-f]{8}-clear-room\.jsonl$/.test(n))).toBe(true);
     const clear = await postJson(hub, `/rooms/${room}/clear-transcript`, {});
     expect(clear.status).toBe(200);
-    files = readdirSync(transcriptsDir).filter((n) => n.includes(room.replace(/-/g, "-")));
-    expect(files.length).toBe(0);
+    const after = readdirSync(transcriptsDir).filter((n) => n.includes(room.replace(/-/g, "-")));
+    // Active is gone (renamed); the rotated chunk now holds the archived data.
+    expect(after.some((n) => /^[0-9a-f]{8}-clear-room\.jsonl$/.test(n))).toBe(false);
+    expect(after.some((n) => /^[0-9a-f]{8}-clear-room\.\d{6}\.jsonl$/.test(n))).toBe(true);
     sender.close();
   });
 });

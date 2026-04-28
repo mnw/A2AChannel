@@ -89,9 +89,12 @@
 </div>
 
 <div class="room-persistence" id="room-persistence" style="display:none;">
-  <label class="rp-toggle"><input type="checkbox" id="rp-toggle-input"> Persist chat transcript</label>
+  <button type="button" class="rp-toggle-btn" id="rp-toggle-input" aria-pressed="false" title="Toggle persistent JSONL transcript for this room">
+    <span class="rp-toggle-track"><span class="rp-toggle-thumb"></span></span>
+    <span class="rp-toggle-label">Persist chat transcript</span>
+  </button>
   <div class="rp-meta" id="rp-meta"></div>
-  <button type="button" class="rp-clear-btn" id="rp-clear-btn" style="display:none;" title="Delete every transcript file for this room">Clear transcript</button>
+  <button type="button" class="rp-clear-btn" id="rp-clear-btn" style="display:none;" title="Archive the active transcript to a rotated chunk and start fresh. Past data is preserved on disk; the chat window resets; agents see fresh context on restart.">Archive &amp; reset</button>
 </div>
 
 <div class="nutshell-editor" id="nutshell-editor">
