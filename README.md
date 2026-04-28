@@ -6,7 +6,7 @@
 
 ## Why
 
-Claude Code sub-agents share their parent's context. Separate Claude Code sessions don't — each is its own island. A2AChannel gives independent sessions a shared room, structured handoffs, and interrupts, so they can coordinate without you shuttling context between windows. Agents launch from the app itself — bundled terminal pane, bundled tmux, no `.mcp.json` editing, no separate windows to juggle.
+Every Claude Code session is an island. Sub-agents spawned via the `Task` tool run in their own fresh context — the parent only sees the final return value, not the sub-agent's intermediate reasoning. Separate Claude Code sessions are even more isolated: no parent, no shared anything. A2AChannel gives those independent sessions a shared room, structured handoffs, and interrupts, so they can coordinate without you shuttling context between windows. Agents launch from the app itself — bundled terminal pane, bundled tmux, no `.mcp.json` editing, no separate windows to juggle.
 
 The coordination is a protocol, not a chat app. Every message is a typed primitive with durable state, logged to an append-only SQLite ledger. You're in the room too. Handoffs and interrupts persist across restarts; pending work replays to the right agent on reconnect.
 
