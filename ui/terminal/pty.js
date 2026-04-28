@@ -53,6 +53,20 @@
       logPath, maxBytes: maxBytes ?? null,
     });
   }
+  // Heal tmux geometry for the agent — unsets stuck window-size overrides
+  // and snaps pane back to active xterm.js client size. Idempotent; safe
+  // to call on every slash-send.
+  async function ptyHealGeometry(agent) {
+    try { return await _invoke()('pty_heal_geometry', { agent }); }
+    catch (e) { console.warn('[pty] heal failed for', agent, e); }
+  }
+  // Briefly tap the agent's PTY output (pipe-pane on/off around a sleep)
+  // and return the captured bytes as a string. No geometry forcing — used
+  // for short post-keypress footer reads. duration_ms clamped to [50, 5000].
+  async function ptyTapRead(agent, durationMs) {
+    try { return await _invoke()('pty_tap_read', { agent, durationMs: durationMs ?? null }); }
+    catch (e) { console.warn('[pty] tap-read failed for', agent, e); return ''; }
+  }
 
   const encoder = new TextEncoder();
   function strToB64(str) {
@@ -71,7 +85,7 @@
   window.__A2A_TERM__ = window.__A2A_TERM__ || {};
   window.__A2A_TERM__.pty = {
     ptySpawn, ptyWrite, ptyResize, ptyKill, ptyList,
-    ptyCaptureTurn, ptyReadCapture,
+    ptyCaptureTurn, ptyReadCapture, ptyHealGeometry, ptyTapRead,
     strToB64, b64ToBytes,
   };
 })();

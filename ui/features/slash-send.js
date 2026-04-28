@@ -29,10 +29,40 @@
 
 const _CAPTURE_TIMEOUT_MS = 15_000;
 
+// Allowlist of slash commands that render a discrete panel and finish
+// quickly (≤ a few seconds). These are safe to drive through the
+// pty_capture_turn orchestrator — geometry forcing, completion-marker
+// scanning, capture-and-mirror.
+//
+// Everything OUTSIDE this list — custom .claude/commands/, .claude/skills,
+// MCP prompts (mcp__server__*), model-delegated commands like /openspec-* —
+// generates a multi-turn conversational response that takes seconds to
+// minutes. Capturing those would (a) prematurely fire on quiescence
+// during claude's "thinking" pause, (b) SIGWINCH-interrupt claude when
+// the orchestrator's cleanup_geometry fires mid-render. Those go through
+// the simple v0.9.13 pty_write path: bytes injected, audit row posted,
+// no capture; the response shows in the agent's terminal.
+const _CAPTUREABLE = new Set([
+  '/context',
+  '/usage',
+  '/cost',
+  '/memory',
+  '/agents',
+  '/skills',
+  '/help',
+  '/mcp',
+  '/model',
+  '/status',
+  '/permissions',
+  '/config',
+  '/release-notes',
+  '/doctor',
+]);
+
 function _ptyBridge() {
   const pty = window.__A2A_TERM__?.pty;
-  if (!pty?.ptyCaptureTurn || !pty?.ptyReadCapture) {
-    throw new Error('PTY capture bridge not available');
+  if (!pty?.ptyCaptureTurn || !pty?.ptyReadCapture || !pty?.ptyWrite || !pty?.strToB64) {
+    throw new Error('PTY bridge not available');
   }
   return pty;
 }
@@ -104,8 +134,17 @@ function sliceBetweenSlashAndDivider(text, slashCommand) {
   for (let j = start + 1; j < Math.min(start + 6, lines.length); j++) {
     if (dividerRe.test(lines[j])) { panelStart = j + 1; break; }
   }
-  // Trim trailing chrome from the bottom: dividers, lone `❯`, hints,
-  // status-dialog markers, blank lines.
+  // Chrome predicate covers two classes:
+  //   - Static prompt-frame elements: dividers, lone ❯, "? for shortcuts",
+  //     "Esc to cancel", "Status dialog dismissed".
+  //   - Dynamic "thinking" chrome between the prompt frame and the panel
+  //     render: spinner frames (single symbol per cursor-move become
+  //     single-char lines after ANSI strip) and labelled status rows
+  //     ("Cogitated for 2s", "Crunched for 1s", "Churning…", etc).
+  // Dynamic chrome appears AFTER the prompt-frame divider but BEFORE the
+  // panel content, so we trim leading edges with the same rule used for
+  // trailing.
+  const STATUS_VERBS = /^(?:Cogit|Cook|Crunch|Churn|Ponder|Think|Reflect|Refresh|Scan|Proof|Brew|Bake|Boil|Bubbl|Distil|Ferment|Marinat|Mull|Roast|Simmer|Steep|Stir|Whisk|Process|Working|Loading|Computing|Resolving|Analy[zs])/i;
   const isChrome = (line) => {
     const t = line.trim();
     if (t === '') return true;
@@ -113,11 +152,21 @@ function sliceBetweenSlashAndDivider(text, slashCommand) {
     if (t === '❯' || t === '>') return true;
     if (/^\?\s+for\s+shortcuts/.test(t)) return true;
     if (/^Status\s+dialog\s+dismissed$/.test(t)) return true;
-    if (/^Esc\s+to\s+(cancel|interrupt)/.test(t)) return true;
+    if (/^[Ee]sc\s+to\s+(cancel|interrupt)/.test(t)) return true;
+    // Spinner-frame chrome: very short lines (1-3 visible chars) are
+    // overwhelmingly cursor-positioning artifacts, never real panel
+    // content. Real panel rows are ≥ 4 chars.
+    if (t.length <= 3) return true;
+    // Labelled status rows ("Cogitated for 2s", "Scanning sessions…").
+    if (STATUS_VERBS.test(t)) return true;
     return false;
   };
+  // Trim both edges. Forward-trim drops thinking-spinner chrome between
+  // the prompt-frame divider and panel content; backward-trim drops the
+  // post-panel idle prompt + hints + dismissal markers.
   let end = lines.length;
   while (end > panelStart && isChrome(lines[end - 1])) end--;
+  while (panelStart < end && isChrome(lines[panelStart])) panelStart++;
   if (end <= panelStart) return null;
   const sliced = lines.slice(panelStart, end);
   return sliced.length ? sliced.join('\n') : null;
@@ -157,11 +206,71 @@ async function sendSlash({ slashCommand, target, args }) {
     if (!ok) return false;
   }
 
-  const payload = (args ? `${slashCommand} ${args}` : slashCommand) + '\r';
+  // For non-captureable commands (custom, MCP prompts, model-delegated),
+  // append a chatbridge-reply directive so the agent posts its answer back
+  // via mcp__chatbridge__post instead of leaving it stranded in the
+  // terminal. Skip if the user already wrote the directive into the args
+  // (so doubled phrasing doesn't sneak through). Captureable panel
+  // commands (/context, /usage…) skip this — they're mirrored by the
+  // capture orchestrator already.
+  const REPLY_DIRECTIVE = 'answer in chatbridge';
+  const captureable = _CAPTUREABLE.has(slashCommand);
+  const hasDirective = args && args.toLowerCase().includes(REPLY_DIRECTIVE);
+  let effectiveArgs = args;
+  if (!captureable && !hasDirective) {
+    effectiveArgs = args ? `${args} - ${REPLY_DIRECTIVE}` : `- ${REPLY_DIRECTIVE}`;
+  }
+  const cmdText = effectiveArgs ? `${slashCommand} ${effectiveArgs}` : slashCommand;
+  const payload = cmdText + '\r';
   const pty = _ptyBridge();
 
-  // Audit row first — appears immediately, before per-agent captures
-  // resolve. Capture results trickle in as separate chat rows.
+  // Heal tmux geometry on every slash-send. If a previous capture orchestrator
+  // run left the pane stuck in `window-size manual` mode, the visible xterm.js
+  // viewport shows a sea of dots in the unused area around a tiny pane. Cheap
+  // belt-and-suspenders fix — reasserts `latest` + resizes to active client
+  // before each user-typed slash command.
+  if (pty.ptyHealGeometry) {
+    await Promise.all(resolved.map((agent) =>
+      pty.ptyHealGeometry(agent).catch(() => {})));
+  }
+
+  // Send the slash command as if typed: text first, brief settle, then a
+  // standalone \r. Claude's TUI buffers rapid multi-byte writes as a paste
+  // (bracketed-paste-like behaviour) — when \r is the last byte of that
+  // buffer it's treated as a newline IN the pasted content, not as Enter.
+  // Splitting the write makes the lone \r register as "Enter after paste
+  // settled" → submits the input.
+  async function _writeAsTyped(agent) {
+    await pty.ptyWrite(agent, pty.strToB64(cmdText));
+    await new Promise((r) => setTimeout(r, 60));
+    await pty.ptyWrite(agent, pty.strToB64('\r'));
+  }
+
+  // Non-captureable commands (custom commands, MCP prompts, model-delegated
+  // work) take the simple path: write bytes, audit row, done. Response
+  // renders in the agent's terminal naturally — no SIGWINCH interrupt
+  // mid-stream from the orchestrator's cleanup.
+  if (!captureable) {
+    const failures = [];
+    await Promise.all(resolved.map(async (agent) => {
+      try { await _writeAsTyped(agent); }
+      catch (e) { failures.push({ name: agent, reason: e?.message || String(e) }); }
+    }));
+    const finalResolved = resolved.filter((n) => !failures.find((f) => f.name === n));
+    const finalSkipped = [...skipped, ...failures];
+    addMessage({
+      from: 'system',
+      to: HUMAN_NAME,
+      text: formatSlashAuditText({
+        slashCommand, args, target,
+        resolved: finalResolved, skipped: finalSkipped,
+      }),
+      ts: _formatTimestamp(),
+    });
+    return true;
+  }
+
+  // Captureable: audit first, then per-agent orchestrator + chat-mirror.
   addMessage({
     from: 'system',
     to: HUMAN_NAME,
@@ -190,13 +299,10 @@ async function sendSlash({ slashCommand, target, args }) {
         const stripped = stripAnsi(raw);
         const body = sliceBetweenSlashAndDivider(stripped, slashCommand) || stripped;
         if (!body || !body.trim()) return;
-        const statusBadge = (result.status === 'timeout' || result.status === 'quiescence')
-          ? ` _(${result.status})_`
-          : '';
         addMessage({
           from: agent,
           to: HUMAN_NAME,
-          text: `**[a2a-capture]**${statusBadge}\n\`\`\`\n${body}\n\`\`\``,
+          text: `\`\`\`\n${body}\n\`\`\``,
           ts: _formatTimestamp(),
         });
       } catch (e) {
@@ -210,5 +316,86 @@ async function sendSlash({ slashCommand, target, args }) {
       }
     })();
   }
+  return true;
+}
+
+// Detect claude's current mode by scanning the captured pane content for
+// the prompt-frame footer label. There are FOUR distinct modes — "Auto"
+// and "Accept Edits" are separate, NOT the same:
+//   - "plan mode on"     → Plan
+//   - "accept edits on"  → Accept Edits
+//   - "auto mode on"     → Auto
+//   - none of the above  → Normal (no footer label is shown)
+// Case-insensitive substring match. Order matters — check "plan" and
+// "accept edits" before "auto" so the more specific labels win.
+function _detectMode(rawBytes) {
+  const stripped = stripAnsi(rawBytes || '');
+  const hay = stripped.toLowerCase();
+  if (hay.includes('plan mode on')) return 'Plan';
+  if (hay.includes('accept edits on')) return 'Accept Edits';
+  if (hay.includes('auto mode on')) return 'Auto';
+  return 'Normal';
+}
+
+// Send the Shift+Tab key (CSI Cursor Backward Tabulation, `\x1B[Z`) to one
+// or more agent PTYs. Claude uses this to cycle modes
+// (Normal → Auto-Accept Edits → Plan → Normal). After the keypress, we
+// briefly tap pipe-pane (~250ms) per agent to read claude's redrawn
+// footer and report the actual new mode in the audit row — no client-side
+// guessing, no drift.
+async function sendShiftTab({ target }) {
+  const { resolved, skipped } = resolveTargets(target, SELECTED_ROOM);
+  if (!resolved.length) {
+    addMessage({
+      from: 'system',
+      to: HUMAN_NAME,
+      text: `Shift+Tab aborted: no live target for @${target} in room`,
+      ts: _formatTimestamp(),
+    });
+    return false;
+  }
+  const pty = _ptyBridge();
+  if (pty.ptyHealGeometry) {
+    await Promise.all(resolved.map((a) => pty.ptyHealGeometry(a).catch(() => {})));
+  }
+  const b64 = pty.strToB64('\x1B[Z');
+  const failures = [];
+  await Promise.all(resolved.map(async (agent) => {
+    try { await pty.ptyWrite(agent, b64); }
+    catch (e) { failures.push({ name: agent, reason: e?.message || String(e) }); }
+  }));
+  const finalResolved = resolved.filter((n) => !failures.find((f) => f.name === n));
+  const finalSkipped = [...skipped, ...failures];
+
+  // Read back the actual mode from each agent. After Shift+Tab, claude
+  // redraws the prompt-frame footer with the new mode label; we tap
+  // pipe-pane briefly to capture that redraw. Tap is fire-and-forget per
+  // agent; we await all in parallel.
+  const modeReads = pty.ptyTapRead
+    ? await Promise.all(finalResolved.map(async (agent) => {
+        try {
+          // Small delay so claude has time to render the footer redraw.
+          await new Promise((r) => setTimeout(r, 80));
+          const raw = await pty.ptyTapRead(agent, 250);
+          return `${agent}: ${_detectMode(raw)}`;
+        } catch {
+          return agent;
+        }
+      }))
+    : finalResolved;
+
+  const targetExpr = `@${target}`;
+  const resolvedCsv = modeReads.length ? ` → ${modeReads.join(', ')}` : ' (none)';
+  let txt = `human → Shift+Tab ${targetExpr}${resolvedCsv}`;
+  if (finalSkipped.length) {
+    const parts = finalSkipped.map((s) => `${s.name} (${s.reason})`);
+    txt += ` — skipped: ${parts.join(', ')}`;
+  }
+  addMessage({
+    from: 'system',
+    to: HUMAN_NAME,
+    text: txt,
+    ts: _formatTimestamp(),
+  });
   return true;
 }

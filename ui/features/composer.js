@@ -12,11 +12,12 @@
 //   from attachments.js — clearAttachment
 //   from mentions.js — hideMentionPopover, updateMentionPopover,
 //                      renderMentionPopover, selectMention
-//   from slash-mode.js — isSlashMode, parseSlashMessage
+//   from slash-mode.js — isSlashMode, parseSlashMessage,
+//                          isShiftTabMode, parseShiftTab
 //   from slash-picker.js — slashPickerOpen, slashPickerClose,
 //                           slashPickerActive, slashPickerMove,
 //                           slashPickerSelectActive, slashPickerUpdate
-//   from slash-send.js — sendSlash
+//   from slash-send.js — sendSlash, sendShiftTab
 //
 // Exposes:
 //   send, autoGrow
@@ -87,6 +88,35 @@ async function send() {
         input.value = '';
         autoGrow();
         slashPickerClose();
+        _hideSlashError();
+      }
+    } finally {
+      sendBtn.disabled = false;
+      input.focus();
+    }
+    return;
+  }
+
+  // Shift+Tab bypass — sibling to slash mode. Sends the literal terminal
+  // Shift+Tab byte sequence (`\x1B[Z`) to each resolved agent's PTY.
+  // Claude uses this to cycle modes (Normal → Auto-Accept → Plan → Normal).
+  // Same room rules as slash: concrete room required, @agent or @all.
+  if (isShiftTabMode(input.value)) {
+    if (SELECTED_ROOM === ROOM_ALL) {
+      _showSlashError('Select a room first');
+      return;
+    }
+    const parsed = parseShiftTab(input.value);
+    if (!parsed.target) {
+      _showSlashError('specify @agent or @all');
+      return;
+    }
+    sendBtn.disabled = true;
+    try {
+      const ok = await sendShiftTab(parsed);
+      if (ok) {
+        input.value = '';
+        autoGrow();
         _hideSlashError();
       }
     } finally {
@@ -205,6 +235,23 @@ input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
     e.preventDefault();
     send();
+    return;
+  }
+  // Shift+Tab broadcasts to all live agents in the current room — bypasses
+  // the browser's default backward-focus behaviour. Sends the literal
+  // terminal Shift+Tab byte sequence (`\x1B[Z`) which claude uses to
+  // cycle modes (Normal → Auto-Accept → Plan → Normal). Modifier-free
+  // Tab still does its browser default (focus next), so users can still
+  // navigate forward out of the composer if they want.
+  if (e.key === 'Tab' && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (SELECTED_ROOM === ROOM_ALL) {
+      _showSlashError('Select a room first');
+      e.preventDefault();
+      return;
+    }
+    e.preventDefault();
+    sendShiftTab({ target: 'all' }).catch(() => {});
+    return;
   }
 });
 

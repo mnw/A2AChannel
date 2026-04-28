@@ -327,6 +327,30 @@ fn configure_existing_session(name: &str, lang: &str) {
     let _ = tmux_run(&["set-environment", "-t", name, "COLORTERM", "truecolor"]);
     let _ = tmux_run(&["set-environment", "-t", name, "LANG", lang]);
     let _ = tmux_run(&["set-environment", "-t", name, "LC_ALL", lang]);
+    // allow-passthrough lets desktop notifications + progress updates from
+    // claude reach iTerm2/Ghostty/Kitty instead of being swallowed by tmux.
+    //
+    // We deliberately do NOT enable `extended-keys on` or
+    // `terminal-features += xterm*:extkeys` here even though Anthropic's
+    // tmux config doc recommends them. Those flags require xterm.js (the
+    // host terminal) to use the CSI-u extended-key encoding for modified
+    // keys (Shift+Enter, Shift+Tab, etc.). xterm.js does not by default.
+    // With the flags on, claude assumes the terminal will deliver extkeys
+    // sequences and switches its input handling to expect them — but
+    // xterm.js still sends plain `\r` for Shift+Enter, which claude then
+    // treats as a submit instead of a newline. Net effect: enabling these
+    // breaks Shift+Enter inside the embedded terminal.
+    let _ = tmux_run(&["set-option", "-t", name, "allow-passthrough", "on"]);
+    // Heal `window-size` on every reattach. CRITICAL ORDER: resize FIRST,
+    // then set option to `latest`. tmux's `resize-window -A` implicitly
+    // pins window-size to `manual` so that the explicit resize sticks; if
+    // we set `latest` before resizing, the resize undoes our option.
+    // Resizing first gets the pane to the active client size, then setting
+    // `latest` lets future SIGWINCH events propagate naturally.
+    let _ = tmux_run(&["resize-window", "-t", name, "-A"]);
+    let _ = tmux_run(&["set-option", "-w", "-u", "-t", name, "window-size"]);
+    let _ = tmux_run(&["set-option", "-w", "-t", name, "window-size", "latest"]);
+    let _ = tmux_run(&["refresh-client", "-t", name, "-S"]);
 }
 
 // Resolve UTF-8 locale for tmux sessions. GUI launches under launchd inherit
@@ -785,11 +809,17 @@ pub fn pty_capture_turn(
     // panic-via-error so the user's terminal is always handed back to tmux's
     // client-driven sizing.
     let cleanup_geometry = || {
-        if let Err(e) = tmux_run(&["set-option", "-w", "-t", &agent, "window-size", "latest"]) {
-            eprintln!("[capture] restore window-size failed: {e}");
-        }
+        // CRITICAL ORDER: resize FIRST, then set window-size to `latest`.
+        // tmux's `resize-window` (any flag) implicitly pins window-size to
+        // `manual` so the explicit resize sticks; setting `latest` first
+        // would be undone by the resize and we'd leak `manual` into the
+        // next reattach (visible as a sea of dots in the unused viewport).
         if let Err(e) = tmux_run(&["resize-window", "-t", &agent, "-A"]) {
             eprintln!("[capture] resize -A failed: {e}");
+        }
+        let _ = tmux_run(&["set-option", "-w", "-u", "-t", &agent, "window-size"]);
+        if let Err(e) = tmux_run(&["set-option", "-w", "-t", &agent, "window-size", "latest"]) {
+            eprintln!("[capture] restore window-size failed: {e}");
         }
         if let Err(e) = tmux_run(&["refresh-client", "-t", &agent, "-S"]) {
             eprintln!("[capture] refresh-client failed: {e}");
@@ -932,6 +962,52 @@ pub fn pty_capture_turn(
         end_ms: epoch_ms(),
         status: final_status.to_string(),
     })
+}
+
+// Heal tmux geometry for the named agent: unset any leftover window-size
+// override (e.g. `manual` left by an interrupted capture), force re-sync to
+// active client size, and redraw. Cheap and idempotent — JS calls this
+// before each slash-send so a previously-stuck pane self-heals without
+// requiring an app restart.
+#[tauri::command]
+pub fn pty_heal_geometry(agent: String) -> Result<(), String> {
+    if !valid_agent_name(&agent) {
+        return Err(format!("invalid agent: {agent}"));
+    }
+    // CRITICAL ORDER: tmux's `resize-window` command implicitly sets
+    // `window-size` to `manual` to make the explicit resize stick. So if we
+    // set window-size FIRST and resize SECOND, the resize undoes our option.
+    // We resize FIRST (snap to active client size, or just clear the stale
+    // forced size), then set window-size to `latest` so future client
+    // SIGWINCH events propagate naturally.
+    let _ = tmux_run(&["resize-window", "-t", &agent, "-A"]);
+    let _ = tmux_run(&["set-option", "-w", "-u", "-t", &agent, "window-size"]);
+    let _ = tmux_run(&["set-option", "-w", "-t", &agent, "window-size", "latest"]);
+    let _ = tmux_run(&["refresh-client", "-t", &agent, "-S"]);
+    Ok(())
+}
+
+// Snapshot the current visible pane content for the agent via
+// `tmux capture-pane -p`. Returns the full pane as text (already
+// ANSI-cleaned by tmux's default capture). Used by the Shift+Tab path to
+// read claude's prompt-frame footer label after a mode change. Returns
+// empty string on any error so the calling JS can fall back gracefully.
+//
+// This replaced an earlier `pipe-pane` tap that only captured NEW writes
+// from the time the tap started — which often missed claude's footer
+// redraw entirely. `capture-pane -p` returns the FULL current state.
+#[tauri::command]
+pub fn pty_tap_read(agent: String, duration_ms: Option<u32>) -> Result<String, String> {
+    if !valid_agent_name(&agent) {
+        return Err(format!("invalid agent: {agent}"));
+    }
+    // Sleep first so claude has time to redraw the footer after whatever
+    // keypress just preceded this call (e.g. Shift+Tab → mode change).
+    let duration = duration_ms.unwrap_or(250).clamp(0, 2000) as u64;
+    if duration > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(duration));
+    }
+    Ok(tmux_run(&["capture-pane", "-p", "-t", &agent]).unwrap_or_default())
 }
 
 // Read a capture log file. Restricts to /tmp/a2a/ paths so a misuse from JS

@@ -414,6 +414,22 @@
     term.options.fontFamily = 'monospace';
     term.options.fontFamily = ff;
     fitAddon.fit();
+    // Remap Shift+Enter to send the line-feed byte (`\n` / 0x0A / Ctrl+J)
+    // instead of xterm.js's default `\r` for that key combination. Claude
+    // code documents Ctrl+J as the "insert newline without submitting"
+    // input — without this remap the embedded terminal's Shift+Enter is
+    // indistinguishable from Enter and submits the input. Returning false
+    // from the custom key handler suppresses xterm.js's default keystroke
+    // emission so the fallback `\r` doesn't also reach the PTY.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type === 'keydown' && e.key === 'Enter' && e.shiftKey
+          && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        ptyWrite(t.tabEl.dataset.agent, strToB64('\n')).catch((err) =>
+          console.error('[terminal] shift-enter write', err));
+        return false;
+      }
+      return true;
+    });
     term.onData((data) => {
       ptyWrite(t.tabEl.dataset.agent, strToB64(data)).catch((e) =>
         console.error('[terminal] write', e));

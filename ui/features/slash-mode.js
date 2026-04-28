@@ -16,7 +16,8 @@
 //
 // Exposes:
 //   isSlashMode, parseSlashMessage, resolveTargets,
-//   busyAgents, slashTargetCandidates
+//   busyAgents, slashTargetCandidates,
+//   isShiftTabMode, parseShiftTab
 
 function isSlashMode(textareaValue) {
   // Slash mode is active iff the composer starts with `/`. We deliberately do
@@ -25,6 +26,36 @@ function isSlashMode(textareaValue) {
   // slash mode. Mid-message slashes (e.g. `look at /etc/hosts`) don't
   // qualify because the leading char isn't `/`.
   return typeof textareaValue === 'string' && textareaValue.startsWith('/');
+}
+
+// "Shift+Tab" pseudo-command, sibling to slash mode. Sends the literal
+// terminal byte sequence `\x1B[Z` (CSI Cursor Backward Tabulation, the
+// standard Shift+Tab escape) to each resolved agent's PTY. Claude uses
+// this key to cycle modes (Normal → Auto-Accept → Plan → Normal). The
+// composer recognizes any of: "Shift+Tab", "shift+tab", "shifttab",
+// "shift-tab" as the prefix, all case-insensitive. Targeting is the same
+// as slash commands — explicit `@agent` or `@all`, must be in a concrete
+// room.
+const SHIFT_TAB_PREFIX_RE = /^\s*shift[\s+_-]*tab\b/i;
+
+function isShiftTabMode(textareaValue) {
+  return typeof textareaValue === 'string' && SHIFT_TAB_PREFIX_RE.test(textareaValue);
+}
+
+// Parse "Shift+Tab @target" → { target }. Mirrors parseSlashMessage shape
+// but with no command/args — Shift+Tab is a single fixed key sequence.
+function parseShiftTab(text) {
+  const out = { target: null };
+  if (!isShiftTabMode(text)) return out;
+  const tail = text.replace(SHIFT_TAB_PREFIX_RE, '').trim();
+  for (const t of tail.split(/\s+/)) {
+    if (!t) continue;
+    if (t.startsWith('@')) {
+      const tm = t.match(/^@([A-Za-z0-9_.-]+)$/);
+      if (tm) { out.target = tm[1]; break; }
+    }
+  }
+  return out;
 }
 
 // Parse the composer text into (slashCommand, target, args). Tolerant of

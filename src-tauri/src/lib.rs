@@ -1046,7 +1046,9 @@ pub fn run() {
             pty::pty_spawn_shell,
             pty::pty_shell_exists,
             pty::pty_capture_turn,
-            pty::pty_read_capture
+            pty::pty_read_capture,
+            pty::pty_heal_geometry,
+            pty::pty_tap_read
         ])
         .setup(|app| {
             let handle = app.handle().clone();
