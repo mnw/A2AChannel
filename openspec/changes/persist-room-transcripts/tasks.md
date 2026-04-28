@@ -59,6 +59,6 @@
 ## 9. Release
 
 - [x] 9.1 Bump version (package.json, src-tauri/Cargo.toml, src-tauri/Cargo.lock, src-tauri/tauri.conf.json) — `0.10.0`.
-- [ ] 9.2 Build via `./scripts/install.sh`, smoke-test the opt-in flow end-to-end.
-- [ ] 9.3 Tag, push tag, create GitHub release with bundled `.app.zip`.
-- [ ] 9.4 Update brew cask sha256 + version, commit + push the tap repo.
+- [x] 9.2 Build via `./scripts/install.sh`. Smoke-test pending — user defers until they have time.
+- [x] 9.3 Tag v0.10.0, push tag, create GitHub release with `A2AChannel-0.10.0.zip` (sha256 `b7daa7ee...d90ad7`).
+- [x] 9.4 Update brew cask sha256 + version, commit + push the tap repo (`mnw/homebrew-a2achannel`).
