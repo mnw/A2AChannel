@@ -1,16 +1,6 @@
-// The KindModule runtime contract and the dependency-injection surface kinds
-// consume. Defined here so every module (hub.ts, hub/kinds/*.ts, tests) imports
-// from one place.
-//
-// Narrow by design: kinds formalize persistent state-machine entities backed by
-// the event ledger. Ephemeral broadcasts (presence/typing), single-row documents
-// (nutshell), and config/rules do NOT use this contract — see design.md §1 / §8.
+// types.ts — KindModule runtime contract + DI surface for persistent state-machine kinds.
 
 import type { Database } from "bun:sqlite";
-
-// --------------------------------------------------------------------------
-// Shared entities
-// --------------------------------------------------------------------------
 
 export type Agent = {
   name: string;
@@ -18,17 +8,14 @@ export type Agent = {
   room: string | null;  // null = human (super-user; visible in every room)
 };
 
-// Snapshot of an agent at a point in time, passed to kind hooks. A projection
-// of the Agent record plus any flags a kind might care about.
+// Projection passed to kind hooks.
 export type AgentCtx = {
   name: string;
   room: string | null;
-  permanent: boolean;   // true for human
+  permanent: boolean;
 };
 
-// The Entry shape mirrors what's broadcast on /stream and /agent-stream today.
-// Kinds build Entry objects with kind-specific fields layered on (handoff_id,
-// interrupt_id, permission_id, etc.) — the Entry type below is the common core.
+// Mirrors what's broadcast on /stream and /agent-stream; kinds layer their fields on top.
 export type Entry = {
   id?: number;
   from?: string;
@@ -41,24 +28,14 @@ export type Entry = {
   version?: number;
   replay?: boolean;
   room?: string | null;
-  // Kind-specific payload fields land as additional properties on Entry objects;
-  // keep the type open at this layer.
   [extra: string]: unknown;
 };
-
-// --------------------------------------------------------------------------
-// SSE broadcast scope
-// --------------------------------------------------------------------------
 
 export type Scope =
   | { kind: "broadcast" }                    // UI + all non-permanent agents
   | { kind: "to-agents"; agents: string[] }  // UI + specific agents
   | { kind: "ui-only" }                      // UI subscribers only
-  | { kind: "room"; room: string };          // v0.9 rooms: same-room agents + human
-
-// --------------------------------------------------------------------------
-// HTTP route declaration
-// --------------------------------------------------------------------------
+  | { kind: "room"; room: string };          // same-room agents + human
 
 export type RouteDef = {
   method: "GET" | "POST";
@@ -72,22 +49,14 @@ export type RouteDef = {
   ): Promise<Response> | Response;
 };
 
-// --------------------------------------------------------------------------
-// Hub capabilities — the sole access path kinds have to shared hub services.
-// Each hook receives only what it needs:
-//   - migrate(db)                         → DB only
-//   - handler(req, cap, params)           → full cap
-//   - pendingFor(agent, cap)              → DB + SSE accessors
-// --------------------------------------------------------------------------
-
+// Sole access path kinds have to shared hub services.
 export type HubCapabilities = {
   db: Database;
   agents: {
     get(name: string): AgentCtx | null;
     isPermanent(name: string): boolean;
     all(): AgentCtx[];
-    // Auto-register an agent if not already in the roster. `room` defaults to
-    // the hub's DEFAULT_ROOM; pass null to register a permanent member (human).
+    // `room` defaults to DEFAULT_ROOM; pass null for permanent member (human).
     ensure(name: string, room?: string | null): AgentCtx | null;
   };
   sse: {
@@ -119,34 +88,24 @@ export type HubCapabilities = {
   };
 };
 
-// --------------------------------------------------------------------------
-// KindModule — the integration contract
-// --------------------------------------------------------------------------
-
 export type KindModule = {
-  // Unique kind identifier. Becomes the prefix for SSE event kinds
-  // (e.g. "handoff" → "handoff.new", "handoff.update").
+  // Prefix for SSE event kinds (e.g. "handoff" → "handoff.new").
   kind: string;
 
-  // Idempotent schema migration invoked once at hub startup.
+  // Idempotent; invoked once at hub startup.
   migrate(db: Database): void;
 
-  // Static HTTP route declarations. Orchestrator iterates these at startup.
   routes: RouteDef[];
 
-  // Reconnect-replay: entries to emit to a reconnecting agent. Kinds set
-  // replay: true on each returned Entry (the orchestrator does not remark them).
+  // Replay entries on reconnect; kinds must set replay: true themselves.
   pendingFor(agent: AgentCtx, cap: HubCapabilities): Entry[];
 
-  // MCP tool names this kind exposes. Briefing aggregates across kinds.
+  // Briefing aggregates across kinds.
   toolNames: string[];
 
-  // Optional replay-ordering hint. Undefined = 0. Orchestrator sorts ascending
-  // before iterating. Kinds MUST NOT depend on cross-kind ordering for
-  // correctness; this is an escape hatch for rare cases (design.md §6).
+  // Sort-ascending hint for replay; kinds MUST NOT depend on cross-kind ordering.
   priority?: number;
 
-  // Optional background-work disposer. Kinds that run timers (e.g. handoff
-  // expire sweep) register cleanup here; orchestrator calls on shutdown.
+  // Cleanup hook for background timers; orchestrator calls on shutdown.
   dispose?: () => void;
 };

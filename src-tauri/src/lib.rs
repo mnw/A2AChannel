@@ -35,12 +35,10 @@ struct HubInfo {
 
 #[derive(Deserialize, Serialize, Default, Clone)]
 struct FontsConfig {
-    // Sans/proportional font: body text, chat, modals.
+    // Sans/proportional: body, chat, modals.
     #[serde(default)]
     ui: Option<String>,
-    // Monospace font: UI labels (kbd, code, status pills) AND terminal panes.
-    // The protected fallback chain (Nerd Font, Apple Symbols, Apple Color
-    // Emoji) is always behind the user value.
+    // Monospace: UI labels + terminal panes; user value sits before protected Nerd/Symbol fallback chain.
     #[serde(default)]
     mono: Option<String>,
 }
@@ -49,7 +47,7 @@ struct FontsConfig {
 struct AppConfig {
     #[serde(default)]
     attachments_dir: Option<String>,
-    // Legacy key for configs written by ≤ v0.4.x; read only when `attachments_dir` is absent.
+    // Legacy key for configs from ≤ v0.4.x; read only when `attachments_dir` is absent.
     #[serde(default)]
     images_dir: Option<String>,
     #[serde(default)]
@@ -259,8 +257,7 @@ fn load_config() -> AppConfig {
     }
 }
 
-// Read the legacy config.json once (if config.yml does not yet exist) so the
-// migrator can carry forward existing values into the new file.
+// Carry legacy config.json values forward into config.yml on first launch after upgrade.
 fn load_legacy_json_config() -> Option<AppConfig> {
     let path = legacy_config_file();
     let s = fs::read_to_string(&path).ok()?;
@@ -302,9 +299,7 @@ fn resolve_font_scale() -> f32 {
     raw.clamp(FONT_SCALE_MIN, FONT_SCALE_MAX)
 }
 
-// Conservative whitelist for font names — covers every real font ID without
-// allowing characters that could break out of the CSS string the webview
-// composes around it. Anything else is dropped (with a stderr warning).
+// Whitelist prevents breaking out of the webview's CSS string composer.
 fn sanitize_font_name(raw: Option<String>) -> String {
     let Some(s) = raw else { return String::new() };
     let trimmed = s.trim();
@@ -357,8 +352,7 @@ fn resolve_attachments_dir_and_seed(human_name: &str, extensions: &[String]) -> 
     }
     let cfg_path = config_file();
     if !cfg_path.exists() {
-        // Carry forward values from legacy config.json (if any) on first launch
-        // after the upgrade — do not silently lose user-set keys.
+        // Carry forward legacy config.json values on first launch after upgrade.
         let legacy = load_legacy_json_config().unwrap_or_default();
         let seed_human_name = legacy
             .human_name
@@ -418,8 +412,7 @@ fn resolve_attachments_dir_and_seed(human_name: &str, extensions: &[String]) -> 
     dir
 }
 
-// Hand-rolled YAML so the file ships with comments. serde_yml::to_string drops
-// them. Keep lines ≤80 chars and comments to one short line each.
+// Hand-rolled YAML to preserve comments; serde_yml::to_string drops them.
 #[allow(clippy::too_many_arguments)]
 fn render_seed_yaml(
     human_name: &str,
@@ -500,8 +493,6 @@ fn render_seed_yaml(
     )
 }
 
-// Minimal YAML string quoting: quote if the value contains anything that would
-// confuse the parser (start with special, contain colons/hashes, etc.).
 fn yaml_string(v: &str) -> String {
     let needs_quote = v.is_empty()
         || v.starts_with(|c: char| c.is_whitespace() || "!&*?|>%@`".contains(c))
@@ -551,8 +542,7 @@ pub(crate) fn resolve_tmux_bin() -> Result<PathBuf, String> {
         .parent()
         .ok_or_else(|| "no exe dir".to_string())?
         .to_path_buf();
-    // Tauri's bundle.resources preserves source path structure, so the tmux resource can
-    // land at either Contents/Resources/resources/tmux or Contents/Resources/tmux.
+    // bundle.resources preserves source structure → tmux can land in two locations.
     let candidates = [
         exe_dir.join("../Resources/resources/tmux"),
         exe_dir.join("../Resources/tmux"),
@@ -644,7 +634,7 @@ fn rotate_log_if_oversized(log_path: &Path) {
                     rotated.display()
                 );
             } else {
-                // Rotated archive may still hold tokens.
+                // Rotated archive may still hold tokens (query-string auth).
                 let _ = chmod_0600(&rotated);
             }
         }
@@ -669,7 +659,7 @@ async fn stream_to_log(
             return;
         }
     };
-    // Tokens land in this log via SSE/image URL query strings — enforce 0600 on existing files.
+    // Tokens leak via SSE/image query strings; enforce 0600.
     if let Err(e) = chmod_0600(&log_path) {
         eprintln!("[hub-log] {e}");
     }
@@ -714,11 +704,7 @@ fn open_config_file() -> Result<(), String> {
     Ok(())
 }
 
-// Open (or create + open) the user's global MCP config. Seeds the file with
-// a commented template on first open so the user has a working example.
-// chatbridge is INTENTIONALLY not in the template — it's our internal
-// scaffolding, force-injected into every per-agent config and stripped from
-// any user attempt to override it. Documented in the seed comments.
+// chatbridge omitted from template intentionally; it's force-injected per-agent and stripped from user configs.
 #[tauri::command]
 fn open_global_mcp_config() -> Result<(), String> {
     let path = pty::global_mcp_config_path();
@@ -743,8 +729,7 @@ fn open_global_mcp_config() -> Result<(), String> {
     Ok(())
 }
 
-// Re-read config.yml, kill the hub sidecar, restart it on a new port with fresh env.
-// Returns the new {url, token} so the UI can hot-swap without relaunching the app.
+// Returns new {url, token} so the UI can hot-swap without relaunching.
 #[tauri::command]
 fn reload_settings(
     handle: tauri::AppHandle,
@@ -811,9 +796,7 @@ fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-// UI settings sourced from config.yml. The webview reads these on boot and
-// after Reload to apply theme + font scale; tokens.css multiplies every
-// --fs-* value by var(--ui-font-scale).
+// tokens.css multiplies every --fs-* by var(--ui-font-scale).
 #[tauri::command]
 fn get_ui_settings() -> UiSettings {
     UiSettings {
@@ -823,11 +806,7 @@ fn get_ui_settings() -> UiSettings {
     }
 }
 
-// Open the configured editor in the agent's current working directory.
-// "Current" = whatever directory the agent's tmux pane is at right now,
-// so it tracks `cd` commands. Editor command from config.yml `editor:` —
-// supports leading args (e.g. "open -a Cursor") so Mac .app launchers and
-// CLI editors both work. The cwd is appended as the last argument.
+// Editor cmd from config.yml; cwd is the agent's live pane path (tracks `cd`), appended as last arg.
 #[tauri::command]
 fn open_in_editor(agent: String) -> Result<String, String> {
     let cfg = load_config();
@@ -844,8 +823,7 @@ fn open_in_editor(agent: String) -> Result<String, String> {
         return Err(format!("cwd does not exist: {}", cwd.display()));
     }
 
-    // Split on whitespace so "open -a Cursor" works as well as bare "code".
-    // First token may use ~ for $HOME; remaining tokens are passed verbatim.
+    // Split on whitespace so "open -a Cursor" works as well as bare "code"; first token may use ~.
     let mut parts = raw_editor.split_whitespace();
     let cmd_token = parts
         .next()
@@ -870,20 +848,7 @@ struct SlashCommandEntry {
     description: String,
 }
 
-// Discover slash commands available to a single agent. Scans:
-//   - agent's live cwd `.claude/commands/*.md` and `.claude/skills/*/SKILL.md`
-//   - personal `~/.claude/commands/*.md` and `~/.claude/skills/*/SKILL.md`
-//   - global MCP config (`~/Library/Application Support/A2AChannel/mcp.json`)
-//     for any server with a `prompts: [...]` annotation — yielded as
-//     `mcp__<server>__<prompt>` so the picker shows them as
-//     `/mcp__<server>__<prompt>`. Universally available across all agents
-//     (every agent's per-agent .mcp.json is generated from the same global
-//     config) so per-agent badges will always show N/N.
-// Returns `{name, description}` per command — name without the leading `/`,
-// description parsed from the YAML frontmatter `description:` field if
-// present (empty string otherwise). Built-ins are NOT included here; the UI
-// seeds those from a hardcoded list. Best-effort: any directory error
-// yields an empty contribution rather than propagating.
+// Scans cwd + ~/.claude commands/skills + global MCP `prompts: []` annotations. Built-ins not included.
 #[tauri::command]
 fn slash_discover_for_agent(agent: String) -> Vec<SlashCommandEntry> {
     let mut out: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
@@ -898,7 +863,6 @@ fn slash_discover_for_agent(agent: String) -> Vec<SlashCommandEntry> {
         scan_commands_dir(&root.join("commands"), &mut out);
         scan_skills_dir(&root.join("skills"), &mut out);
     }
-    // Append global MCP-prompt names (chatbridge already stripped by reader).
     let global_servers = pty::read_global_mcp_servers();
     for (server_name, server_cfg) in global_servers.iter() {
         let prompts = server_cfg.get("prompts").and_then(|v| v.as_array());
@@ -963,10 +927,7 @@ fn scan_skills_dir(dir: &Path, out: &mut std::collections::BTreeMap<String, Stri
     }
 }
 
-// Parse a small YAML frontmatter block at the head of a markdown file and
-// return the value of the `description:` key. Tolerant — only handles the
-// shape Claude Code uses (single-line value, optional quotes). Returns None
-// if the file has no frontmatter or no `description` line.
+// Tolerant: handles Claude Code's single-line, optionally-quoted value shape only.
 fn read_frontmatter_description(path: &Path) -> Option<String> {
     let raw = fs::read_to_string(path).ok()?;
     let mut lines = raw.lines();
@@ -981,7 +942,7 @@ fn read_frontmatter_description(path: &Path) -> Option<String> {
         if let Some(rest) = trimmed.strip_prefix("description:") {
             let v = rest.trim().trim_matches(|c: char| c == '"' || c == '\'');
             if !v.is_empty() {
-                // Truncate to ~120 chars so the picker stays compact.
+                // ~120 char cap keeps the picker compact.
                 let truncated: String = v.chars().take(120).collect();
                 return Some(truncated);
             }
@@ -1010,7 +971,7 @@ fn get_mcp_template() -> Result<String, String> {
 
 
 pub fn run() {
-    // Wipe WKWebView disk cache before Tauri creates the webview — otherwise stale assets persist.
+    // Wipe WKWebView disk cache before webview creation; otherwise stale assets persist.
     if let Some(cache_root) = dirs::cache_dir() {
         let base = cache_root.join("com.mnw.a2achannel/WebKit");
         let _ = fs::remove_dir_all(base.join("NetworkCache"));
@@ -1136,8 +1097,7 @@ pub fn run() {
                 if let Some(child) = child_opt {
                     let _ = child.kill();
                 }
-                // PTY handles Drop → attach-session children get SIGHUP → detach cleanly.
-                // tmux sessions are intentionally NOT killed here — they must survive app quit.
+                // PTY handles Drop → attach-session SIGHUP → detach cleanly. tmux sessions intentionally survive.
             };
             match event {
                 RunEvent::ExitRequested { .. } => kill(),

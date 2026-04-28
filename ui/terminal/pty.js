@@ -1,14 +1,4 @@
-// terminal/pty.js — Tauri-invoke wrappers for the PTY commands plus the
-// base64 helpers used to push keystrokes to the master end. Tier 3, loads
-// before terminal.js so the IIFE there can pull these via window.__A2A_TERM__.
-//
-// Depends on (declared earlier):
-//   nothing — uses window.__TAURI__.core.invoke directly so it's standalone.
-//
-// Exposes:
-//   window.__A2A_TERM__.pty = { ptySpawn, ptyWrite, ptyResize, ptyKill,
-//                               ptyList, ptyCaptureTurn, ptyReadCapture,
-//                               strToB64, b64ToBytes }
+// terminal/pty.js — Tauri PTY-invoke wrappers + base64 helpers; standalone (window.__TAURI__).
 
 (function () {
   function _invoke() {
@@ -36,33 +26,24 @@
     try { return await _invoke()('pty_list'); }
     catch { return []; }
   }
-  // Deterministic single-turn TUI capture. Forces tmux geometry to 240×100,
-  // tees pipe-pane to a per-turn file, injects `input`, polls the byte
-  // stream for completion markers (alt-screen exit / idle-prompt /
-  // quiescence). Returns { log_path, start_ms, end_ms, status }.
-  // status ∈ { "alt-exit" | "idle-prompt" | "quiescence" | "timeout" }
+  // status ∈ { "alt-exit" | "idle-prompt" | "quiescence" | "timeout" }.
   async function ptyCaptureTurn(agent, input, timeoutMs) {
     return _invoke()('pty_capture_turn', {
       agent, input, timeoutMs: timeoutMs ?? null,
     });
   }
-  // Reads a capture log file (pulls the Rust side's path-prefix-guarded
-  // reader). Path must start with /tmp/a2a/. maxBytes defaults to 256 KiB.
+  // Path must start with /tmp/a2a/; maxBytes defaults to 256 KiB.
   async function ptyReadCapture(logPath, maxBytes) {
     return _invoke()('pty_read_capture', {
       logPath, maxBytes: maxBytes ?? null,
     });
   }
-  // Heal tmux geometry for the agent — unsets stuck window-size overrides
-  // and snaps pane back to active xterm.js client size. Idempotent; safe
-  // to call on every slash-send.
+  // Idempotent; safe to call on every slash-send.
   async function ptyHealGeometry(agent) {
     try { return await _invoke()('pty_heal_geometry', { agent }); }
     catch (e) { console.warn('[pty] heal failed for', agent, e); }
   }
-  // Briefly tap the agent's PTY output (pipe-pane on/off around a sleep)
-  // and return the captured bytes as a string. No geometry forcing — used
-  // for short post-keypress footer reads. duration_ms clamped to [50, 5000].
+  // Short post-keypress footer reads (no geometry forcing); duration_ms clamped [50, 5000].
   async function ptyTapRead(agent, durationMs) {
     try { return await _invoke()('pty_tap_read', { agent, durationMs: durationMs ?? null }); }
     catch (e) { console.warn('[pty] tap-read failed for', agent, e); return ''; }

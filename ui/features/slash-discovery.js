@@ -1,21 +1,6 @@
-// slash-discovery.js — discovers slash commands available across the agents
-// in the currently-selected room. Combines a hardcoded built-in list (claude
-// version-bound) with a per-agent filesystem scan via the Tauri command
-// `slash_discover_for_agent`. Tier 2 of index.html.
-//
-// Depends on (declared earlier):
-//   from state.js — ROSTER, SELECTED_ROOM, ROOM_ALL, presenceState, tauriInvoke
-//
-// Exposes:
-//   BUILTIN_SLASH_COMMANDS, DESTRUCTIVE_SLASH_COMMANDS,
-//   discoverCommandsForAgent, discoverCommandsForRoom,
-//   commandUnion, commandAvailability
+// slash-discovery.js — built-in slash list + per-agent filesystem scan via Tauri.
 
-// Built-in claude-code slash commands with one-line descriptions. REVIEW ON
-// EACH CLAUDE CODE RELEASE — claude adds and renames built-ins between
-// versions, and this Map is the only source the picker has for commands
-// that don't live on disk. The filesystem scan handles custom commands
-// and skills automatically.
+// REVIEW ON EACH CLAUDE CODE RELEASE — built-ins drift between versions; this is the only source.
 const BUILTIN_SLASH_COMMANDS = new Map([
   ['/add-dir',           'Add a working directory the agent is allowed to read'],
   ['/advisor',           'Open advisor mode for guided decisions'],
@@ -49,16 +34,11 @@ const BUILTIN_SLASH_COMMANDS = new Map([
   ['/vim',               'Toggle vim editing mode in the input'],
 ]);
 
-// Destructive built-ins that wipe context per agent. The composer requires a
-// confirm modal when a command in this set targets more than one agent.
-// REVIEW ON EACH CLAUDE CODE RELEASE in lockstep with BUILTIN_SLASH_COMMANDS.
+// Wipes context per agent; composer asks confirm when targeting >1 agent. Review per Claude Code release.
 const DESTRUCTIVE_SLASH_COMMANDS = new Set(['/clear', '/compact']);
 
-// Returns Map<command, description|''>. Built-ins seed the map with their
-// hardcoded descriptions; the filesystem scan adds custom commands/skills
-// with descriptions parsed from .md frontmatter (when present).
 async function discoverCommandsForAgent(agent) {
-  const map = new Map(BUILTIN_SLASH_COMMANDS);  // clone so callers don't mutate
+  const map = new Map(BUILTIN_SLASH_COMMANDS);
   try {
     const items = await tauriInvoke('slash_discover_for_agent', { agent });
     if (Array.isArray(items)) {
@@ -71,17 +51,15 @@ async function discoverCommandsForAgent(agent) {
       }
     }
   } catch {
-    // Best-effort: if the Tauri call fails (agent not in registry, tmux
-    // missing, etc.) we still return the built-ins so the picker is useful.
+    // Best-effort: built-ins still returned on Tauri-call failure.
   }
   return map;
 }
 
 async function discoverCommandsForRoom(roomName) {
-  // Live = agent has presence AND its tab is in `live` state. Discovery only
-  // works for agents whose PTY we own, so external/dead/launching are skipped.
+  // Discovery requires PTY ownership; external/dead/launching skipped.
   const inRoom = ROSTER.filter((a) => {
-    if (a.room === null) return false;             // human is never an agent
+    if (a.room === null) return false;
     if (roomName !== ROOM_ALL && a.room !== roomName) return false;
     return !!presenceState[a.name];
   });
@@ -95,9 +73,7 @@ async function discoverCommandsForRoom(roomName) {
   return result;
 }
 
-// Union returns a Map<command, description> across all agents. Description
-// is taken from the first agent that supplies a non-empty one (built-ins
-// always win since they're seeded first per agent).
+// Description from the first agent supplying a non-empty one (built-ins always win).
 function commandUnion(roomMap) {
   const u = new Map();
   for (const cmds of roomMap.values()) {

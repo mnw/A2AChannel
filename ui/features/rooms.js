@@ -1,21 +1,4 @@
-// rooms.js — room switcher + menu, client-side filter, pause/resume control.
-// Tier 2 of index.html.
-//
-// Room state (SELECTED_ROOM_KEY, ROOM_ALL, SELECTED_ROOM) lives in state.js
-// so any module can read the current selection. The CRUD lives here.
-//
-// Depends on (declared earlier):
-//   from state.js — SELECTED_ROOM (mutated), ROOM_ALL, SELECTED_ROOM_KEY,
-//                   ROSTER, HUMAN_NAME
-//   from http.js  — authedFetch, parseErrorBody
-//   from messages.js — addMessage
-//   from nutshell.js — renderNutshell, loadNutshell (loadNutshell currently
-//                       still in main.js until §3.1)
-//   from roster.js (loaded after) — renderTargetDropdown
-//
-// Exposes:
-//   distinctRooms, renderRoomSwitcher, renderRoomMenu, updateRoomDisplayLabel,
-//   updatePauseResumeState, applyRoomFilter, fireRoomInterrupt
+// rooms.js — room switcher + menu, client-side filter, pause/resume buttons.
 
 const roomSwitcherEl   = document.getElementById('room-switcher');
 const roomDisplayBtn   = document.getElementById('room-display');
@@ -35,8 +18,7 @@ function distinctRooms() {
 function renderRoomSwitcher() {
   if (!roomSwitcherEl) return;
   const rooms = distinctRooms();
-  // Mirror options into the hidden <select> so the value is still readable the
-  // way the composer target-dropdown pattern does it — single source of truth.
+  // Mirror options into the hidden <select>; same pattern as composer target-dropdown.
   roomSwitcherEl.innerHTML = '';
   const allOpt = document.createElement('option');
   allOpt.value = ROOM_ALL;
@@ -48,7 +30,7 @@ function renderRoomSwitcher() {
     opt.textContent = `# ${r}`;
     roomSwitcherEl.appendChild(opt);
   }
-  // Snap to a valid value if the persisted one was removed (e.g. last agent in that room quit).
+  // Snap to valid value if persisted room is gone (last agent in that room quit).
   if (SELECTED_ROOM !== ROOM_ALL && !rooms.includes(SELECTED_ROOM)) {
     SELECTED_ROOM = ROOM_ALL;
     localStorage.setItem(SELECTED_ROOM_KEY, ROOM_ALL);
@@ -126,10 +108,7 @@ function updatePauseResumeState() {
 function applyRoomFilter() {
   document.body.dataset.selectedRoom = SELECTED_ROOM;
   document.body.classList.toggle('room-filtered', SELECTED_ROOM !== ROOM_ALL);
-  // Per-element visibility: each rendered message/card/tab tags its own `data-room`.
-  // The visibility rules below are injected at runtime (dynamic attribute selectors
-  // depend on the currently-selected room label). No static counterpart in any
-  // stylesheet — this JS is the single source of truth.
+  // Selectors depend on the runtime room label, so this JS is the single source of truth.
   let styleEl = document.getElementById('room-filter-style');
   if (!styleEl) {
     styleEl = document.createElement('style');
@@ -140,9 +119,7 @@ function applyRoomFilter() {
     styleEl.textContent = '';
   } else {
     const r = CSS.escape(SELECTED_ROOM);
-    // Hide messages, handoff/interrupt/permission cards, roster pills, and terminal tabs
-    // whose data-room doesn't match. Elements without data-room (system events, human
-    // messages without a specific room) stay visible in every view.
+    // Elements without data-room (system events, generic human messages) stay visible everywhere.
     styleEl.textContent = `
       body.room-filtered .msg[data-room]:not([data-room="${r}"]),
       body.room-filtered .handoff-card[data-room]:not([data-room="${r}"]),
@@ -154,10 +131,8 @@ function applyRoomFilter() {
       }
     `;
   }
-  // Nutshell strip re-render (if the renderer is already defined).
   if (typeof renderNutshell === 'function') renderNutshell();
-  // Notify terminal pane so it can refocus to a visible tab — hiding the active
-  // tab via CSS alone leaves the wrong xterm pane showing.
+  // Notify terminal pane: hiding active tab via CSS alone leaves wrong xterm pane showing.
   document.dispatchEvent(new CustomEvent('a2a:room-filter', {
     detail: { room: SELECTED_ROOM === ROOM_ALL ? null : SELECTED_ROOM },
   }));
@@ -170,11 +145,8 @@ roomSwitcherEl?.addEventListener('change', () => {
   renderRoomMenu();
   updatePauseResumeState();
   applyRoomFilter();
-  // Room change re-filters the target dropdown + menu so we don't surface
-  // out-of-room agents in the composer. Mention autocomplete uses SELECTED_ROOM
-  // live and doesn't need a re-render.
+  // Re-filter target dropdown so we don't surface out-of-room agents.
   if (typeof renderTargetDropdown === 'function') renderTargetDropdown();
-  // Fetch (or refresh) the selected room's nutshell so the strip updates.
   if (SELECTED_ROOM !== ROOM_ALL) {
     if (typeof loadNutshell === 'function') loadNutshell(SELECTED_ROOM);
   } else {

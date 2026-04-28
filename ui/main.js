@@ -1,15 +1,4 @@
-// Globals (BUS, AUTH_TOKEN, HUMAN_NAME), card-state maps, DOM handles,
-// reason-modal helper (askReason), tiny helpers (cap/shade/cssName), and
-// other module-level state live in ui/state.js — loaded in tier 1.
-//
-// HTTP helpers (authedFetch, parseErrorBody, withToken, imgUrl) live in
-// ui/http.js — also tier 1.
-// Composer (send + autoGrow + Enter handler + send-button click) lives in
-// ui/composer.js — loaded in tier 2.
-
-// Rooms (room switcher, menu, filter, fireRoomInterrupt) live in ui/rooms.js.
-// Roster (applyRoster, renderLegend, target dropdown/menu, presence) live in
-// ui/roster.js. Both tier 2.
+// main.js — bootstrap, SSE wiring, settings/reload buttons.
 
 async function loadRoster() {
   try {
@@ -20,10 +9,7 @@ async function loadRoster() {
   }
 }
 
-// /stream doesn't replay handoffs the way /agent-stream does, so load pending ones explicitly.
-// Shared loader for the three /<kind>s?status=pending endpoints. Each kind
-// maps a snapshot onto the event shape its renderer expects (handoff_id /
-// interrupt_id / permission_id; permission also tags kind="permission.new").
+// /stream doesn't replay handoffs like /agent-stream does; load pending ones explicitly.
 async function loadPending(path, toEvent, renderFn) {
   try {
     const r = await authedFetch(`${path}?status=pending&limit=500`);
@@ -55,16 +41,7 @@ async function loadNutshell(room) {
   }
 }
 
-// EventSource / <img> can't send Authorization headers — append ?token= instead.
-// Chat-row rendering (addMessage, attachments, image-zoom, copy buttons,
-// copy toast, trimMessages) lives in ui/messages.js — loaded in tier 2.
-
-// Text utilities (escHtml, escAttr, escRegex, linkify, highlightMentions,
-// parseMentions) live in ui/text.js — loaded in tier 1 of index.html.
-
-// applyPresence + markAllOffline live in ui/roster.js.
-
-// (session, lastSeenId) persists across restarts; hub restart mints a new session → reset lastSeenId.
+// (session, lastSeenId) persists across restarts; hub restart mints new session → reset lastSeenId.
 let serverSession = localStorage.getItem('a2achannel_session') || '';
 let lastSeenId = parseInt(localStorage.getItem('a2achannel_last_event_id') || '0', 10) || 0;
 
@@ -124,16 +101,7 @@ function connect() {
   };
 }
 
-// Mentions (@-autocomplete) live in ui/mentions.js; emoji picker in ui/emoji.js;
-// attachments (upload, paste, drag-drop) in ui/attachments.js. All tier 2.
-
-
-
-// Nutshell state + editor + countdown ticker live in ui/nutshell.js.
-
-// JS fallback for the title-bar drag region — Tauri 2's data-tauri-drag-region
-// auto-handler doesn't always fire reliably; attaching mousedown explicitly
-// and calling startDragging() is the documented manual path.
+// Tauri 2's auto data-tauri-drag-region isn't reliable; manual startDragging() is the documented path.
 (function attachTitleBarDrag() {
   const strip = document.querySelector('.titlebar');
   if (!strip) return;
@@ -160,7 +128,7 @@ async function bootstrap() {
   if (invoke) {
     try {
       const info = await invoke('get_hub_url');
-      // get_hub_url returns { url, token }; accept legacy bare-string too.
+      // {url, token} or legacy bare-string.
       if (info && typeof info === 'object') {
         if (typeof info.url === 'string' && info.url) BUS = info.url;
         if (typeof info.token === 'string') AUTH_TOKEN = info.token;
@@ -179,18 +147,15 @@ async function bootstrap() {
         NAMES[HUMAN_NAME] = cap(HUMAN_NAME);
       }
     } catch {}
-    // Version lives in the macOS About menu (CFBundleShortVersionString) — no
-    // need to render it in-app. Removed from the header in v0.9.9.
   }
   try {
     await loadRoster();
-    // Nutshell is per-room in v0.9+. Fetch the current selection's room (or each
-    // distinct room we know about, so switching rooms is instant post-boot).
+    // Per-room nutshell: fetch selected room or pre-cache all known rooms for instant switching.
     if (SELECTED_ROOM !== ROOM_ALL) {
       await loadNutshell(SELECTED_ROOM);
     } else {
       for (const r of distinctRooms()) {
-        loadNutshell(r); // fire-and-forget; cache by room
+        loadNutshell(r);
       }
     }
     await loadPendingHandoffs();
@@ -206,9 +171,6 @@ async function bootstrap() {
 
 bootstrap();
 
-// MCP config modal lives in ui/mcp-modal.js — loaded in tier 2.
-
-/* ── Settings + reload buttons (orchestrator concerns — touch SSE state) ── */
 const settingsBtn = document.getElementById('settings-btn');
 if (settingsBtn) {
   settingsBtn.addEventListener('click', async () => {
@@ -255,7 +217,7 @@ if (reloadBtn) {
         if (typeof info.url === 'string' && info.url) BUS = info.url;
         if (typeof info.token === 'string') AUTH_TOKEN = info.token;
       }
-      // Re-apply theme + font scale from the (re-read) config.yml.
+      // Re-apply theme + font scale from re-read config.yml.
       if (window.A2A_UI && typeof window.A2A_UI.reload === 'function') {
         try { await window.A2A_UI.reload(); } catch {}
       }
@@ -266,7 +228,7 @@ if (reloadBtn) {
           NAMES[HUMAN_NAME] = cap(HUMAN_NAME);
         }
       } catch {}
-      // New hub → fresh session id + chatLog; tear down SSE and cards, then replay from ledger.
+      // New hub → fresh session id + chatLog; tear down SSE/cards then replay from ledger.
       if (activeES) { try { activeES.close(); } catch {} activeES = null; }
       handoffCards.clear();
       messagesEl.innerHTML = '';
@@ -301,7 +263,6 @@ if (reloadBtn) {
     }
   });
 }
-// Shares the spawn flow with terminal.js's tab-strip "+" via the a2a:open-spawn event.
 const addAgentBtn = document.getElementById('add-agent-btn');
 if (addAgentBtn) {
   addAgentBtn.addEventListener('click', () => {

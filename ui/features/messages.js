@@ -1,16 +1,4 @@
-// messages.js — chat-row rendering: addMessage, attachments, image zoom,
-// link-copy, copy buttons, copy toast, trimMessages. Tier 2 of index.html.
-//
-// Depends on (declared earlier):
-//   from state.js — messagesEl, COLORS, NAMES, ATTACHMENT_URL_RE, IMAGE_EXT_RE,
-//                   MESSAGE_DOM_LIMIT, BUS, lastFrom (mutated), permissionCards,
-//                   interruptCards, handoffCards, cssName
-//   from text.js  — escHtml, escAttr, linkify, highlightMentions
-//   from http.js  — imgUrl
-//
-// Exposes:
-//   addMessage, isSafeAttachmentSrc, renderAttachmentHtml,
-//   showCopyToast, trimMessages
+// messages.js — chat-row rendering, attachments, image zoom, copy affordances, DOM trim.
 
 function addMessage(data) {
   const from = data.from || 'system';
@@ -24,10 +12,7 @@ function addMessage(data) {
   const div = document.createElement('div');
   const cls = from === 'you' || from === 'system' ? `from-${from}` : `from-${cssName(from)}`;
   div.className = `msg ${cls}`;
-  // Room tag drives client-side filtering. Messages with no room (system/global events or
-  // human-originated chat without a room hint) lack the attribute entirely and stay visible
-  // in every filtered view — the CSS `[data-room]:not([data-room="x"])` only hides tagged
-  // non-matching rows.
+  // Untagged rows stay visible everywhere; CSS only hides tagged non-matches.
   if (typeof data.room === 'string' && data.room) div.dataset.room = data.room;
 
   const displayName = NAMES[from] || from;
@@ -63,17 +48,14 @@ function addMessage(data) {
   }
   content.appendChild(header);
 
-  // innerHTML is safe here: renderChatMarkdown escapes all prose and code
-  // body content before assembling. linkify/highlight run on prose only.
+  // Safe innerHTML: renderChatMarkdown escapes prose and code; linkify runs on prose only.
   const safeAttachment = data.image && isSafeAttachmentSrc(data.image) ? data.image : null;
   const attachmentHtml = safeAttachment ? renderAttachmentHtml(safeAttachment) : '';
   const body = document.createElement('div');
   body.className = 'msg-body';
   body.innerHTML = renderChatMarkdown(data.text || '') + attachmentHtml;
 
-  // Copy-to-clipboard affordance on agent messages (not human / not system).
-  // Two buttons — top-right and bottom-right — both copy the raw text. Hover-only,
-  // subtle by default, full-opacity when the user actually targets them.
+  // Copy buttons (top + bottom) on agent messages only; hover-only.
   if (from !== 'you' && from !== 'system') {
     const copyText = data.text || '';
     for (const pos of ['top', 'bottom']) {
@@ -125,7 +107,6 @@ function renderAttachmentHtml(url) {
          `</a>`;
 }
 
-// Image zoom — click any zoomable image in a chat row to open it in a new window.
 messagesEl.addEventListener('click', (e) => {
   const img = e.target.closest?.('.msg-body img[data-zoomable]');
   if (!img) return;
@@ -134,8 +115,7 @@ messagesEl.addEventListener('click', (e) => {
   window.open(src, '_blank', 'noopener');
 });
 
-// ── Copy toast (shared element). Rapid clicks extend the visible window
-// rather than stacking toasts.
+// Rapid clicks extend the visible window rather than stacking toasts.
 const copyToastEl = document.getElementById('copy-toast');
 let _copyToastTimer = 0;
 function showCopyToast(msg) {
@@ -145,10 +125,8 @@ function showCopyToast(msg) {
   clearTimeout(_copyToastTimer);
   _copyToastTimer = setTimeout(() => copyToastEl.classList.remove('visible'), 1400);
 }
-// terminal.js (and other tier-3 modules) need this without redeclaring.
 window.showCopyToast = showCopyToast;
 
-// Inline link-copy buttons inside chat-row links.
 messagesEl.addEventListener('click', (e) => {
   const btn = e.target.closest?.('.msg-link-copy');
   if (!btn) return;
@@ -185,9 +163,7 @@ messagesEl.addEventListener('click', (e) => {
   }
 });
 
-// ── DOM-limit trim. Skips the persistent #permission-stack (always firstChild
-// when present). Without the skip, trim would delete the stack itself,
-// breaking every subsequent pending card.
+// Skip persistent #permission-stack; deleting it would break subsequent pending cards.
 function trimMessages() {
   const stack = document.getElementById('permission-stack');
   while (messagesEl.childElementCount > MESSAGE_DOM_LIMIT) {

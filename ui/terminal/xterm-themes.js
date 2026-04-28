@@ -1,23 +1,10 @@
-// terminal/xterm-themes.js — xterm.js palette resolver. Reads the
-// `--xterm-*` design tokens from CSS at the moment of call, so whichever
-// `[data-theme=…]` is active drives the terminal colors automatically.
-//
-// One source of truth: tokens.css. Adding a new theme is a pure CSS change
-// (a new `[data-theme="…"]` block); this file does not need updating.
-//
-// Exposes:
-//   window.__A2A_TERM__.xtermThemes.current()    — palette for xterm.js
-//   window.__A2A_TERM__.xtermThemes.fontSize()   — 12 × --ui-font-scale
-//   window.__A2A_TERM__.xtermThemes.fontFamily() — user terminal_mono
-//                                                  prepended to the
-//                                                  protected fallback chain
+// xterm-themes.js — palette resolver reading --xterm-* tokens; new themes are pure CSS changes.
 
 (function () {
   function read(name) {
     return getComputedStyle(document.body).getPropertyValue(name).trim();
   }
 
-  // The 19 keys xterm.js consumes. Maps 1:1 to --xterm-* CSS tokens.
   const KEY_TO_TOKEN = {
     background:     '--xterm-bg',
     foreground:     '--xterm-fg',
@@ -48,10 +35,7 @@
     return out;
   }
 
-  // Terminal font size = the resolved value of --fs-terminal in tokens.css.
-  // tokens.css aliases it to a step in the --fs-* scale, which already
-  // includes the --ui-font-scale multiplier — no extra math needed here.
-  // The single source of truth is tokens.css; this file just reads it.
+  // --fs-terminal already includes --ui-font-scale (single source: tokens.css).
   function fontSize() {
     const raw = getComputedStyle(document.documentElement)
       .getPropertyValue('--fs-terminal').trim();
@@ -59,13 +43,7 @@
     return Number.isFinite(n) && n > 0 ? Math.round(n) : 13;
   }
 
-  // PROTECTED terminal font chain. Required so claude's TUI renders right:
-  //   - CaskaydiaMono Nerd Font: Braille + box-drawing in claude's logo
-  //   - JetBrains Mono / SF Mono / Menlo: monospace fallbacks
-  //   - Apple Symbols: glyphs the Nerd Font lacks
-  //   - Apple Color Emoji: emoji rendering
-  // The user override (config.yml fonts.terminal_mono) is PREPENDED only —
-  // it can never remove anything from this chain.
+  // PROTECTED chain (Nerd Font + Apple Symbols + Color Emoji); user override only PREPENDS.
   const TERM_BASELINE =
     "'CaskaydiaMono Nerd Font', 'JetBrains Mono', 'SF Mono', Menlo, " +
     "'Apple Symbols', 'Apple Color Emoji', monospace";

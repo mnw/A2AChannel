@@ -1,9 +1,4 @@
-// SQLite ledger setup + versioned schema migrations. Migrations are frozen
-// history — v1 through v7 are append-only; never edit prior versions.
-//
-// Each persistent state-machine kind currently has its schema inline in
-// migrateLedger(); v0.9.5 §5-§7 move those blocks into per-kind `migrate(db)`
-// hooks while keeping the same chronological effect.
+// ledger.ts — SQLite ledger + versioned migrations. Frozen append-only history; never edit prior.
 
 import { Database } from "bun:sqlite";
 import { chmodSync } from "node:fs";
@@ -30,7 +25,7 @@ export function openLedger(path: string): LedgerOpenResult {
       console.error(`[ledger] chmod 0600 on ${path} failed:`, e);
     }
     migrateLedger(db);
-    // WAL-mode sidecars (-wal/-shm) are created by SQLite with umask default; tighten to 0600.
+    // -wal/-shm are created with umask default; tighten to 0600.
     for (const suffix of ["-wal", "-shm"]) {
       const sidePath = `${path}${suffix}`;
       try {
@@ -112,7 +107,6 @@ export function migrateLedger(db: Database): void {
     console.log(`[ledger] applied migration v1`);
   }
   if (current < 2) {
-    // v2 migration: adds `interrupts` + `nutshell` tables; reuses `events` for all kinds.
     db.transaction(() => {
       db.exec(`
         CREATE TABLE interrupts (
@@ -147,7 +141,6 @@ export function migrateLedger(db: Database): void {
     console.log(`[ledger] applied migration v2`);
   }
   if (current < 3) {
-    // v3 migration: claude-session capture keyed by (agent, cwd) for the spawn modal's restore flow.
     db.transaction(() => {
       db.exec(`
         CREATE TABLE claude_sessions (
@@ -164,7 +157,6 @@ export function migrateLedger(db: Database): void {
     console.log(`[ledger] applied migration v3`);
   }
   if (current < 4) {
-    // v4 migration: Claude Code permission-relay. Pending approvals re-enter the room.
     db.transaction(() => {
       db.exec(`
         CREATE TABLE permissions (
@@ -188,10 +180,7 @@ export function migrateLedger(db: Database): void {
     console.log(`[ledger] applied migration v4`);
   }
   if (current < 5) {
-    // v5 migration: add 'dismissed' terminal state to permissions.status so users
-    // can clear xterm-first ghost cards (claude answered the approval locally and
-    // never notified the channel, so the row would otherwise stay pending forever).
-    // SQLite can't ALTER a CHECK constraint in place — copy-drop-rename.
+    // v5: add 'dismissed' to permissions.status (CHECK can't ALTER → copy-drop-rename).
     db.transaction(() => {
       db.exec(`
         CREATE TABLE permissions_new (
@@ -218,9 +207,7 @@ export function migrateLedger(db: Database): void {
     console.log(`[ledger] applied migration v5`);
   }
   if (current < 6) {
-    // v6 migration: rooms. Add room column to events + handoffs + interrupts + permissions
-    // (existing rows migrate to 'default'). Restructure nutshell from single-row (CHECK id=0)
-    // to per-room keyed by room TEXT PRIMARY KEY — SQLite can't drop a CHECK in place, copy-drop-rename.
+    // v6: rooms. Add `room` to events/handoffs/interrupts/permissions; restructure nutshell to per-room.
     db.transaction(() => {
       db.exec(`
         ALTER TABLE events     ADD COLUMN room TEXT;
@@ -248,11 +235,7 @@ export function migrateLedger(db: Database): void {
     console.log(`[ledger] applied migration v6`);
   }
   if (current < 7) {
-    // v7 migration: rename `events.handoff_id` → `events.entity_id`. The column has
-    // been a generic entity id since the v0.6 interrupt migration — it carries
-    // handoff ids, interrupt ids, permission ids, and the literal 'nutshell'. The
-    // old name was misleading. Purely additive — no row data changes; index
-    // rebuilds under the new name.
+    // v7: rename events.handoff_id → events.entity_id (carries any kind's id since v2).
     db.transaction(() => {
       db.exec(`
         ALTER TABLE events RENAME COLUMN handoff_id TO entity_id;

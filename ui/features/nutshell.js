@@ -1,24 +1,4 @@
-// nutshell.js — per-room project-summary strip + editor + handoff-card
-// countdown ticker. Tier 2 of index.html.
-//
-// Nutshell is per-room: an SSE update for room X stores into nutshellByRoom[X];
-// only the currently-selected room renders. Edits flow through the handoff
-// primitive — the hub's accept path detects the "[nutshell]" task prefix.
-//
-// The countdown ticker lives here too because it's a sibling concern of
-// "ambient room context" — it reads from handoffCards (the global shared
-// map declared in state.js) and updates each pending card's "Xm Ys left"
-// label once per second. Could move to messages.js or its own file later.
-//
-// Depends on (declared earlier):
-//   from state.js — SELECTED_ROOM, ROOM_ALL, HUMAN_NAME, handoffCards, NAMES
-//   from http.js  — authedFetch, parseErrorBody
-//   from messages.js — addMessage
-//
-// Exposes:
-//   applyNutshell, renderNutshell, currentNutshell,
-//   openNutshellEditor, closeNutshellEditor, submitNutshellProposal,
-//   updateCountdownLabel
+// nutshell.js — per-room summary strip + editor; also runs the handoff-card countdown ticker.
 
 const nutshellEl        = document.getElementById('nutshell');
 const nutshellBodyEl    = document.getElementById('nutshell-body');
@@ -28,7 +8,7 @@ const nutshellEditor    = document.getElementById('nutshell-editor');
 const nutshellTextarea  = document.getElementById('nutshell-editor-textarea');
 const nutshellSubmit    = document.getElementById('nutshell-editor-submit');
 const nutshellCancel    = document.getElementById('nutshell-editor-cancel');
-const nutshellByRoom = new Map(); // room -> { text, version, updated_at_ms, updated_by }
+const nutshellByRoom = new Map();
 const EMPTY_NUTSHELL = { text: '', version: 0, updated_at_ms: 0, updated_by: null };
 
 function currentNutshell() {
@@ -38,8 +18,7 @@ function currentNutshell() {
 
 function applyNutshell(snapshot) {
   if (!snapshot || typeof snapshot !== 'object') return;
-  // Hub always returns a `room` field in v0.9+. Fall back defensively if missing
-  // (e.g. during a mid-rollout downgrade), storing under "default".
+  // Defensive fallback during mid-rollout downgrade where `room` may be missing.
   const room = (typeof snapshot.room === 'string' && snapshot.room) ? snapshot.room : 'default';
   nutshellByRoom.set(room, {
     text: snapshot.text ?? '',
@@ -47,7 +26,6 @@ function applyNutshell(snapshot) {
     updated_at_ms: snapshot.updated_at_ms ?? 0,
     updated_by: snapshot.updated_by ?? null,
   });
-  // Only re-render if the update is for the currently-viewed room.
   if (SELECTED_ROOM === room) {
     renderNutshell();
     nutshellEl.classList.add('flash');
@@ -116,9 +94,7 @@ async function submitNutshellProposal() {
   }
   nutshellSubmit.disabled = true;
   try {
-    // Nutshell edits flow through the handoff primitive — the accept path detects
-    // the "[nutshell]" task prefix and applies context.patch atomically. `context.room`
-    // tells the hub which room's nutshell to update (human is super-user so any room is ok).
+    // Edits go through handoff: accept path detects "[nutshell]" prefix and applies context.patch.
     const r = await authedFetch('/handoffs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -134,7 +110,7 @@ async function submitNutshellProposal() {
       const err = await parseErrorBody(r);
       addMessage({ from: 'system', to: HUMAN_NAME, text: `Nutshell proposal failed: ${err}`, ts: '' });
     } else {
-      // Human is both sender and recipient — auto-accept to skip the confirmation step.
+      // Human is sender + recipient: auto-accept to skip the confirmation step.
       const body = await r.json();
       if (body?.id) {
         await authedFetch(`/handoffs/${encodeURIComponent(body.id)}/accept`, {
@@ -166,7 +142,6 @@ nutshellTextarea?.addEventListener('keydown', (e) => {
   }
 });
 
-// ── Countdown ticker for pending handoff cards ("Nm Ss left").
 function updateCountdownLabel(cardEl) {
   const label = cardEl.querySelector('.handoff-countdown');
   if (!label) return;

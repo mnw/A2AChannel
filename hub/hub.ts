@@ -68,7 +68,7 @@ import {
   validRoomLabel,
 } from "./core/ids";
 
-// Close the chmod-after-write race on SQLite's ledger.db-wal / ledger.db-shm.
+// Close chmod-after-write race on SQLite's ledger.db-wal / ledger.db-shm.
 process.umask(0o077);
 
 const PORT = Number(process.env.PORT ?? 8011);
@@ -84,15 +84,9 @@ const DEFAULT_ROOM = (process.env.A2A_DEFAULT_ROOM ?? "default").trim() || "defa
 const HISTORY_LIMIT = 1000;
 const AGENT_QUEUE_MAX = 500;
 const UI_QUEUE_MAX = 500;
-// IMAGE_MAX_BYTES — see core/auth.ts
-// JSON_BODY_MAX, HANDOFF_BODY_MAX, PERMISSION_BODY_MAX, IMAGE_MAX_BYTES — see core/auth.ts
 const STALE_AGENT_MS = 15_000;
 const SWEEP_INTERVAL_MS = 5_000;
-// HANDOFF_TTL_*, HANDOFF_CONTEXT_MAX_BYTES, HANDOFF_TASK_MAX_CHARS, HANDOFF_REASON_MAX_CHARS — see kinds/handoff.ts
-// LEDGER_SCHEMA_VERSION — see core/ledger.ts
-// HandoffStatus, HandoffSnapshot, HandoffRow, HandoffOutcome, ListHandoffsFilter — see kinds/handoff.ts
 import type { HandoffStatus } from "./kinds/handoff";
-// Extension allowlist + upload/image handlers + MIME map — see core/attachments.ts
 const ALLOWED_EXTENSIONS = buildAllowedExtensions(process.env.A2A_ALLOWED_EXTENSIONS);
 
 if (!AUTH_TOKEN) {
@@ -114,7 +108,7 @@ if (!LEDGER_DB) {
 type Agent = {
   name: string;
   color: string;
-  // null = the human, a super-user in every room. Non-null = this agent's room.
+  // null = human (super-user in every room).
   room: string | null;
 };
 type Entry = {
@@ -126,20 +120,16 @@ type Entry = {
   image?: string | null;
   type?: string;
   agents?: Agent[] | Record<string, boolean>;
-  // Sender's room; null for human-originated events and global system events.
+  // null for human-originated events and global system events.
   room?: string | null;
 };
-
-// class DropQueue — see core/sse.ts
 
 const chatLog: Entry[] = [];
 const uiSubscribers = new Set<DropQueue<Entry>>();
 let entrySeq = 0;
 const SESSION_ID = randomId(8);
 
-// Agent registry — see core/agents.ts. Declared before functions that reference
-// it; callbacks use forward refs via closure (broadcastRoster + broadcastPresence
-// are defined below and resolved at call time).
+// Callbacks use forward refs via closure (broadcastRoster + broadcastPresence defined below).
 const agents = createAgentRegistry({
   defaultRoom: DEFAULT_ROOM,
   staleMs: STALE_AGENT_MS,
@@ -162,14 +152,7 @@ function openLedger(): void {
   ledgerEnabled = result.enabled;
 }
 
-// migrateLedger — see core/ledger.ts
-
-
 openLedger();
-
-// Handoff + interrupt + permission state machines + types — see hub/kinds/*.
-// Only the expire-sweep wrappers remain hub-local; everything else is driven
-// through KIND_ROUTES (routing) + KindModule.pendingFor (replay).
 
 function expireHandoff(id: string): HandoffSnapshot | null {
   if (!ledgerDb) return null;
@@ -180,23 +163,15 @@ function findExpirable(nowMs: number): string[] {
   return findExpirableK(ledgerDb, nowMs);
 }
 
-// readNutshell wrapper used by buildBriefing and handleGetNutshell.
 function readNutshell(room: string): NutshellSnapshot {
   return readNutshellCore(ledgerDb, resolveRoom(room));
 }
 
-
-// ts, randomId, colorFromName, validName, validRoomLabel, ctEquals — see core/ids.ts + core/auth.ts
-
-// Resolve and clean a room value from untrusted input. Returns DEFAULT_ROOM when
-// the input is empty/invalid so callers don't have to branch. Stays in hub.ts
-// because it references the hub-level DEFAULT_ROOM constant.
+// Returns DEFAULT_ROOM on empty/invalid input so callers don't have to branch.
 function resolveRoom(raw: string | null | undefined): string {
   const s = (raw ?? "").trim();
   return s && validRoomLabel(s) ? s : DEFAULT_ROOM;
 }
-
-// ensureAgent, removeAgent, scheduleStaleRemoval — see core/agents.ts (aliased above).
 
 function broadcastUI(entry: Entry): void {
   entry.id = ++entrySeq;
@@ -205,14 +180,7 @@ function broadcastUI(entry: Entry): void {
   for (const q of uiSubscribers) q.push(entry);
 }
 
-// Unified SSE scope emit — kinds build an Entry, call emit(entry, scope), and
-// the resolver fans out to the right queues. Today this lives in hub.ts because
-// it closes over `knownAgents`, `agentQueues`, `permanentAgents`; it moves into
-// core/ with `HubCapabilities` in §9 when the agent registry extracts. Scopes:
-//   - broadcast:   UI + all non-permanent agents
-//   - to-agents:   UI + the listed agents (skips unknown / permanent)
-//   - ui-only:     UI subscribers only (roster, presence, nutshell)
-//   - room:        UI + all non-permanent agents whose `room` matches
+// Scopes: broadcast | to-agents | ui-only | room. Permanent agents (human) skipped — they read /stream.
 function emit(entry: Entry, scope: Scope): void {
   broadcastUI(entry);
   if (scope.kind === "ui-only") return;
@@ -238,9 +206,7 @@ function emit(entry: Entry, scope: Scope): void {
   }
 }
 
-// Escape hatch — for one-off delivery rules that don't deserve a named scope.
-// Kinds SHOULD prefer named scopes (named > predicate as long as the enum stays
-// small); promote a predicate to the Scope enum when the same rule shows up twice.
+// Escape hatch; kinds should prefer named scopes and promote to the Scope enum on second use.
 function emitWhere(entry: Entry, predicate: (agent: AgentType) => boolean): void {
   broadcastUI(entry);
   for (const [name, agent] of knownAgents.entries()) {
@@ -254,14 +220,11 @@ function emitWhere(entry: Entry, predicate: (agent: AgentType) => boolean): void
 function broadcastRoster(): void {
   const snap = agents.rosterSnapshot();
   for (const q of uiSubscribers) q.push(snap);
-  // Re-brief via the debounced path so a burst of agent joins (e.g., reconnect
-  // storm after hub restart) collapses into a single final-state briefing per
-  // peer instead of O(N) intermediate snapshots.
+  // Debounced so reconnect storms collapse into a single final-state briefing per peer.
   scheduleBriefingFanout();
 }
 
-// Peer list excludes self + non-same-room agents (human always included). Tool list must stay
-// in sync with channel.ts. Briefing.nutshell is room-scoped.
+// Peer list excludes self + non-same-room agents (human always included). Tool list mirrors channel.ts.
 function buildBriefing(agent: string): Entry & {
   type: string;
   room: string | null;
@@ -276,7 +239,7 @@ function buildBriefing(agent: string): Entry & {
   const peers: Array<{ name: string; online: boolean; room: string | null }> = [];
   for (const [name, a] of knownAgents) {
     if (name === agent) continue;
-    // Include same-room peers and all cross-room members (human = room null).
+    // Same-room peers and all cross-room members (human = room null).
     if (a.room !== null && a.room !== myRoom) continue;
     peers.push({
       name,
@@ -289,8 +252,6 @@ function buildBriefing(agent: string): Entry & {
   const nutshell = ledgerEnabled ? readNutshell(myRoom).text : "";
   return {
     type: "briefing",
-    // Non-kind tools (chat) + kind-contributed tools aggregated from KINDS.
-    // Adding a kind automatically extends the briefing.
     tools: ["post", "post_file", ...KINDS.flatMap((k) => k.toolNames)],
     peers,
     attachments_dir: ATTACHMENTS_DIR,
@@ -301,11 +262,7 @@ function buildBriefing(agent: string): Entry & {
   };
 }
 
-// Per-agent signature of the last briefing sent. Used to suppress re-briefings
-// whose visible content (peer set + online map + nutshell + room) is unchanged.
-// Reset when the agent is removed from the roster. Without this, a reconnect
-// storm of N agents fans out O(N²) briefings even when nothing meaningful
-// changes — agents' contexts get polluted with redundant briefing blocks.
+// Suppresses re-briefings with unchanged visible content; without this, reconnect storms fan O(N²).
 const lastBriefingSig = new Map<string, string>();
 
 function briefingSignature(b: ReturnType<typeof buildBriefing>): string {
@@ -330,10 +287,7 @@ function broadcastBriefingsToConnectedAgents(forceAll: boolean = false): void {
   }
 }
 
-// Debounce briefing fan-outs triggered by rapid presence changes (e.g., hub
-// restart → all agents reconnect within a few seconds). Reset-on-call so the
-// fan-out only fires 500ms after the LAST presence change, collapsing an
-// entire reconnect storm into a single final-state briefing per agent.
+// Reset-on-call: fires 500ms after the LAST presence change so reconnect storms collapse.
 let briefingFanoutTimer: ReturnType<typeof setTimeout> | null = null;
 function scheduleBriefingFanout(): void {
   if (briefingFanoutTimer) clearTimeout(briefingFanoutTimer);
@@ -346,34 +300,28 @@ function scheduleBriefingFanout(): void {
 function broadcastPresence(): void {
   const snap = agents.presenceSnapshot();
   for (const q of uiSubscribers) q.push(snap);
-  // Re-brief on presence change so agents' briefing-derived peer-online view
-  // stays aligned with the delivery pipeline. Debounced (500ms) + sig-deduped
-  // to avoid storming during reconnect cascades. F14.
+  // Keeps briefing-derived peer-online view aligned; debounced + sig-deduped.
   scheduleBriefingFanout();
 }
 
-// Agents get disk paths (so they can Read the file directly); UI still gets URL form via /stream.
+// Agents get disk paths (Read directly); UI still gets URL form via /stream.
 function agentEntry(entry: Entry): Entry {
   if (!entry.image) return entry;
   const absPath = ATTACHMENTS_DIR ? imageUrlToPathCore(entry.image, ATTACHMENTS_DIR) : entry.image;
-  // Single [attachment:] prefix — the agent dispatches on the path's extension.
   const suffix = `\n[attachment: ${absPath}]`;
   return { ...entry, text: (entry.text ?? "") + suffix };
 }
 
 function enqueueTo(name: string, entry: Entry): void {
-  // Permanent members have no channel-bin draining their queue; they read via /stream instead.
+  // Permanent members read via /stream; no channel-bin queue.
   if (permanentAgents.has(name)) return;
   const q = agentQueues.get(name);
-  if (!q) return; // agent was removed between target resolution and dispatch
+  if (!q) return;
   q.push(entry);
 }
 
-// corsHeaders, json, ALLOWED_ORIGINS, ctEquals — see core/auth.ts
-// SSESend, HEARTBEAT_MS, makeSSE — see core/sse.ts
 const { requireAuth, requireReadAuth, requireJsonBody } = makeAuthHelpers(AUTH_TOKEN);
 
-// handleSend + handlePost — see hub/chat.ts.
 const chatDeps = { agents, broadcastUI, agentEntry, enqueueTo };
 async function handleSend(req: Request): Promise<Response> {
   const sizeCheck = requireJsonBody(req);
@@ -386,7 +334,6 @@ async function handlePost(req: Request): Promise<Response> {
   return handlePostCore(req, chatDeps);
 }
 
-// handleUpload / handleImage — see core/attachments.ts. Size guard stays hub-side.
 async function handleUpload(req: Request): Promise<Response> {
   const sizeCheck = requireJsonBody(req, IMAGE_MAX_BYTES + 64 * 1024);
   if (sizeCheck) return sizeCheck;
@@ -428,7 +375,7 @@ function handleAgentStream(agent: string, room: string | null = null): Response 
   if (!validName(agent)) {
     return json({ error: `invalid agent name: ${agent}` }, { status: 400 });
   }
-  // First registration captures the agent's room; reconnects ignore the arg (immutable).
+  // Room captured on first registration; reconnects ignore the arg.
   ensureAgent(agent, room ?? DEFAULT_ROOM);
   const q = agentQueues.get(agent);
   if (!q) {
@@ -438,22 +385,19 @@ function handleAgentStream(agent: string, room: string | null = null): Response 
     agentConnections.set(agent, (agentConnections.get(agent) ?? 0) + 1);
     broadcastPresence();
 
-    // Briefing lands before replay so it arrives first in the agent's context.
+    // Briefing first so it arrives before replay in the agent's context.
     if (!permanentAgents.has(agent)) {
       try {
         const brief = buildBriefing(agent);
         send(brief);
-        // Seed dedup so the follow-up queued re-briefing (from broadcastPresence
-        // after the connection increment) doesn't double-send the same content.
+        // Seed dedup so the queued re-briefing from broadcastPresence doesn't double-send.
         lastBriefingSig.set(agent, briefingSignature(brief));
       } catch (e) {
         console.error("[briefing]", e);
       }
     }
 
-    // Replay pending kind-entries on reconnect. Chat is NOT replayed here (UI replays
-    // via /stream's chatLog pass). Each kind owns its pendingFor() return set; the
-    // orchestrator fans it out in registry order (priority-sorted — design.md §6).
+    // Chat is NOT replayed (UI replays via /stream's chatLog). Kinds replay via pendingFor().
     if (ledgerEnabled) {
       const me = knownAgents.get(agent);
       const myRoom = me?.room ?? DEFAULT_ROOM;
@@ -467,9 +411,7 @@ function handleAgentStream(agent: string, room: string | null = null): Response 
         const sortedKinds = [...KINDS].sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
         for (const k of sortedKinds) {
           for (const entry of k.pendingFor(agentCtx, cap)) {
-            // Scope replay by the reconnecting agent's room so cross-room items
-            // never leak into an agent's context on reconnect (channel-bin's
-            // gate is the second line of defense).
+            // Cross-room items never leak on reconnect (channel-bin gate is line 2).
             if (entry.room != null && entry.room !== myRoom) continue;
             send(entry);
           }
@@ -507,8 +449,7 @@ async function handleRemove(req: Request): Promise<Response> {
   return json({ ok: true });
 }
 
-// handoffEntry — see kinds/handoff.ts
-// broadcastHandoff kept as a thin local wrapper for the expire-sweep in §13.
+// Kept hub-local for the expire-sweep below.
 function broadcastHandoff(
   snapshot: HandoffSnapshot,
   eventKind: "handoff.new" | "handoff.update",
@@ -520,13 +461,7 @@ function broadcastHandoff(
   emit(handoffEntry(snapshot, eventKind), { kind: "to-agents", agents: recipients });
 }
 
-// broadcastInterrupt — owned by kinds/interrupt.ts (emits inline via cap.sse.emit).
-
-// Permission broadcast + handlers — owned by hub/kinds/permission.ts.
-
-// broadcastNutshell: ambient fan-out (not chatLog-backed). emit() would insert
-// into chatLog, which is wrong for nutshell — nutshell updates are fetched via
-// GET /nutshell, not replayed from history.
+// Ambient fan-out, not chatLog-backed; nutshell updates are fetched via GET /nutshell.
 function broadcastNutshell(snapshot: NutshellSnapshot): void {
   const entry = nutshellEntry(snapshot);
   for (const q of uiSubscribers) q.push(entry);
@@ -557,7 +492,6 @@ function handleGetNutshell(url: URL): Response {
   return json(readNutshell(room));
 }
 
-// Session routes — see hub/sessions.ts. Thin wrappers guard ledger + body + wrap db.
 async function handleSaveSession(req: Request): Promise<Response> {
   const guard = ledgerGuard();
   if (guard) return guard;
@@ -571,13 +505,7 @@ function handleGetSession(url: URL): Response {
   return handleGetSessionCore(url, ledgerDb!);
 }
 
-// ----------------------------------------------------------------------------
-// HubCapabilities: the dependency-injection surface kinds consume via routes /
-// pendingFor hooks. Closes over module-level state (knownAgents, agentQueues,
-// uiSubscribers) — when §9 extracts the agent registry into core/agents.ts,
-// this object constructs from the registry's accessors instead. Behavior
-// unchanged; shape stabilized in advance so kinds don't need to change.
-// ----------------------------------------------------------------------------
+// HubCapabilities: DI surface kinds consume via routes / pendingFor hooks.
 function buildCap(): HubCapabilities {
   return {
     db: ledgerDb!,
@@ -632,15 +560,10 @@ function buildCap(): HubCapabilities {
   };
 }
 
-// Static kind registry. Adding a kind = one import + one array entry — no hub.ts
-// edits beyond this list. Ordering is implementation-dependent; kinds MUST NOT
-// depend on cross-kind ordering for correctness (design.md §6).
+// Adding a kind = one import + one array entry. Kinds MUST NOT depend on cross-kind ordering.
 const KINDS: readonly KindModule[] = [handoffKind, interruptKind, permissionKind];
 
-// Precompiled route dispatch table. Each kind's static RouteDef[] gets matched
-// against the incoming (method, pathname) before the legacy inline routes run,
-// so as kinds lift out of hub.ts they take precedence automatically.
-// KIND_ROUTES + dispatchKindRoute — see core/dispatcher.ts.
+// Kind routes take precedence over legacy inline routes.
 const { dispatch: dispatchKindRoute } = createDispatcher({
   kinds: KINDS,
   auth: { requireAuth, requireReadAuth, requireJsonBody },
@@ -661,12 +584,10 @@ const server = Bun.serve({
     }
 
     try {
-      // Kind registry dispatch runs first — kinds own their URLs. Falls through
-      // to the legacy inline routes for non-kind endpoints (chat, roster, etc).
       const kindResp = await dispatchKindRoute(req, url);
       if (kindResp) return kindResp;
 
-      // Read endpoints: header OR ?token= for EventSource / <img>.
+      // Read endpoints accept header OR ?token= for EventSource / <img>.
       if (req.method === "GET" && pathname === "/agents") {
         const authFail = requireReadAuth(req, url);
         return authFail ?? json([...knownAgents.values()]);
@@ -707,20 +628,16 @@ const server = Bun.serve({
         const authFail = requireAuth(req);
         return authFail ?? (await handleUpload(req));
       }
-      // /handoffs and /interrupts routes — owned by hub/kinds/{handoff,interrupt}.ts,
-      // dispatched via KIND_ROUTES above.
-      // /permissions routes — owned by hub/kinds/permission.ts, dispatched via KIND_ROUTES.
       // Nutshell read; write path is /handoffs with task prefix "[nutshell]".
       if (req.method === "GET" && pathname === "/nutshell") {
         const authFail = requireReadAuth(req, url);
         return authFail ?? handleGetNutshell(url);
       }
-      // Fallback room for external-spawn agents that lack CHATBRIDGE_ROOM in their env.
+      // Fallback for external-spawn agents that lack CHATBRIDGE_ROOM.
       if (req.method === "GET" && pathname === "/room-default") {
         const authFail = requireReadAuth(req, url);
         return authFail ?? json({ room: DEFAULT_ROOM });
       }
-      // Claude session capture for the spawn modal's restore flow.
       if (req.method === "POST" && pathname === "/sessions") {
         const authFail = requireAuth(req);
         return authFail ?? (await handleSaveSession(req));
@@ -729,8 +646,7 @@ const server = Bun.serve({
         const authFail = requireReadAuth(req, url);
         return authFail ?? handleGetSession(url);
       }
-      // Claude usage snapshot, derived from ~/.claude/projects transcripts.
-      // See hub/usage.ts — no Claude Code API, we parse the JSONL directly.
+      // Parsed from ~/.claude/projects JSONL transcripts (no Claude Code API).
       if (req.method === "GET" && pathname === "/usage") {
         const authFail = requireReadAuth(req, url);
         if (authFail) return authFail;
@@ -738,14 +654,13 @@ const server = Bun.serve({
       }
       return json({ error: "not found", path: pathname }, { status: 404 });
     } catch (e) {
-      // Log details server-side; return a generic message so internals don't leak.
+      // Log server-side; return generic message so internals don't leak.
       console.error("[hub] error", e);
       return json({ error: "internal error" }, { status: 500 });
     }
   },
 });
 
-// Register the human as a permanent roster member.
 if (validName(HUMAN_NAME)) {
   agents.markPermanent(HUMAN_NAME);
   ensureAgent(HUMAN_NAME, null);
@@ -754,7 +669,6 @@ if (validName(HUMAN_NAME)) {
   console.error(`[hub] invalid A2A_HUMAN_NAME "${HUMAN_NAME}" — human not registered`);
 }
 
-// Expire pending handoffs past their TTL. Runs every SWEEP_INTERVAL_MS.
 const sweepTimer = setInterval(() => {
   if (!ledgerEnabled) return;
   try {

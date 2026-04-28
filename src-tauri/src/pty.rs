@@ -16,12 +16,10 @@ use crate::{
     resolve_tmux_bin,
 };
 
-// Reserved tmux session name for the human's pinned shell. Kept separate from agent
-// sessions so it survives room filters and can't be confused with an agent entry.
+// Reserved name for the human's pinned shell — kept separate so it survives room filters.
 pub const SHELL_SESSION_NAME: &str = "shell";
 
-// Mirrors hub.ts AGENT_NAME_RE — re-enforced here so a bypassed UI validator can't
-// smuggle shell metacharacters into tmux argv. Also rejects the reserved shell name.
+// Mirrors hub.ts AGENT_NAME_RE; re-enforced here against bypassed-UI shell-metacharacter injection.
 pub fn valid_agent_name(name: &str) -> bool {
     if name == SHELL_SESSION_NAME {
         return false;
@@ -40,7 +38,7 @@ pub fn valid_agent_name(name: &str) -> bool {
 pub struct PtyHandle {
     master: Box<dyn portable_pty::MasterPty + Send>,
     writer: Box<dyn Write + Send>,
-    // Kept so the tmux attach-session child isn't reaped while we still read from the master.
+    // Kept alive so the tmux attach-session child isn't reaped while we still read from master.
     _child: Box<dyn portable_pty::Child + Send + Sync>,
 }
 
@@ -97,28 +95,16 @@ fn mcp_configs_dir() -> PathBuf {
     app_data_dir().join("mcp-configs")
 }
 
-// User-editable global MCP config. Standard `.mcp.json` schema:
-//   { "mcpServers": { "<name>": { "command": "...", "args": [...], "env": {...},
-//                                  "prompts": ["..."]?  // optional, for picker hints
-//                                } } }
-// Loaded by write_mcp_config_for() and merged into every per-agent .mcp.json
-// at spawn time. The chatbridge server is ALWAYS injected by us with the
-// agent's room/name; users cannot add or override a "chatbridge" entry —
-// we silently strip it from their config to keep the integrity of our own
-// channel scaffolding. The non-standard `prompts` array (per server) lets
-// the picker know which slash-prompts the server exposes without doing a
-// JSON-RPC handshake; absent → user must type `/mcp__server__prompt` blind.
+// User-editable global MCP config; merged into per-agent .mcp.json with `chatbridge` force-injected.
+// Non-standard `prompts: []` per server lets our picker know slash-prompts without a JSON-RPC handshake.
 pub fn global_mcp_config_path() -> PathBuf {
     app_data_dir().join("mcp.json")
 }
 
-// Reserved server name owned by A2AChannel. User entries with this name are
-// silently dropped from the global config before merging.
+// Reserved name; user entries with this name are silently dropped from the global config.
 const RESERVED_MCP_SERVER: &str = "chatbridge";
 
-// Read the user's global mcp.json and return its `mcpServers` map with the
-// reserved name stripped. Returns an empty map when the file is missing,
-// malformed, or has no servers — never an error (best-effort).
+// Best-effort: missing/malformed file returns empty map, never an error.
 pub fn read_global_mcp_servers() -> serde_json::Map<String, serde_json::Value> {
     let path = global_mcp_config_path();
     let raw = match std::fs::read_to_string(&path) {
@@ -142,16 +128,7 @@ pub fn read_global_mcp_servers() -> serde_json::Map<String, serde_json::Value> {
     servers
 }
 
-// Written (0600) on every spawn so stale values self-heal. Loaded additively via `--mcp-config`;
-// the user's cwd `.mcp.json` is still honored. `room` is baked into the env so channel-bin
-// scopes its /agent-stream subscription correctly.
-//
-// Composition order:
-//   1. Start with global servers from ~/Library/Application Support/A2AChannel/mcp.json
-//      (with `chatbridge` already stripped — see read_global_mcp_servers)
-//   2. Force-inject the chatbridge entry with this agent's identity. Always
-//      wins over any name collision. Internal scaffolding the user can't
-//      see or break.
+// Written (0600) on every spawn so stale values self-heal. Force-injects chatbridge LAST.
 fn write_mcp_config_for(agent: &str, room: &str) -> Result<PathBuf, String> {
     use std::os::unix::fs::PermissionsExt;
     let dir = mcp_configs_dir();
@@ -161,9 +138,7 @@ fn write_mcp_config_for(agent: &str, room: &str) -> Result<PathBuf, String> {
     let path = dir.join(format!("{agent}.json"));
     let a2a_bin = resolve_a2a_bin()?;
 
-    // Start with the user's global servers (chatbridge already stripped).
-    // The non-standard `prompts` annotation is dropped before writing — it's
-    // for our picker only, not part of the .mcp.json contract claude reads.
+    // `prompts` is our picker-only annotation; not part of the .mcp.json contract claude reads.
     let mut servers = read_global_mcp_servers();
     for (_, server_cfg) in servers.iter_mut() {
         if let Some(obj) = server_cfg.as_object_mut() {
@@ -171,7 +146,6 @@ fn write_mcp_config_for(agent: &str, room: &str) -> Result<PathBuf, String> {
         }
     }
 
-    // Force-inject chatbridge LAST so it always wins on name collision.
     servers.insert(
         RESERVED_MCP_SERVER.to_string(),
         serde_json::json!({
@@ -193,8 +167,7 @@ fn write_mcp_config_for(agent: &str, room: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-// Build the claude invocation. Direct-exec (no shell), so claude_path must be absolute —
-// comes from config.yml to avoid paying the .zshrc-loading cost on every spawn.
+// Direct-exec (no shell), so claude_path must be absolute — comes from config.yml.
 fn claude_command(agent: &str, room: &str, session_mode: Option<&str>) -> Result<String, String> {
     let cfg_path = write_mcp_config_for(agent, room)?;
     let path_str = cfg_path.to_string_lossy().replace('\'', r"'\''");
@@ -206,28 +179,13 @@ fn claude_command(agent: &str, room: &str, session_mode: Option<&str>) -> Result
     };
     let claude_path = resolve_claude_path();
     let claude_escaped = claude_path.to_string_lossy().replace('\'', r"'\''");
-    // Pre-allow chatbridge tools that the briefing actively encourages the
-    // agent to use:
-    //   - ack_permission: required so peer verdicts don't trigger a permission
-    //     prompt on the acker (peer-vote design from permission-relay; without
-    //     this the feature is broken: a human would have to ack the ack).
-    //   - post: the slash-command-mirror policy in the briefing instructs every
-    //     agent to mirror /command results back to chat. Without pre-allow,
-    //     each mirror raises a permission card the human must accept; the
-    //     resulting JSON notification floods the agent's terminal too.
-    //   - post_file: same UX argument — agents post files in normal chat flow,
-    //     the permission card adds friction without protection (the human
-    //     can already see the file path in the resulting chat row).
+    // Pre-allow tools the briefing tells agents to use; otherwise normal chat flow raises permission cards.
     Ok(format!(
         "'{claude_escaped}' {mode_part}--mcp-config '{path_str}' --allowed-tools 'mcp__chatbridge__ack_permission,mcp__chatbridge__post,mcp__chatbridge__post_file' --dangerously-load-development-channels server:chatbridge"
     ))
 }
 
-// Open a PTY, attach to the named tmux session on our socket, register the
-// handle in PtyRegistry, and spawn the reader task that forwards output bytes
-// to the webview as `pty://output/<name>` events. Emits `pty://exit/<name>`
-// and removes the handle when the reader ends. Caller owns the agent-name
-// validation and session-creation steps — this helper only attaches + streams.
+// Caller owns name-validation + session-creation; this helper only attaches and streams.
 fn attach_and_stream(
     app: AppHandle,
     registry: Arc<Mutex<HashMap<String, Arc<Mutex<PtyHandle>>>>>,
@@ -284,7 +242,7 @@ fn attach_and_stream(
         );
     }
 
-    // PTY reads are blocking — dedicated thread so we don't starve the tokio executor.
+    // PTY reads block; dedicated thread so we don't starve the tokio executor.
     let app_clone = app.clone();
     let name_clone = name.to_string();
     let registry_clone = registry.clone();
@@ -315,11 +273,7 @@ fn attach_and_stream(
     Ok(())
 }
 
-// Apply the standard tmux options + env to a session that already exists on
-// our socket. Used by the reattach path on both agent and shell tabs. The
-// remain-on-exit off is critical: legacy builds left it "on" which held
-// panes after claude exits and broke the tab-close flow. tmux_run errors are
-// ignored — these are best-effort setters against a known-live session.
+// remain-on-exit off is critical: legacy "on" held panes after claude exits and broke tab-close.
 fn configure_existing_session(name: &str, lang: &str) {
     let _ = tmux_run(&["set-option", "-t", name, "remain-on-exit", "off"]);
     let _ = tmux_run(&["set-option", "-t", name, "status", "off"]);
@@ -327,37 +281,17 @@ fn configure_existing_session(name: &str, lang: &str) {
     let _ = tmux_run(&["set-environment", "-t", name, "COLORTERM", "truecolor"]);
     let _ = tmux_run(&["set-environment", "-t", name, "LANG", lang]);
     let _ = tmux_run(&["set-environment", "-t", name, "LC_ALL", lang]);
-    // allow-passthrough lets desktop notifications + progress updates from
-    // claude reach iTerm2/Ghostty/Kitty instead of being swallowed by tmux.
-    //
-    // We deliberately do NOT enable `extended-keys on` or
-    // `terminal-features += xterm*:extkeys` here even though Anthropic's
-    // tmux config doc recommends them. Those flags require xterm.js (the
-    // host terminal) to use the CSI-u extended-key encoding for modified
-    // keys (Shift+Enter, Shift+Tab, etc.). xterm.js does not by default.
-    // With the flags on, claude assumes the terminal will deliver extkeys
-    // sequences and switches its input handling to expect them — but
-    // xterm.js still sends plain `\r` for Shift+Enter, which claude then
-    // treats as a submit instead of a newline. Net effect: enabling these
-    // breaks Shift+Enter inside the embedded terminal.
+    // Do NOT enable extended-keys/CSI-u: xterm.js doesn't speak it, breaks Shift+Enter for claude.
     let _ = tmux_run(&["set-option", "-t", name, "allow-passthrough", "on"]);
-    // Heal `window-size` on every reattach. CRITICAL ORDER: resize FIRST,
-    // then set option to `latest`. tmux's `resize-window -A` implicitly
-    // pins window-size to `manual` so that the explicit resize sticks; if
-    // we set `latest` before resizing, the resize undoes our option.
-    // Resizing first gets the pane to the active client size, then setting
-    // `latest` lets future SIGWINCH events propagate naturally.
+    // CRITICAL ORDER: resize FIRST then `latest`. resize-window -A pins window-size=manual implicitly;
+    // setting `latest` first would be undone by the resize.
     let _ = tmux_run(&["resize-window", "-t", name, "-A"]);
     let _ = tmux_run(&["set-option", "-w", "-u", "-t", name, "window-size"]);
     let _ = tmux_run(&["set-option", "-w", "-t", name, "window-size", "latest"]);
     let _ = tmux_run(&["refresh-client", "-t", name, "-S"]);
 }
 
-// Resolve UTF-8 locale for tmux sessions. GUI launches under launchd inherit
-// a blank or "C" locale, which makes claude's terminal-capability detection
-// downgrade to ASCII (logo renders as `____` instead of Braille/box-drawing).
-// Prefer the user's LANG if it already contains "utf"; otherwise default to
-// en_US.UTF-8 which ships with every macOS install.
+// launchd inherits "C" locale; claude downgrades capability detection to ASCII without UTF-8.
 fn resolve_utf8_locale() -> String {
     std::env::var("LANG")
         .ok()
@@ -365,8 +299,7 @@ fn resolve_utf8_locale() -> String {
         .unwrap_or_else(|| "en_US.UTF-8".to_string())
 }
 
-// Validate a room label: 1..=64 chars, [A-Za-z0-9_.-] + spaces, no leading/trailing space.
-// Mirrors hub.ts validRoomLabel so the two ends agree.
+// Mirrors hub.ts validRoomLabel.
 fn valid_room_label(room: &str) -> bool {
     let n = room.chars().count();
     if !(1..=64).contains(&n) {
@@ -379,9 +312,7 @@ fn valid_room_label(room: &str) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' || c == ' ')
 }
 
-// Walk up from `cwd` looking for a `.git` directory; return that directory's basename.
-// Falls back to the cwd basename when no git root is found. Empty string only if both
-// paths have no filename component (pathological). Used as the spawn-modal's Room default.
+// Spawn-modal Room default: git-root basename, falling back to cwd basename.
 pub fn default_room_for_cwd(cwd: &std::path::Path) -> String {
     let mut p = cwd;
     loop {
@@ -414,7 +345,6 @@ pub fn pty_spawn(
         return Err(format!("invalid agent name: {agent}"));
     }
 
-    // Resolve room: explicit arg → validated; empty/missing → git-root basename fallback.
     let resolved_room = match room.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(r) if valid_room_label(r) => r.to_string(),
         Some(r) => return Err(format!("invalid room: {r}")),
@@ -438,8 +368,7 @@ pub fn pty_spawn(
     if session_exists(&agent) {
         configure_existing_session(&agent, &lang);
     } else {
-        // -x 80 -y 24 is load-bearing: without explicit dims tmux probes TIOCGWINSZ and we
-        // have no controlling TTY. Real size is applied via SIGWINCH on attach.
+        // -x 80 -y 24 load-bearing: without dims tmux probes TIOCGWINSZ and we have no controlling TTY.
         let api_env = api_key
             .as_ref()
             .map(|k| format!("ANTHROPIC_API_KEY={k}"));
@@ -526,10 +455,7 @@ pub fn pty_kill(agent: String) -> Result<(), String> {
     Ok(())
 }
 
-// Spawn (or idempotently attach to) the pinned "shell" tmux session — the human's
-// own scratch shell for cd / ls / git etc. No claude, no MCP, no room. Key `shell`
-// in the PTY registry. Outputs stream via `pty://output/shell`. Survives app
-// restart like agent sessions. Cross-room / cross-project by design.
+// Pinned "shell" tmux session — human's scratch shell. No claude, no MCP, no room.
 #[tauri::command]
 pub fn pty_spawn_shell(
     app: AppHandle,
@@ -549,23 +475,15 @@ pub fn pty_spawn_shell(
 
     let user_shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    // -i + -l for parity with Terminal.app: explicit interactive + login. Without -i, zsh
-    // still auto-enables interactive mode when stdin is a PTY, but some plugins' guards
-    // (`[[ -o interactive ]]`) fire more reliably with the flag set explicitly.
+    // -il for parity with Terminal.app; explicit -i so plugin `[[ -o interactive ]]` guards fire.
     let shell_cmd = format!("'{}' -il", user_shell.replace('\'', r"'\''"));
 
-    // Marker env var — .zshrc checks $A2ACHANNEL_SHELL to scope A2AChannel-only
-    // theming (fzf/starship/yazi palettes) without affecting the user's regular shell.
+    // .zshrc checks $A2ACHANNEL_SHELL to scope A2AChannel-only theming.
     let a2a_marker_env = "A2ACHANNEL_SHELL=1";
 
     if session_exists(name) {
         configure_existing_session(name, &lang);
-        // Shell-tab extras on top of the shared config:
-        // - allow-passthrough lets DA1/DSR escapes (yazi's terminal-capability probe)
-        //   reach xterm.js directly rather than getting swallowed by tmux. Silences
-        //   yazi's "Terminal response timeout" startup warning.
-        // - A2ACHANNEL_SHELL is a marker env var .zshrc checks to scope
-        //   A2AChannel-only theming without affecting the user's regular shell.
+        // allow-passthrough lets yazi's DA1/DSR probes reach xterm.js (silences "response timeout").
         let _ = tmux_run(&["set-option", "-t", name, "allow-passthrough", "on"]);
         let _ = tmux_run(&["set-environment", "-t", name, "A2ACHANNEL_SHELL", "1"]);
     } else {
@@ -589,8 +507,6 @@ pub fn pty_spawn_shell(
     attach_and_stream(app, state.0.clone(), name, &lang)
 }
 
-// Is the shell tmux session currently live on our socket? Used by the UI to decide
-// whether to auto-spawn on first pane-open.
 #[tauri::command]
 pub fn pty_shell_exists() -> Result<bool, String> {
     Ok(session_exists(SHELL_SESSION_NAME))
@@ -619,16 +535,12 @@ pub fn pty_list() -> Result<Vec<String>, String> {
     Ok(names)
 }
 
-// Spawn-modal prefill: given a cwd string, return the git-root basename (or cwd basename).
-// Stays a pure function of the filesystem; no hub round-trip needed.
 #[tauri::command]
 pub fn resolve_default_room(cwd: String) -> String {
     default_room_for_cwd(std::path::Path::new(&cwd))
 }
 
-// Live cwd of the agent's tmux pane. Tracks `cd` commands the agent runs
-// — not the original spawn path. Used by the "open in editor" feature so
-// the editor follows wherever the agent currently is.
+// Live cwd of the agent's pane (tracks `cd`), not the original spawn path.
 pub fn pane_current_path(agent: &str) -> Result<PathBuf, String> {
     if !valid_agent_name(agent) {
         return Err(format!("invalid agent: {agent}"));
@@ -643,35 +555,7 @@ pub fn pane_current_path(agent: &str) -> Result<PathBuf, String> {
     Ok(PathBuf::from(trimmed))
 }
 
-// =============================================================================
-// pty_capture_turn — deterministic single-turn TUI capture
-// =============================================================================
-//
-// Three coordinated layers solve the "scrape claude's TUI panel" problem:
-//
-//   1. GEOMETRY. Forces tmux to CAPTURE_COLS × CAPTURE_ROWS (240×100) before
-//      claude renders. Wide enough that claude's layout engine doesn't
-//      overlap cells — the bytes claude emits are clean. Restored to
-//      `latest` (active client size) on cleanup so the user's xterm.js
-//      snaps back to its actual viewport.
-//
-//   2. CAPTURE. `tmux pipe-pane -o` tees the agent's output stream to a
-//      per-capture file under /tmp/a2a/<agent>/captures/turn-<epoch>.log.
-//      Pipe-pane is enabled AFTER the resize settles (200ms) so the
-//      resize-redraw bytes don't pollute the captured stream.
-//
-//   3. COMPLETION. Content-based, not time-based. Three signals in priority:
-//        (a) ALT_SCREEN_EXIT (`ESC[?1049l`) — strongest. Modal panels like
-//            /usage and /context use the alt-buffer; the 8-byte exit
-//            sequence is written exactly once on dismissal.
-//        (b) IDLE_PROMPT — inline commands (no alt-buffer) end by drawing
-//            a horizontal divider, the `❯` prompt, and a cursor-show
-//            (`ESC[?25h`). Detected by byte-substring match in sequence.
-//        (c) QUIESCENCE — circuit breaker. Fires only if neither marker
-//            arrived AND output has been stable for STABLE_MS after a
-//            minimum capture window. Last-resort, log-only.
-//      Hard timeout (default 15s) is the absolute ceiling.
-
+// pty_capture_turn — deterministic single-turn TUI capture (geometry + pipe-pane + completion markers).
 const CAPTURE_COLS: u16 = 240;
 const CAPTURE_ROWS: u16 = 100;
 const CAPTURE_RESIZE_SETTLE_MS: u64 = 200;
@@ -706,7 +590,6 @@ fn epoch_ms() -> u64 {
         .unwrap_or(0)
 }
 
-// Find first occurrence of `needle` in `haystack` starting at `from`.
 fn find_subsequence(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     if from >= haystack.len() || needle.is_empty() || needle.len() > haystack.len() - from {
         return None;
@@ -717,31 +600,19 @@ fn find_subsequence(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize
         .map(|i| i + from)
 }
 
-// Idle-prompt heuristic for inline (non-alt-screen) commands. Returns true
-// if the buffer (after `from` byte offset) contains a horizontal divider
-// followed by the `❯ ` prompt followed by a CURSOR_SHOW — claude's
-// "ready for next input" signature in normal-buffer mode.
-//
-// Uses a byte-by-byte scan rather than regex to avoid pulling in the
-// regex crate as a dependency.
+// Inline-mode idle signature: divider line, then `❯ ` prompt, then CURSOR_SHOW within 256 bytes.
 fn detect_idle_prompt(buf: &[u8], from: usize) -> bool {
-    // Find "❯ " (E2 9D AF in UTF-8) anywhere after `from`.
     const PROMPT_GLYPH: &[u8] = "❯ ".as_bytes();
     const DIVIDER_GLYPH: &[u8] = "─".as_bytes();
     let mut search_from = from;
     while let Some(p) = find_subsequence(buf, PROMPT_GLYPH, search_from) {
-        // Walk back from `p` to find a preceding newline, then check that
-        // the line just above it is a divider (≥ 30 ─ chars or whitespace
-        // ending in newline).
         let prompt_line_start = buf[..p].iter().rposition(|&c| c == b'\n').unwrap_or(0);
         if prompt_line_start > 0 {
-            // Look one line up: from rposition('\n') in buf[..prompt_line_start]
             let above_end = prompt_line_start;
             let above_start = buf[..above_end].iter().rposition(|&c| c == b'\n')
                 .map(|i| i + 1)
                 .unwrap_or(0);
             let above_line = &buf[above_start..above_end];
-            // Count divider glyphs in the above line (ignoring whitespace).
             let mut divider_count = 0usize;
             let mut i = 0;
             while i + DIVIDER_GLYPH.len() <= above_line.len() {
@@ -753,8 +624,6 @@ fn detect_idle_prompt(buf: &[u8], from: usize) -> bool {
                 }
             }
             if divider_count >= 30 {
-                // Now confirm a CURSOR_SHOW appears AFTER the prompt within
-                // the next 256 bytes (typical claude footer-render envelope).
                 let scan_end = (p + 256).min(buf.len());
                 if find_subsequence(&buf[..scan_end], CURSOR_SHOW, p).is_some() {
                     return true;
@@ -805,15 +674,8 @@ pub fn pty_capture_turn(
     std::fs::create_dir_all(&cap_dir)
         .map_err(|e| format!("mkdir {}: {e}", cap_dir.display()))?;
 
-    // Cleanup closures — geometry restore runs on every exit path including
-    // panic-via-error so the user's terminal is always handed back to tmux's
-    // client-driven sizing.
     let cleanup_geometry = || {
-        // CRITICAL ORDER: resize FIRST, then set window-size to `latest`.
-        // tmux's `resize-window` (any flag) implicitly pins window-size to
-        // `manual` so the explicit resize sticks; setting `latest` first
-        // would be undone by the resize and we'd leak `manual` into the
-        // next reattach (visible as a sea of dots in the unused viewport).
+        // CRITICAL ORDER: resize FIRST then `latest`; resize-window pins window-size=manual implicitly.
         if let Err(e) = tmux_run(&["resize-window", "-t", &agent, "-A"]) {
             eprintln!("[capture] resize -A failed: {e}");
         }
@@ -829,8 +691,7 @@ pub fn pty_capture_turn(
         let _ = tmux_run(&["pipe-pane", "-t", &agent]);
     };
 
-    // 1. Force capture geometry FIRST so the resize redraw doesn't pollute
-    //    the captured stream. Order: set-option manual → resize → settle.
+    // Geometry FIRST so resize redraw doesn't pollute the captured stream.
     if let Err(e) = tmux_run(&["set-option", "-w", "-t", &agent, "window-size", "manual"]) {
         return Err(format!("set window-size manual: {e}"));
     }
@@ -844,7 +705,6 @@ pub fn pty_capture_turn(
     }
     std::thread::sleep(std::time::Duration::from_millis(CAPTURE_RESIZE_SETTLE_MS));
 
-    // 2. Touch the log file so pipe-pane has a target to append to.
     let start_ms = epoch_ms();
     let log_path = cap_dir.join(format!("turn-{start_ms}.log"));
     if let Err(e) = std::fs::write(&log_path, b"") {
@@ -852,7 +712,7 @@ pub fn pty_capture_turn(
         return Err(format!("touch {}: {e}", log_path.display()));
     }
 
-    // 3. Enable pipe-pane (BEFORE inject so we don't miss leading bytes).
+    // pipe-pane BEFORE inject so we don't miss leading bytes.
     let pipe_target = format!(
         "cat >> '{}'",
         log_path.to_string_lossy().replace('\'', r"'\''")
@@ -862,7 +722,6 @@ pub fn pty_capture_turn(
         return Err(format!("pipe-pane on: {e}"));
     }
 
-    // 4. Inject input via the agent's PTY master.
     let bytes = input.as_bytes().to_vec();
     let write_result = (|| -> Result<(), String> {
         let handle_arc = {
@@ -880,8 +739,6 @@ pub fn pty_capture_turn(
         return Err(format!("inject: {e}"));
     }
 
-    // 5. Tail the capture log via a buffered reader, scanning appended
-    //    chunks for completion markers.
     let mut buf: Vec<u8> = Vec::with_capacity(8192);
     let mut file_handle = match std::fs::File::open(&log_path) {
         Ok(f) => f,
@@ -898,22 +755,17 @@ pub fn pty_capture_turn(
     let mut status: Option<&'static str> = None;
 
     while std::time::Instant::now() < deadline {
-        // Append new bytes (BufReader at EOF returns Ok(0); read_to_end keeps
-        // the file open for next tick).
         let mut chunk = Vec::with_capacity(4096);
         if file_handle.read_to_end(&mut chunk).is_ok() && !chunk.is_empty() {
             buf.extend_from_slice(&chunk);
             last_change = std::time::Instant::now();
         }
 
-        // Track alt-screen state — only the FIRST exit after an enter counts.
         if !alt_screen_seen && find_subsequence(&buf, ALT_SCREEN_ENTER, 0).is_some() {
             alt_screen_seen = true;
         }
 
-        // Marker 1: alt-screen exit (only valid if we entered alt-screen).
         if alt_screen_seen {
-            // Find last enter, then look for exit after it.
             let mut last_enter = 0usize;
             let mut search = 0usize;
             while let Some(p) = find_subsequence(&buf, ALT_SCREEN_ENTER, search) {
@@ -926,13 +778,11 @@ pub fn pty_capture_turn(
             }
         }
 
-        // Marker 2: idle-prompt (inline mode — never seen alt-screen).
         if !alt_screen_seen && detect_idle_prompt(&buf, 0) {
             status = Some("idle-prompt");
             break;
         }
 
-        // Marker 3: quiescence circuit breaker.
         let elapsed = inject_instant.elapsed().as_millis() as u64;
         let stable = last_change.elapsed().as_millis() as u64;
         if !buf.is_empty()
@@ -947,11 +797,10 @@ pub fn pty_capture_turn(
     }
     let final_status = status.unwrap_or("timeout");
 
-    // 6. Restore geometry + close pipe (always — even on timeout).
     cleanup_pipe();
     cleanup_geometry();
 
-    // 7. Prune older successful captures (timeouts retained for debug).
+    // Timeouts retained for forensics; only prune on success.
     if final_status != "timeout" {
         prune_captures(&cap_dir, CAPTURE_KEEP_RECENT);
     }
@@ -964,22 +813,13 @@ pub fn pty_capture_turn(
     })
 }
 
-// Heal tmux geometry for the named agent: unset any leftover window-size
-// override (e.g. `manual` left by an interrupted capture), force re-sync to
-// active client size, and redraw. Cheap and idempotent — JS calls this
-// before each slash-send so a previously-stuck pane self-heals without
-// requiring an app restart.
+// Idempotent heal so a stuck pane (e.g. interrupted capture left window-size=manual) self-heals.
 #[tauri::command]
 pub fn pty_heal_geometry(agent: String) -> Result<(), String> {
     if !valid_agent_name(&agent) {
         return Err(format!("invalid agent: {agent}"));
     }
-    // CRITICAL ORDER: tmux's `resize-window` command implicitly sets
-    // `window-size` to `manual` to make the explicit resize stick. So if we
-    // set window-size FIRST and resize SECOND, the resize undoes our option.
-    // We resize FIRST (snap to active client size, or just clear the stale
-    // forced size), then set window-size to `latest` so future client
-    // SIGWINCH events propagate naturally.
+    // CRITICAL ORDER: resize FIRST then `latest`; resize-window pins window-size=manual implicitly.
     let _ = tmux_run(&["resize-window", "-t", &agent, "-A"]);
     let _ = tmux_run(&["set-option", "-w", "-u", "-t", &agent, "window-size"]);
     let _ = tmux_run(&["set-option", "-w", "-t", &agent, "window-size", "latest"]);
@@ -987,22 +827,13 @@ pub fn pty_heal_geometry(agent: String) -> Result<(), String> {
     Ok(())
 }
 
-// Snapshot the current visible pane content for the agent via
-// `tmux capture-pane -p`. Returns the full pane as text (already
-// ANSI-cleaned by tmux's default capture). Used by the Shift+Tab path to
-// read claude's prompt-frame footer label after a mode change. Returns
-// empty string on any error so the calling JS can fall back gracefully.
-//
-// This replaced an earlier `pipe-pane` tap that only captured NEW writes
-// from the time the tap started — which often missed claude's footer
-// redraw entirely. `capture-pane -p` returns the FULL current state.
+// `capture-pane -p` returns FULL current state (replaced a pipe-pane tap that missed the footer redraw).
 #[tauri::command]
 pub fn pty_tap_read(agent: String, duration_ms: Option<u32>) -> Result<String, String> {
     if !valid_agent_name(&agent) {
         return Err(format!("invalid agent: {agent}"));
     }
-    // Sleep first so claude has time to redraw the footer after whatever
-    // keypress just preceded this call (e.g. Shift+Tab → mode change).
+    // Sleep first so claude has time to redraw the footer after the preceding keypress (e.g. Shift+Tab).
     let duration = duration_ms.unwrap_or(250).clamp(0, 2000) as u64;
     if duration > 0 {
         std::thread::sleep(std::time::Duration::from_millis(duration));
@@ -1010,9 +841,7 @@ pub fn pty_tap_read(agent: String, duration_ms: Option<u32>) -> Result<String, S
     Ok(tmux_run(&["capture-pane", "-p", "-t", &agent]).unwrap_or_default())
 }
 
-// Read a capture log file. Restricts to /tmp/a2a/ paths so a misuse from JS
-// can't be leveraged into an arbitrary file read; caps size to avoid pulling
-// a runaway-large log into the webview.
+// /tmp/a2a/ path-prefix guard prevents arbitrary file read via JS misuse.
 #[tauri::command]
 pub fn pty_read_capture(log_path: String, max_bytes: Option<u32>) -> Result<String, String> {
     let cap = max_bytes.map(|n| n as usize).unwrap_or(CAPTURE_READ_MAX_BYTES);
@@ -1034,7 +863,6 @@ mod capture_tests {
         let buf = b"prefix\x1B[?1049henter then content \x1B[?1049l done";
         assert!(find_subsequence(buf, ALT_SCREEN_ENTER, 0).is_some());
         assert!(find_subsequence(buf, ALT_SCREEN_EXIT, 0).is_some());
-        // Exit must be after enter.
         let enter_pos = find_subsequence(buf, ALT_SCREEN_ENTER, 0).unwrap();
         let exit_pos = find_subsequence(buf, ALT_SCREEN_EXIT, 0).unwrap();
         assert!(exit_pos > enter_pos);
@@ -1079,12 +907,10 @@ mod capture_tests {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("a2a-prune-test-{}-{}", epoch_ms(), n));
         std::fs::create_dir_all(&dir).unwrap();
-        // Create 5 files with stepping mtimes (oldest first).
         for i in 0..5 {
             let p = dir.join(format!("turn-{i}.log"));
             std::fs::write(&p, b"x").unwrap();
-            // Use stepping mtimes via filetime-equivalent: we sleep a hair so
-            // SystemTime ordering is deterministic.
+            // Sleep so SystemTime ordering is deterministic.
             std::thread::sleep(std::time::Duration::from_millis(15));
         }
         prune_captures(&dir, 3);
@@ -1101,7 +927,6 @@ mod capture_tests {
         std::fs::write(dir.join("turn-2.partial.log"), b"x").unwrap();
         std::fs::write(dir.join("turn-3.log"), b"x").unwrap();
         prune_captures(&dir, 1);
-        // .partial.log retained, plus 1 of 2 .log files.
         let remaining: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
         assert_eq!(remaining.len(), 2);
         std::fs::remove_dir_all(&dir).ok();

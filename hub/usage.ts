@@ -1,37 +1,21 @@
-// Claude Code usage snapshot, derived from the JSONL transcripts the CLI
-// writes at ~/.claude/projects/<slug>/<session>.jsonl.
-//
-// Why this module exists: Claude Code exposes no programmatic usage API.
-// Parsing the transcripts covers every claude on the machine. The hub returns
-// this snapshot at GET /usage; the UI lays the /usage banner scrape on top
-// when it's fresh (real % of plan), falling through to this transcript-based
-// view (USD computed from public pricing) the rest of the time.
-//
-// What the transcripts give us: per-assistant-message `usage` blocks with
-// input/output/cache token counts, model, and an ISO timestamp. We sum:
-//   - tokens (input + output, the metric session-limit warnings track)
-//   - cost in USD using the public pricing table below × per-model rates,
-//     including cache discounts (mirrors ccusage's approach)
-// across the current 5-hour session block and the rolling 7-day window.
+// usage.ts — derive 5h block + 7d totals from ~/.claude/projects JSONL transcripts.
+// Claude Code has no programmatic usage API; transcripts cover every claude on the machine.
 
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 const CLAUDE_PROJECTS_DIR = join(homedir(), ".claude", "projects");
-const BLOCK_MS = 5 * 60 * 60 * 1000;   // session-limit window
+const BLOCK_MS = 5 * 60 * 60 * 1000;
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
-// Public Anthropic pricing as of 2026-04 (per million tokens).
-// Source: https://www.anthropic.com/pricing — verify on every cost-table change.
-// Cache rates: 5m write = 1.25× input, 1h write = 2× input, read = 0.10× input
-// (Anthropic's published cache discount schedule).
+// 2026-04 pricing. Cache: 5m=1.25× input, 1h=2× input, read=0.10× input. Verify on table changes.
 type ModelPricing = {
-  input: number;        // $/MTok
-  output: number;       // $/MTok
-  cacheWrite5m: number; // $/MTok (ephemeral 5-minute cache write)
-  cacheWrite1h: number; // $/MTok (ephemeral 1-hour cache write)
-  cacheRead: number;    // $/MTok
+  input: number;
+  output: number;
+  cacheWrite5m: number;
+  cacheWrite1h: number;
+  cacheRead: number;
 };
 
 const PRICING_PER_MTOK: Record<string, ModelPricing> = {
@@ -46,13 +30,12 @@ const PRICING_PER_MTOK: Record<string, ModelPricing> = {
   "claude-haiku-4-5":  { input:  1,    output:  5,    cacheWrite5m:  1.25,  cacheWrite1h:  2,   cacheRead: 0.10 },
   "claude-haiku-4":    { input:  1,    output:  5,    cacheWrite5m:  1.25,  cacheWrite1h:  2,   cacheRead: 0.10 },
 };
-// Conservative fallback for unknown models — matches Sonnet pricing so we don't
-// silently zero out the cost when claude ships a new model id we haven't tabled.
+// Sonnet-rate fallback so unknown models don't zero out cost.
 const FALLBACK_PRICING: ModelPricing = { input: 3, output: 15, cacheWrite5m: 3.75, cacheWrite1h: 6, cacheRead: 0.30 };
 
 function pricingFor(model: string): ModelPricing {
   if (model in PRICING_PER_MTOK) return PRICING_PER_MTOK[model];
-  // Heuristic for variant ids ("claude-opus-4-7-20260101" etc.) — match by prefix.
+  // Variant ids like "claude-opus-4-7-20260101" → match by prefix.
   for (const k of Object.keys(PRICING_PER_MTOK)) {
     if (model.startsWith(k)) return PRICING_PER_MTOK[k];
   }
@@ -64,7 +47,7 @@ function pricingFor(model: string): ModelPricing {
 type UsageEntry = {
   tsMs: number;
   tokens: number;     // input + output (matches session-limit warning semantics)
-  costUsd: number;    // input + output + cache_write + cache_read, USD
+  costUsd: number;
   model: string;
 };
 
@@ -154,15 +137,14 @@ async function readEntries(path: string, sinceMs: number): Promise<UsageEntry[]>
     const inputTok  = Number(u.input_tokens) || 0;
     const outputTok = Number(u.output_tokens) || 0;
     const cacheReadTok = Number(u.cache_read_input_tokens) || 0;
-    // The transcript splits cache_creation into 5m / 1h tiers; fall back to the
-    // legacy aggregate when the tiered field isn't present.
+    // Tiered split when present; legacy aggregate otherwise.
     const cc = (u.cache_creation && typeof u.cache_creation === "object")
       ? u.cache_creation as { ephemeral_5m_input_tokens?: number; ephemeral_1h_input_tokens?: number }
       : null;
     const cache5mTok = Number(cc?.ephemeral_5m_input_tokens) || 0;
     const cache1hTok = Number(cc?.ephemeral_1h_input_tokens) || 0;
     const cacheCreateLegacyTok = Number(u.cache_creation_input_tokens) || 0;
-    // Avoid double-counting: prefer the tiered split when present, else legacy.
+    // Prefer tiered when present; legacy otherwise (avoids double-count).
     const cache5m = cc ? cache5mTok : 0;
     const cache1h = cc ? cache1hTok : 0;
     const cacheCreateOther = cc ? 0 : cacheCreateLegacyTok;
@@ -177,7 +159,7 @@ async function readEntries(path: string, sinceMs: number): Promise<UsageEntry[]>
        cacheReadTok  * p.cacheRead    +
        cache5m       * p.cacheWrite5m +
        cache1h       * p.cacheWrite1h +
-       cacheCreateOther * p.cacheWrite5m  // legacy field — assume 5m tier
+       cacheCreateOther * p.cacheWrite5m  // legacy: assume 5m tier
       ) / 1_000_000;
 
     out.push({ tsMs: ts, tokens, costUsd, model });
@@ -202,9 +184,7 @@ function accumulate(
   return { tokens, costUsd, byModel };
 }
 
-// Session blocks are fixed 5-hour windows. A new block starts whenever a
-// message falls after the previous block's end. We want the block the most
-// recent message landed in — that's the current block.
+// Fixed 5h windows; current block is whichever the most recent message landed in.
 function computeSession(sorted: UsageEntry[], now: number): UsageSnapshot["session"] {
   if (sorted.length === 0) {
     return { blockStartMs: null, blockEndMs: null, totalTokens: 0, totalCostUsd: 0, active: false, byModel: {} };

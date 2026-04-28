@@ -1,23 +1,4 @@
-// roster.js — agent legend + presence + composer target dropdown/menu.
-// Tier 2 of index.html.
-//
-// applyRoster is the canonical write into ROSTER/COLORS/NAMES/BODY_COLORS;
-// renders the legend strip + composer target dropdown + room switcher
-// (since adding/removing agents may add/remove rooms too).
-//
-// Depends on (declared earlier):
-//   from state.js — ROSTER (mutated), COLORS, NAMES, BODY_COLORS, HUMAN_NAME,
-//                   legendEl, targetEl, targetDisplay, targetDisplayText,
-//                   targetMenu, presenceState (mutated), cap, shade, cssName,
-//                   SELECTED_ROOM, ROOM_ALL
-//   from http.js  — authedFetch, parseErrorBody
-//   from messages.js — addMessage
-//   from rooms.js — renderRoomSwitcher
-//
-// Exposes:
-//   applyRoster, applyPresence, markAllOffline,
-//   renderLegend, renderTargetDropdown, renderTargetMenu,
-//   updateTargetDisplayLabel, openTargetMenu, closeTargetMenu
+// roster.js — legend, presence, composer target dropdown/menu.
 
 function applyRoster(agents) {
   ROSTER = Array.isArray(agents) ? agents : [];
@@ -70,7 +51,7 @@ function renderLegend() {
     const legItem = document.createElement('div');
     legItem.className = 'legend-item offline';
     legItem.dataset.agent = a.name;
-    // Room tag for filtering; human stays visible in every room (no data-room attr).
+    // Human visible in every room (no data-room attr).
     if (!isHuman && typeof a.room === 'string' && a.room) legItem.dataset.room = a.room;
     const removeBtn = isHuman
       ? ''
@@ -96,7 +77,7 @@ function renderLegend() {
 function renderTargetDropdown() {
   const prev = targetEl.value || 'auto';
   targetEl.innerHTML = '';
-  // Room-scoped roster. In ALL view, show everyone (human's god view).
+  // ALL view = god view (everyone); concrete room = same-room + human.
   const visibleRoster = SELECTED_ROOM === ROOM_ALL
     ? ROSTER
     : ROSTER.filter((a) => a.room === null || a.room === SELECTED_ROOM);
@@ -116,7 +97,7 @@ function renderTargetDropdown() {
     optAll.textContent = '→ All';
     targetEl.appendChild(optAll);
   }
-  // "!<agent>" targets route through POST /interrupts (see send()).
+  // "!<agent>" routes through POST /interrupts.
   const sep = document.createElement('option');
   sep.disabled = true;
   sep.textContent = '──────────';
@@ -153,8 +134,6 @@ function renderTargetMenu() {
     return el;
   };
 
-  // Same-room roster (plus human, always visible as super-user). In ALL view,
-  // show everyone — the human's god view lets them address any agent by name.
   const visibleRoster = SELECTED_ROOM === ROOM_ALL
     ? ROSTER
     : ROSTER.filter((a) => a.room === null || a.room === SELECTED_ROOM);
@@ -233,7 +212,7 @@ function applyPresence(agents) {
   try {
     const p = new URL(BUS).port;
     if (p) hubLabel = ` · hub :${p}`;
-  } catch { /* BUS may be empty pre-bootstrap */ }
+  } catch {}
   statusText.textContent = `${onCount}/${names.length} agents${hubLabel}`;
   if (mentionPop?.classList.contains('open') && typeof updateMentionPopover === 'function') {
     updateMentionPopover();

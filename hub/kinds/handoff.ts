@@ -1,8 +1,4 @@
-// Handoff kind — typed work transfer with a full state machine.
-// Lifecycle: pending → accepted | declined | cancelled | expired (all terminal).
-// The most elaborate of the three kinds: TTL expiry sweep, nutshell-patch-on-
-// accept coupling, and four verbs (send/accept/decline/cancel) plus the
-// background expire pass.
+// Handoff kind — pending → accepted | declined | cancelled | expired. TTL sweep + nutshell coupling.
 
 import type { Database } from "bun:sqlite";
 import type {
@@ -19,8 +15,6 @@ import {
   nutshellEntry,
   type NutshellSnapshot,
 } from "../nutshell";
-
-// ---------- Types ----------
 
 export type HandoffStatus = "pending" | "accepted" | "declined" | "cancelled" | "expired";
 
@@ -74,8 +68,6 @@ const HANDOFF_CONTEXT_MAX_BYTES = 1_048_576;
 const HANDOFF_TASK_MAX_CHARS = 500;
 const HANDOFF_REASON_MAX_CHARS = 500;
 const HANDOFF_BODY_MAX = 1_048_576;
-
-// ---------- State machine ----------
 
 function rowToSnapshot(row: HandoffRow, version: number): HandoffSnapshot {
   return {
@@ -155,9 +147,7 @@ export type HandoffOutcome =
   | { kind: "not_found" }
   | { kind: "forbidden"; reason: string };
 
-// Accept returns BOTH the handoff outcome AND an optional nutshell snapshot when
-// the handoff was a nutshell-edit proposal. The route handler broadcasts the
-// nutshell separately after the transaction commits.
+// Accept returns the handoff outcome plus optional nutshell snapshot for "[nutshell]" edits.
 type AcceptResult = {
   outcome: HandoffOutcome;
   nutshell: NutshellSnapshot | null;
@@ -194,7 +184,7 @@ function acceptHandoff(
   const now = Date.now();
   let nutshellSnapshot: NutshellSnapshot | null = null;
 
-  // Nutshell proposals (task prefix "[nutshell]") apply context.patch in the same tx as accept.
+  // "[nutshell]" prefix → apply context.patch in the same tx as accept.
   const isNutshellEdit =
     loaded.row.task.startsWith("[nutshell]") &&
     loaded.row.to_agent === humanName &&
@@ -206,18 +196,17 @@ function acceptHandoff(
       const ctx = JSON.parse(loaded.row.context_json!);
       if (ctx && typeof ctx === "object" && typeof ctx.patch === "string") {
         nutshellPatch = ctx.patch;
-        // Explicit context.room wins over handoff.room, but only when the sender
-        // can speak for that room (sender is human, or context.room matches handoff.room).
+        // Explicit context.room wins; non-human cross-room edits drop the patch (handoff still accepts).
         if (typeof ctx.room === "string" && validRoomLabel(ctx.room)) {
           if (ctx.room === loaded.row.room || loaded.row.from_agent === humanName) {
             nutshellRoom = ctx.room;
           } else {
-            nutshellPatch = null;  // cross-room edit by non-human → drop patch
+            nutshellPatch = null;
           }
         }
       }
     } catch {
-      // Malformed context — accept the handoff but skip the nutshell patch.
+      // Malformed context: still accept the handoff, skip patch.
     }
   }
 
@@ -357,8 +346,6 @@ function listHandoffs(db: Database, filter: ListFilter = {}): HandoffSnapshot[] 
   });
 }
 
-// ---------- Entry + broadcast helpers ----------
-
 export function handoffEntry(
   snapshot: HandoffSnapshot,
   eventKind: "handoff.new" | "handoff.update",
@@ -386,8 +373,6 @@ function broadcastUpdate(cap: HubCapabilities, snapshot: HandoffSnapshot): void 
     agents: [snapshot.from_agent, snapshot.to_agent],
   });
 }
-
-// ---------- Route handlers ----------
 
 function outcomeResponse(cap: HubCapabilities, outcome: HandoffOutcome): Response {
   switch (outcome.kind) {
@@ -497,11 +482,10 @@ const routes: RouteDef[] = [
         );
       }
       const { outcome, nutshell } = acceptHandoff(cap.db, id, by, body.comment, cap.config.humanName);
-      // Broadcast nutshell update AFTER the accept transaction + broadcast, so
-      // the UI gets the accept event first, then the nutshell patch.
+      // Broadcast nutshell after accept so UI sees accept first, then patch.
       const resp = outcomeResponse(cap, outcome);
       if (nutshell) {
-        // Nutshell is ambient (no chatLog); fan out to same-room agents only.
+        // Ambient (no chatLog); same-room agents only.
         cap.sse.emitWhere(nutshellEntry(nutshell), (a) =>
           !a.permanent && a.room === nutshell.room,
         );
@@ -588,8 +572,6 @@ const routes: RouteDef[] = [
   },
 ];
 
-// ---------- KindModule export ----------
-
 function pendingFor(agent: AgentCtx, cap: HubCapabilities): Entry[] {
   return listHandoffs(cap.db, { status: "pending", for: agent.name, limit: 1000 }).map((s) =>
     handoffEntry(s, "handoff.new", true),
@@ -598,15 +580,13 @@ function pendingFor(agent: AgentCtx, cap: HubCapabilities): Entry[] {
 
 export const handoffKind: KindModule = {
   kind: "handoff",
-  migrate: () => {
-    // Handoff schema owned historically by core/ledger.ts (v1 + v6 migrations).
-  },
+  // Schema lives in core/ledger.ts historical migrations (v1, v6).
+  migrate: () => {},
   routes,
   pendingFor,
   toolNames: ["send_handoff", "accept_handoff", "decline_handoff", "cancel_handoff"],
 };
 
-// Re-exports hub.ts still needs during the intermediate state (disappears in §9).
 export {
   createHandoff,
   acceptHandoff,

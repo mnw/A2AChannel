@@ -1,5 +1,4 @@
-// Terminal pane. Tab states: external | launching | live.
-// Runs as a <script> after main.js; reuses its globals (ROSTER, HUMAN_NAME).
+// Terminal pane: tab states external | launching | live; reuses main.js globals (ROSTER, HUMAN_NAME).
 
 (function terminalPane() {
   const invoke = window.__TAURI__?.core?.invoke;
@@ -123,9 +122,6 @@
   splitter?.addEventListener('pointerup',     endDrag);
   splitter?.addEventListener('pointercancel', endDrag);
 
-  // askConfirm is provided globally by core/state.js (shared with slash-send
-  // and any other module that needs the confirm modal).
-
   const tabs = new Map();
   let activeAgent = null;
   let cwdCache = JSON.parse(localStorage.getItem('a2achannel_agent_cwds') || '{}');
@@ -134,19 +130,11 @@
     localStorage.setItem('a2achannel_agent_cwds', JSON.stringify(cwdCache));
   }
 
-  // PTY Tauri-invoke wrappers (ptySpawn, ptyWrite, ptyResize, ptyKill,
-  // ptyList) and base64 helpers (strToB64, b64ToBytes) live in
-  // ui/terminal/pty.js — loaded just before this file. Pulled into the
-  // IIFE's scope here so the rest of the body can use them by name.
   const {
     ptySpawn, ptyWrite, ptyResize, ptyKill, ptyList,
     strToB64, b64ToBytes,
   } = window.__A2A_TERM__.pty;
 
-  // xterm.js palettes (default / rose-pine-dawn / rose-pine-moon) live in
-  // ui/terminal/xterm-themes.js — pure data, exposed via __A2A_TERM__.
-  // Only the "apply to all live terminals" loop stays here because it walks
-  // the IIFE-scoped `tabs` Map.
   const currentXtermTheme = window.__A2A_TERM__.xtermThemes.current;
   const currentXtermFontSize = window.__A2A_TERM__.xtermThemes.fontSize;
   const currentXtermFontFamily = window.__A2A_TERM__.xtermThemes.fontFamily;
@@ -167,7 +155,7 @@
         metricsChanged = true;
       }
       if (metricsChanged && tab.fitAddon) {
-        // Cell size or glyph atlas changed → refit so cols/rows match.
+        // Cell size or atlas changed; refit so cols/rows match.
         try { tab.fitAddon.fit(); } catch {}
         sendResize(tab);
       }
@@ -175,8 +163,7 @@
   }
   document.addEventListener('a2a:theme-changed', applyXtermThemeToAll);
 
-  // Reserved name for the human's pinned shell tmux session. Matches Rust's
-  // SHELL_SESSION_NAME. Never filtered by room, never closed from the UI.
+  // Mirrors Rust SHELL_SESSION_NAME; never filtered by room, never closed from UI.
   const SHELL_NAME = 'shell';
   function isShell(agent) { return agent === SHELL_NAME; }
 
@@ -187,7 +174,6 @@
     h.setAttribute('aria-hidden', 'true');
     h.innerHTML = '<span>agents</span>';
     h.title = 'Agent tabs below. Launch a new one with the + button — don\'t start claude from the shell tab.';
-    // Pinned right after the shell tab. reconcile never removes non-tab children.
     const shellEl = tabsEl.querySelector('.terminal-tab-shell');
     if (shellEl && shellEl.nextSibling) {
       tabsEl.insertBefore(h, shellEl.nextSibling);
@@ -203,7 +189,7 @@
     tabEl.className = 'terminal-tab terminal-tab-shell';
     tabEl.dataset.agent = SHELL_NAME;
     tabEl.dataset.state = 'external';
-    // Deliberately NO data-room — the shell is cross-room and survives every filter.
+    // No data-room: shell is cross-room and survives every filter.
     tabEl.innerHTML =
       '<span class="state-dot"></span>' +
       '<svg viewBox="0 0 24 24" class="tab-icon" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>' +
@@ -211,7 +197,6 @@
     tabEl.querySelector('.tab-label').textContent = 'shell';
     tabEl.title = 'Your scratch shell — cross-room, cross-project';
     tabEl.addEventListener('click', () => focusTab(SHELL_NAME));
-    // Pinned at the very top of the tab rail — insertBefore the first child.
     tabsEl.insertBefore(tabEl, tabsEl.firstChild);
 
     const paneEl = document.createElement('div');
@@ -250,8 +235,7 @@
     tabEl.className = 'terminal-tab';
     tabEl.dataset.agent = agent;
     tabEl.dataset.state = 'external';
-    // Carry the agent's room on the tab so main.js's room filter hides cross-room tabs.
-    // Looked up from the live roster (set by the hub on agent-stream connect).
+    // Carry room on the tab so main.js's room filter hides cross-room tabs.
     if (typeof ROSTER !== 'undefined' && Array.isArray(ROSTER)) {
       const ra = ROSTER.find((x) => x && x.name === agent);
       if (ra && typeof ra.room === 'string' && ra.room) tabEl.dataset.room = ra.room;
@@ -360,22 +344,12 @@
     }
   }
 
-  // Caskaydia is inlined as a data: URL in ui/styles/fonts.css — no fetch, synchronously available.
-  // Eagerly fetch every font the xterm instance may reach for. The
-  // 2.7 MB CaskaydiaMono Nerd Font is embedded as a base64 data: URI
-  // in ui/styles/fonts.css — browsers defer its parse until something in the
-  // DOM asks for it. xterm's canvas atlas bakes glyphs at open() time,
-  // so if the font isn't ready we get blank cells for box-drawing /
-  // Nerd-patch codepoints claude uses in its banner. Explicit
-  // Fonts.load() returns a Promise that resolves once the glyph tables
-  // are actually decoded and available for measurement.
+  // Eager Fonts.load(): xterm's atlas bakes glyphs at open(), so undecoded fonts give blank cells.
   const fontPreload = (async () => {
     const families = [
       '"CaskaydiaMono Nerd Font"',
       '"JetBrains Mono"',
     ];
-    // Size doesn't matter for loading — the browser resolves the
-    // font file, not a rendered size. Pick 12 (the xterm default).
     try {
       await Promise.all(families.map(f =>
         document.fonts.load(`12px ${f}`)
@@ -414,13 +388,7 @@
     term.options.fontFamily = 'monospace';
     term.options.fontFamily = ff;
     fitAddon.fit();
-    // Remap Shift+Enter to send the line-feed byte (`\n` / 0x0A / Ctrl+J)
-    // instead of xterm.js's default `\r` for that key combination. Claude
-    // code documents Ctrl+J as the "insert newline without submitting"
-    // input — without this remap the embedded terminal's Shift+Enter is
-    // indistinguishable from Enter and submits the input. Returning false
-    // from the custom key handler suppresses xterm.js's default keystroke
-    // emission so the fallback `\r` doesn't also reach the PTY.
+    // Shift+Enter → `\n` (Ctrl+J) so claude treats it as newline-without-submit, not Enter.
     term.attachCustomKeyEventHandler((e) => {
       if (e.type === 'keydown' && e.key === 'Enter' && e.shiftKey
           && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -477,10 +445,6 @@
 
   const ATTENTION_MARKER = 'Doyouwantto';
   const ATTN_TAIL_MAX = 2048;
-
-  // Usage-banner TTY scrape lives in ui/usage.js. We just hand it bytes —
-  // see window.A2A_USAGE.captureBanner. The fan-out point is in the chunk
-  // handler below alongside maybeFlagAttention / maybeAutoDismissDevChannels.
 
   function maybeFlagAttention(t, agent, chunkBytes) {
     t.attnTail = (t.attnTail || '') + attnDecoder.decode(chunkBytes, { stream: true });
@@ -547,7 +511,7 @@
         await mountXterm(t);
         t._launchStage?.('xterm mounted');
       }
-      // U+23FA ⏺ (E2 8F BA) → U+25CF ● (E2 97 8F) — Caskaydia lacks ⏺, avoids emoji-font fallback.
+      // U+23FA ⏺ → U+25CF ●; Caskaydia lacks ⏺, avoids emoji-font fallback.
       for (let i = 0; i + 2 < bytes.length; i++) {
         if (bytes[i] === 0xE2 && bytes[i+1] === 0x8F && bytes[i+2] === 0xBA) {
           bytes[i+1] = 0x97;
@@ -633,7 +597,7 @@
     );
     if (!ok) return;
 
-    // No leading Esc — claude's input layer swallows `\x1b/` as a key-combo and eats `/e`.
+    // No leading Esc: claude swallows `\x1b/` as a key-combo and eats `/e`.
     try {
       await ptyWrite(agent, strToB64('/exit\r'));
     } catch (e) {
@@ -662,8 +626,6 @@
     setTimeout(() => spawnAgentEl.focus(), 0);
   }
 
-  // Custom styled popover over existing roster rooms — mirrors the composer's
-  // target-dropdown shape. User can still type a brand-new room label freely.
   function refreshSpawnRoomDatalist() {
     if (!spawnRoomMenu) return;
     spawnRoomMenu.innerHTML = '';
@@ -718,10 +680,7 @@
   });
   document.addEventListener('a2a:open-spawn', () => openSpawnModal());
 
-  // Room filter changed — if the currently-active tab is now hidden, swap to the
-  // first tab whose room matches (or any visible tab when the filter is cleared).
-  // CSS `display:none` hides the tab chrome, but the active pane below stays
-  // visible; without a refocus the user sees the wrong xterm contents.
+  // Refocus on room change: tab `display:none` hides chrome but pane stays visible.
   document.addEventListener('a2a:room-filter', (e) => {
     const filterRoom = e?.detail?.room ?? null;
     const visible = (agentName) => {
@@ -732,11 +691,7 @@
       return !r || r === filterRoom;
     };
     if (activeAgent && visible(activeAgent)) return;
-    // Preference order when refocusing on a room change: an agent that wants
-    // attention > a live agent > any agent in the room > shell. Iterating tabs
-    // naively lands on the shell first because it's the pinned-first entry and
-    // has no data-room (so it matches every filter) — that's the bug we're
-    // fixing here. The shell is fallback only.
+    // Preference: needs-attention > live > any in-room > shell (shell matches every filter).
     const candidates = [...tabs.keys()].filter((n) => !isShell(n) && visible(n));
     const pick =
       candidates.find((n) => tabs.get(n).tabEl.classList.contains('needs-attention')) ||
@@ -744,7 +699,7 @@
       candidates[0] ||
       [...tabs.keys()].find((n) => visible(n));
     if (pick) { focusTab(pick); return; }
-    // No visible tabs at all: clear active so the empty-state renders instead of a stale pane.
+    // No visible tabs: clear active so the empty-state renders instead of a stale pane.
     if (activeAgent) {
       const prev = tabs.get(activeAgent);
       if (prev) prev.paneEl.classList.remove('active');
@@ -760,8 +715,7 @@
     const dir = await pickDirectory();
     if (!dir) return;
     spawnCwdEl.value = dir;
-    // Pre-fill Room with the git-root basename (walks up looking for .git) so the
-    // common case is one-click. User can still override or blank it.
+    // Pre-fill Room with git-root basename for one-click common case.
     if (spawnRoomEl && !spawnRoomEl.value.trim()) {
       try {
         const suggested = await invoke('resolve_default_room', { cwd: dir });
@@ -805,7 +759,6 @@
     const want = new Set([...rosterNames, ...sessionNames]);
 
     for (const [name, t] of Array.from(tabs)) {
-      // The shell tab is pinned and cross-room — never remove it from reconcile.
       if (isShell(name)) continue;
       if (!want.has(name) && t.state !== 'live' && t.state !== 'launching') {
         removeTab(name);
@@ -817,8 +770,7 @@
         ensureTab(name);
         setTabState(name, 'external');
       }
-      // Idempotently refresh the room attr on each tab from the live roster —
-      // handles the race where a tab is created before the roster carries the room.
+      // Refresh room attr from roster; handles race where tab is created before roster has the room.
       const tab = tabs.get(name);
       if (tab && typeof ROSTER !== 'undefined' && Array.isArray(ROSTER)) {
         const ra = ROSTER.find((x) => x && x.name === name);
@@ -882,8 +834,7 @@
   (async () => {
     try {
       const names = await ptyList();
-      // Also consider a live shell session as "has state" — pty_list filters it out
-      // since it's not an agent, so check it separately.
+      // pty_list filters out shell, so check separately.
       let shellLive = false;
       try { shellLive = await invoke('pty_shell_exists'); } catch {}
       if ((names.length || shellLive) && !_paneEnabled) {
@@ -902,11 +853,7 @@
       .observe(legend, { childList: true });
   }
 
-  // Public read-only accessor for slash-send's response capture: returns the
-  // xterm.js Terminal instance for the named agent if mounted, else null.
-  // The capture path snapshots the visible buffer to extract the rendered
-  // panel content (with cursor moves already resolved into a flat grid),
-  // which is the only reliable way to reconstruct claude's TUI panels.
+  // Read-only accessor for slash-send's response capture: returns Terminal or null.
   window.__A2A_TERM__.getTerm = (agent) => {
     const tab = tabs.get(agent);
     return tab?.term || null;

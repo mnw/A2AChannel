@@ -1,26 +1,4 @@
-// composer.js — message-input wiring: send (chat + interrupt + slash routing),
-// autoGrow, Enter-to-send, mention-popover keynav, slash-popover keynav.
-// Tier 2 of index.html.
-//
-// Depends on (declared earlier):
-//   from state.js — input, sendBtn, targetEl, mentionPop, mentionMatches,
-//                   mentionActive, pendingImageUrl, HUMAN_NAME, SELECTED_ROOM,
-//                   ROOM_ALL
-//   from text.js  — parseMentions
-//   from http.js  — authedFetch, parseErrorBody
-//   from messages.js — addMessage
-//   from attachments.js — clearAttachment
-//   from mentions.js — hideMentionPopover, updateMentionPopover,
-//                      renderMentionPopover, selectMention
-//   from slash-mode.js — isSlashMode, parseSlashMessage,
-//                          isShiftTabMode, parseShiftTab
-//   from slash-picker.js — slashPickerOpen, slashPickerClose,
-//                           slashPickerActive, slashPickerMove,
-//                           slashPickerSelectActive, slashPickerUpdate
-//   from slash-send.js — sendSlash, sendShiftTab
-//
-// Exposes:
-//   send, autoGrow
+// composer.js — input wiring: send (chat + interrupt + slash), autoGrow, key handling.
 
 const slashErrorEl = document.getElementById('slash-error');
 
@@ -35,8 +13,6 @@ function _hideSlashError() {
   slashErrorEl.hidden = true;
 }
 
-// Re-evaluate slash-mode state on every input event: open/close picker,
-// update the disabled state on the send button, surface inline errors.
 function _refreshSlashState() {
   const inSlash = isSlashMode(input.value);
   if (!inSlash) {
@@ -45,7 +21,6 @@ function _refreshSlashState() {
     sendBtn.disabled = false;
     return;
   }
-  // In slash mode: gate by room selection + parsed completeness.
   if (SELECTED_ROOM === ROOM_ALL) {
     if (!slashPickerActive()) slashPickerOpen();
     else slashPickerUpdate();
@@ -75,8 +50,7 @@ async function send() {
   const image = pendingImageUrl;
   if (!text && !image) return;
 
-  // Slash mode bypass — bytes go to PTY, not the channel. Bail out of the
-  // chat send entirely on success or graceful failure.
+  // Slash mode bypass: PTY-direct, bypasses channel.
   if (isSlashMode(input.value)) {
     if (SELECTED_ROOM === ROOM_ALL) return;
     const parsed = parseSlashMessage(input.value);
@@ -97,10 +71,7 @@ async function send() {
     return;
   }
 
-  // Shift+Tab bypass — sibling to slash mode. Sends the literal terminal
-  // Shift+Tab byte sequence (`\x1B[Z`) to each resolved agent's PTY.
-  // Claude uses this to cycle modes (Normal → Auto-Accept → Plan → Normal).
-  // Same room rules as slash: concrete room required, @agent or @all.
+  // Shift+Tab bypass: sends `\x1B[Z` to cycle claude modes; same room rules as slash.
   if (isShiftTabMode(input.value)) {
     if (SELECTED_ROOM === ROOM_ALL) {
       _showSlashError('Select a room first');
@@ -128,7 +99,7 @@ async function send() {
 
   const mode = targetEl.value || 'auto';
 
-  // Targets prefixed with "!" route through /interrupts instead of /send.
+  // "!"-prefixed targets route through /interrupts.
   if (mode.startsWith('!')) {
     const toAgent = mode.slice(1);
     if (!text) {
@@ -174,8 +145,7 @@ async function send() {
   } else {
     body.target = mode;
   }
-  // When the human broadcasts to "all", the hub requires the room scope explicitly
-  // (otherwise "all" is ambiguous across projects). Pass the current room filter.
+  // Hub requires room scope on broadcasts ("all" is ambiguous across projects).
   if ((body.target === 'all' || (Array.isArray(body.targets) && body.targets.length === 0))
       && SELECTED_ROOM !== ROOM_ALL) {
     body.room = SELECTED_ROOM;
@@ -210,8 +180,7 @@ async function send() {
 input.addEventListener('keydown', (e) => {
   const mentionOpen = mentionPop.classList.contains('open');
   const slashOpen   = slashPickerActive();
-  // Mention popover takes precedence — once `@` is typed, we're picking a
-  // target, not browsing slash commands.
+  // Mention popover wins: once `@` is typed we're picking a target, not slash commands.
   if (mentionOpen) {
     if (e.key === 'ArrowDown') { e.preventDefault(); mentionActive = (mentionActive + 1) % mentionMatches.length; renderMentionPopover(); return; }
     if (e.key === 'ArrowUp')   { e.preventDefault(); mentionActive = (mentionActive - 1 + mentionMatches.length) % mentionMatches.length; renderMentionPopover(); return; }
@@ -237,12 +206,7 @@ input.addEventListener('keydown', (e) => {
     send();
     return;
   }
-  // Shift+Tab broadcasts to all live agents in the current room — bypasses
-  // the browser's default backward-focus behaviour. Sends the literal
-  // terminal Shift+Tab byte sequence (`\x1B[Z`) which claude uses to
-  // cycle modes (Normal → Auto-Accept → Plan → Normal). Modifier-free
-  // Tab still does its browser default (focus next), so users can still
-  // navigate forward out of the composer if they want.
+  // Shift+Tab broadcasts `\x1B[Z` to all live agents in current room; modifier-free Tab is unchanged.
   if (e.key === 'Tab' && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
     if (SELECTED_ROOM === ROOM_ALL) {
       _showSlashError('Select a room first');
@@ -263,5 +227,4 @@ input.addEventListener('input', () => { autoGrow(); updateMentionPopover(); _ref
 input.addEventListener('click', updateMentionPopover);
 input.addEventListener('blur', () => setTimeout(() => { hideMentionPopover(); slashPickerClose(); }, 150));
 
-// Send button click moves here from main.js (where it was provisional).
 sendBtn.addEventListener('click', () => send());

@@ -1,10 +1,4 @@
-// Tails the hub's /agent-stream SSE endpoint and forwards every event into
-// claude's context as a `notifications/claude/channel` notification. Recovers
-// from hub restarts by re-reading discovery files on each retry.
-//
-// Also acts as a room-gate: events carrying a cross-room `room` attribute are
-// dropped with a log (mirrors the upstream "Gate inbound messages" pattern
-// from the channels-reference — defense in depth against hub routing bugs).
+// tail.ts — tails /agent-stream into notifications/claude/channel; defense-in-depth room gate.
 
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { resolveHub, URL_PATH, TOKEN_PATH } from "./hub-client";
@@ -48,9 +42,7 @@ type ChannelEvent = {
 async function handleEvent(ctx: TailContext, evt: ChannelEvent): Promise<void> {
   const { mcp, agent, room } = ctx;
 
-  // Defense-in-depth room gate — drop cross-room events even if the hub made a
-  // routing mistake. evt.room==null means system/global (presence/roster/human
-  // chatter without room context) — let through.
+  // evt.room=null = system/global (let through); concrete cross-room = drop.
   if (evt.room !== undefined && evt.room !== null && evt.room !== room) {
     console.error(
       `[channel] dropped cross-room event: mine=${room} theirs=${evt.room} kind=${evt.kind ?? evt.type ?? "?"}`,
@@ -58,8 +50,7 @@ async function handleEvent(ctx: TailContext, evt: ChannelEvent): Promise<void> {
     return;
   }
 
-  // Briefings ship as regular chat notifications with a recognizable prose
-  // prefix — Claude Code's channel client silently drops unknown `type`s.
+  // Briefings as regular chat notifications: Claude Code drops unknown `type`s silently.
   if (evt.type === "briefing") {
     const parts: string[] = [
       `[A2AChannel briefing] You are "${agent}" in room "${room}".`,
@@ -79,13 +70,6 @@ async function handleEvent(ctx: TailContext, evt: ChannelEvent): Promise<void> {
         `Attachments dir: ${evt.attachments_dir}. Incoming files arrive as [attachment: <path>] suffixes you can Read directly.`,
       );
     }
-    // (Slash-command mirror policy was here. Removed because A2AChannel's
-    // composer-side capture (slash-send.js) already extracts the response
-    // from the PTY byte stream and posts it to chat as `[a2a-capture]`.
-    // Claude's mirror via mcp__chatbridge__post was redundant AND inferior
-    // because claude composes from its truncated alt-buffer view, while the
-    // capture renders the full byte stream through an oversized headless
-    // xterm. If the capture path is removed in future, restore this nudge.)
     if (evt.nutshell && evt.nutshell.trim()) {
       parts.push(`Current project summary (nutshell for room "${room}"):\n${evt.nutshell.trim()}`);
     }
@@ -114,7 +98,7 @@ async function handleEvent(ctx: TailContext, evt: ChannelEvent): Promise<void> {
     from: evt.from ?? "",
     to: evt.to ?? "",
     ts: evt.ts ?? "",
-    // Always surface room so claude's reasoning can trust the <channel room=...> attr.
+    // Always surface room so claude trusts the <channel room=...> attr.
     room: (evt.room ?? room) as string,
   };
   if (evt.kind) {
@@ -125,11 +109,7 @@ async function handleEvent(ctx: TailContext, evt: ChannelEvent): Promise<void> {
     if (evt.version !== undefined) meta.version = String(evt.version);
     if (evt.expires_at_ms !== undefined) meta.expires_at_ms = String(evt.expires_at_ms);
     if (evt.status) meta.status = evt.status;
-    // Reconnect catch-ups are marked `catchup="1"` rather than `replay="true"`.
-    // The real F9 fix is the cold-start delay in channel.ts (frames sent
-    // before Claude is warm get swallowed); the rename is defense in depth
-    // since `replay` is an undocumented key whose handling inside Claude Code
-    // is opaque. `catchup` is namespaced to A2AChannel and won't collide.
+    // `catchup` is A2AChannel-namespaced; `replay` has opaque Claude Code handling.
     if (evt.replay === true) meta.catchup = "1";
   }
 
@@ -141,8 +121,7 @@ async function handleEvent(ctx: TailContext, evt: ChannelEvent): Promise<void> {
     },
   });
 
-  // Relay permission verdicts back upstream so claude's local dialog closes.
-  // Claude dedupes by request_id, so re-emitting after a local-first answer is safe.
+  // Claude dedupes by request_id; re-emitting after a local-first answer is safe.
   if (evt.kind === "permission.resolved" && evt.permission_id) {
     const behavior = evt.snapshot?.behavior;
     if (behavior === "allow" || behavior === "deny") {
@@ -180,7 +159,7 @@ export async function tailHub(ctx: TailContext): Promise<void> {
     loggedMissingOnce = false;
 
     try {
-      // Use ?token= for symmetry with the UI (EventSource can't send headers).
+      // ?token= symmetry with UI (EventSource can't send headers).
       const url =
         `${hub.url}/agent-stream` +
         `?agent=${encodeURIComponent(agent)}` +
@@ -188,7 +167,7 @@ export async function tailHub(ctx: TailContext): Promise<void> {
         `&token=${encodeURIComponent(hub.token)}`;
       const r = await fetch(url);
       if (!r.ok || !r.body) {
-        // On 401 the next iteration re-reads the discovery file and picks up the rotated token.
+        // 401 → next iteration re-reads discovery file + picks up rotated token.
         await new Promise((s) => setTimeout(s, 2000));
         continue;
       }

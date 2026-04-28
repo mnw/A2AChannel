@@ -1,11 +1,4 @@
-// Interrupt kind — high-visibility "stop and re-read this" flags.
-// Lifecycle: pending → acknowledged (terminal). No cancel, no expire.
-//
-// v0.9.5 §5: first extraction from the monolithic hub.ts. Implements the
-// KindModule contract from core/types.ts. Schema migration lives historically
-// in core/ledger.ts (v2 migration created the `interrupts` table; v6 added the
-// `room` column). The `migrate` hook here is a no-op for now — v0.9.5 keeps
-// migration history frozen; per-kind migration lifts are a future cleanup.
+// Interrupt kind — pending → acknowledged (terminal). No cancel, no expire.
 
 import type { Database } from "bun:sqlite";
 import type {
@@ -18,8 +11,6 @@ import type {
 } from "../core/types";
 import { insertEvent } from "../core/events";
 import { mintInterruptId, ts, validName, validRoomLabel } from "../core/ids";
-
-// ---------- Types ----------
 
 export type InterruptStatus = "pending" | "acknowledged";
 
@@ -57,8 +48,6 @@ type InterruptRow = {
 
 const INTERRUPT_ID_RE = /^i_[0-9a-f]{16}$/;
 const INTERRUPT_TEXT_MAX_CHARS = 500;
-
-// ---------- State machine ----------
 
 function rowToSnapshot(row: InterruptRow, version: number): InterruptSnapshot {
   return {
@@ -119,7 +108,7 @@ type AckOutcome =
 function ackInterrupt(db: Database, id: string, by: string, humanName: string): AckOutcome {
   const loaded = loadInterrupt(db, id);
   if (!loaded) return { kind: "not_found" };
-  // Recipient or human can ack — human may ack on behalf of a non-responding agent.
+  // Human may ack on behalf of a non-responding agent.
   if (loaded.row.to_agent !== by && by !== humanName) {
     return { kind: "forbidden", reason: "not the recipient" };
   }
@@ -180,8 +169,6 @@ function listInterrupts(db: Database, filter: ListFilter = {}): InterruptSnapsho
   });
 }
 
-// ---------- Entry + broadcast ----------
-
 export function interruptEntry(
   snapshot: InterruptSnapshot,
   eventKind: "interrupt.new" | "interrupt.ack",
@@ -203,15 +190,12 @@ export function interruptEntry(
 }
 
 function broadcastAck(cap: HubCapabilities, snapshot: InterruptSnapshot): void {
-  // Ack notifies both parties; create-time notifies recipient only (via the
-  // create route's own broadcast — handled inline there to keep bulk semantics).
+  // Ack notifies both parties; create-time notifies recipient only (kept inline for bulk semantics).
   cap.sse.emit(interruptEntry(snapshot, "interrupt.ack"), {
     kind: "to-agents",
     agents: [snapshot.from_agent, snapshot.to_agent],
   });
 }
-
-// ---------- Route handlers ----------
 
 function outcomeResponse(outcome: AckOutcome, cap: HubCapabilities): Response {
   switch (outcome.kind) {
@@ -256,8 +240,7 @@ const routes: RouteDef[] = [
       }
       cap.agents.ensure?.(from);
 
-      // Bulk shape: { from, rooms: [...], text } — human-only, fans out one interrupt per
-      // non-human agent in each named room. Response maps room → created interrupt IDs.
+      // Bulk shape (human-only): one interrupt per non-human agent in each named room.
       if (Array.isArray(body.rooms)) {
         if (from !== cap.config.humanName) {
           return Response.json({ error: "bulk interrupt restricted to human" }, { status: 403 });
@@ -268,7 +251,7 @@ const routes: RouteDef[] = [
           if (!validRoomLabel(room)) continue;
           const ids: string[] = [];
           for (const a of cap.agents.all()) {
-            if (a.room !== room) continue; // skip human (room=null) and other rooms
+            if (a.room !== room) continue;
             const snapshot = createInterrupt(cap.db, { from, to: a.name, text, room });
             cap.sse.emit(interruptEntry(snapshot, "interrupt.new"), {
               kind: "to-agents",
@@ -281,7 +264,6 @@ const routes: RouteDef[] = [
         return Response.json({ created }, { status: 201 });
       }
 
-      // Single-recipient shape.
       const to = (body.to ?? "").trim();
       if (!validName(to)) return Response.json({ error: "invalid to" }, { status: 400 });
       const toAgent = cap.agents.get(to);
@@ -355,8 +337,6 @@ const routes: RouteDef[] = [
   },
 ];
 
-// ---------- KindModule export ----------
-
 function pendingFor(agent: AgentCtx, cap: HubCapabilities): Entry[] {
   return listInterrupts(cap.db, { status: "pending", for: agent.name, limit: 1000 }).map((s) =>
     interruptEntry(s, "interrupt.new", true),
@@ -365,19 +345,13 @@ function pendingFor(agent: AgentCtx, cap: HubCapabilities): Entry[] {
 
 export const interruptKind: KindModule = {
   kind: "interrupt",
-  migrate: () => {
-    // Interrupts schema is owned by core/ledger.ts historical migrations (v2, v6).
-    // v0.9.5 §5 keeps migration history frozen — per-kind migration lifts are a
-    // future cleanup after all kinds extract.
-  },
+  // Schema lives in core/ledger.ts historical migrations (v2, v6).
+  migrate: () => {},
   routes,
   pendingFor,
   toolNames: ["send_interrupt", "ack_interrupt"],
 };
 
-// Re-export the things hub.ts still needs during the intermediate state (§5-§9).
-// These disappear from the public surface once the orchestrator takes over
-// routing and replay (§9).
 export {
   createInterrupt,
   ackInterrupt,
