@@ -12,34 +12,15 @@ The coordination is a protocol, not a chat app. Every message is a typed primiti
 
 ## Layout
 
-```
-┌─ titlebar ────────────────────────────────────────────────────────────────┐
-│  ⤴ MCP configs   ⊕ MCP servers   ⚙ Settings   ↻ Reload   …   8% · 80%    │
-├─ header ────────────────────────────────────────────────────────────────  │
-│  💬 Room: [ EU Space ▾ ]  + agent  ⏸ Pause  ▶ Resume                      │
-├─ nutshell strip (per-room project summary, click Edit to propose) ───────│
-│  Nutshell   "Building the new map ..."                            [Edit] │
-├─ room persistence row ────────────────────────────────────────────────── │
-│  ⬤ Persist chat transcript    Active: 12 lines (3 KB) · 0 chunks  [Archive & reset]
-├─ chat panel ───────────────────────────────────────┬─ terminal pane ────┤
-│  human → planner: do the thing                     │ [shell] [planner] [+] │
-│  planner → human: done; here's the diff            │ ❯ /usage              │
-│  [a2a-capture] (panel response, code-fenced)       │   Status   Config…    │
-│                                                    │                       │
-│  …                                                 │                       │
-├─ composer ─────────────────────────────────────────┤                       │
-│  [ message… ]                              [Send]  │                       │
-│  Enter send · Shift+Enter newline · @name · /cmd   │                       │
-│  · Shift+Tab cycle modes                           │                       │
-└────────────────────────────────────────────────────┴──────────────────────┘
-```
+Top to bottom:
 
-- **Titlebar** — left side has icon buttons (Reveal MCP-configs in Finder, Edit global MCP servers, Settings/config.yml, Reload). Right side has the **usage pill** (compact `Session 8% · resets 3h 51m | Weekly 80%` populated passively from claude's banner).
+- **Titlebar** — icon buttons (Reveal MCP-configs in Finder, Edit global MCP servers, Settings/config.yml, Reload).
 - **Header** — room switcher dropdown + `+ agent` spawn button + `Pause`/`Resume` interrupt fanout.
-- **Nutshell** — one-paragraph per-room project summary. Click *Edit* to propose an update via the handoff primitive; it broadcasts to every peer on accept.
+- **Nutshell strip** — per-room project summary (one paragraph). Click *Edit* to propose an update via the handoff primitive; broadcasts to every peer on accept.
 - **Room persistence row** — toggle (orange when on) + footprint + *Archive & reset* button. Visible only when a concrete room is selected. See *Persistent transcripts* below.
-- **Chat panel** — left half by default, drag the splitter to resize. Mention popover (`@`), slash picker (`/`), emoji, attachments. Composer at the bottom with a focus-revealed hint row.
-- **Terminal pane** — right half. Pinned **shell** tab (your `$SHELL -il`, cross-room) plus one tab per spawned agent. The active tab pulses orange when the agent needs attention.
+- **Chat panel** (left) and **terminal pane** (right) split by a draggable splitter. Chat has a mention popover (`@`), slash picker (`/`), emoji, attachments. The composer at the bottom has a focus-revealed hint row.
+- **Terminal pane** — pinned **shell** tab (your `$SHELL -il`, cross-room) plus one tab per spawned agent. The active tab pulses orange when an agent needs attention.
+- **Footer** — connection status pill (left) + **usage pill** (right). The usage pill shows compact `Session 8% · resets 3h 51m | Weekly 80%` populated passively from claude's banner — no polling, no API calls. Ticks down once a minute; dims after 15 min stale; turns orange at >75%, red at >90%. Click a chip to copy the reset delta.
 
 ## Rooms
 
@@ -52,8 +33,6 @@ A **Pause / Resume** pair of buttons next to the room switcher fans out canned i
 ## Human affordances
 
 **Shell tab** — pinned to the top of the terminal pane, cross-room, cross-project. A real tmux session running your `$SHELL -il` in `$HOME`; survives app restart with full scrollback, attachable from another terminal via the bundled tmux socket. Runs whatever you want — nvim, lazygit, fzf, docker, your dev server. Separate from agent tabs; `claude` belongs in an `+ agent` tab, not here.
-
-**Usage pill** — compact `Session 8% · resets 3h 51m | Weekly 80% ⚠ · resets 20h 51m` in the header. Populated passively when any agent naturally prints claude's usage banner (e.g. on `/cost`). No polling, no API calls, no effect on your sessions. Ticks down once a minute; dims after 15 min stale; turns orange at >75%, red at >90%. Click a chip to copy the reset delta.
 
 ## Four primitives
 
