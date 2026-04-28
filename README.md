@@ -10,6 +10,37 @@ Claude Code sub-agents share their parent's context. Separate Claude Code sessio
 
 The coordination is a protocol, not a chat app. Every message is a typed primitive with durable state, logged to an append-only SQLite ledger. You're in the room too. Handoffs and interrupts persist across restarts; pending work replays to the right agent on reconnect.
 
+## Layout
+
+```
+┌─ titlebar ────────────────────────────────────────────────────────────────┐
+│  ⤴ MCP configs   ⊕ MCP servers   ⚙ Settings   ↻ Reload   …   8% · 80%    │
+├─ header ────────────────────────────────────────────────────────────────  │
+│  💬 Room: [ EU Space ▾ ]  + agent  ⏸ Pause  ▶ Resume                      │
+├─ nutshell strip (per-room project summary, click Edit to propose) ───────│
+│  Nutshell   "Building the new map ..."                            [Edit] │
+├─ room persistence row ────────────────────────────────────────────────── │
+│  ⬤ Persist chat transcript    Active: 12 lines (3 KB) · 0 chunks  [Archive & reset]
+├─ chat panel ───────────────────────────────────────┬─ terminal pane ────┤
+│  human → planner: do the thing                     │ [shell] [planner] [+] │
+│  planner → human: done; here's the diff            │ ❯ /usage              │
+│  [a2a-capture] (panel response, code-fenced)       │   Status   Config…    │
+│                                                    │                       │
+│  …                                                 │                       │
+├─ composer ─────────────────────────────────────────┤                       │
+│  [ message… ]                              [Send]  │                       │
+│  Enter send · Shift+Enter newline · @name · /cmd   │                       │
+│  · Shift+Tab cycle modes                           │                       │
+└────────────────────────────────────────────────────┴──────────────────────┘
+```
+
+- **Titlebar** — left side has icon buttons (Reveal MCP-configs in Finder, Edit global MCP servers, Settings/config.yml, Reload). Right side has the **usage pill** (compact `Session 8% · resets 3h 51m | Weekly 80%` populated passively from claude's banner).
+- **Header** — room switcher dropdown + `+ agent` spawn button + `Pause`/`Resume` interrupt fanout.
+- **Nutshell** — one-paragraph per-room project summary. Click *Edit* to propose an update via the handoff primitive; it broadcasts to every peer on accept.
+- **Room persistence row** — toggle (orange when on) + footprint + *Archive & reset* button. Visible only when a concrete room is selected. See *Persistent transcripts* below.
+- **Chat panel** — left half by default, drag the splitter to resize. Mention popover (`@`), slash picker (`/`), emoji, attachments. Composer at the bottom with a focus-revealed hint row.
+- **Terminal pane** — right half. Pinned **shell** tab (your `$SHELL -il`, cross-room) plus one tab per spawned agent. The active tab pulses orange when the agent needs attention.
+
 ## Rooms
 
 Every agent is registered in exactly one **room**; the human is a super-user visible in every room. `target: "all"` broadcasts, same-room agent-to-agent handoffs, and per-room nutshells all fan out within a room — no cross-project context pollution. Explicit peer targeting (`to: "<name>"`) still crosses rooms when you want it to.
@@ -71,17 +102,23 @@ Any agent can ack any pending permission via `ack_permission({ request_id, behav
 
 ### Slash commands from chat
 
-Type `/` at the start of the composer to drive an agent's slash commands without leaving the chat. A picker opens listing every command available across the live agents in the **currently-selected room** — built-ins (`/clear`, `/compact`, `/help`, `/cost`, `/model`, …) plus whatever lives under `.claude/commands/` and `.claude/skills/` for each agent's cwd, plus your personal `~/.claude/...`. Each entry shows an `N/M agents` badge (how many of the room's live agents support it).
+Type `/` at the start of the composer to drive an agent's slash commands without leaving the chat. A picker opens listing every command available across the live agents in the **currently-selected room** — built-ins (`/clear`, `/compact`, `/help`, `/cost`, `/model`, `/context`, `/usage`, …) plus whatever lives under `.claude/commands/` and `.claude/skills/` for each agent's cwd, plus your personal `~/.claude/...`. Each entry shows an `N/M agents` badge (how many of the room's live agents support it).
 
 Sends require explicit targeting:
 
 | Composer text | What happens |
 |---|---|
 | `/clear` | refused — `specify @agent or @all` |
-| `/clear @builder` | bytes typed into `builder`'s xterm |
+| `/context @builder` | bytes typed into `builder`'s xterm; response mirrored back to chat as a `[a2a-capture]` code block |
 | `/clear @all` | bytes typed into every live, non-busy agent in the room |
+| `/openspec-propose ... @planner` | bytes typed; ` - answer in chatbridge` auto-appended so the agent posts its result back via `mcp__chatbridge__post` |
 
-Routing: `/`-prefixed messages bypass the channel entirely and write raw bytes to the agent's tmux PTY (via the existing `pty_write` Tauri command). They do **not** become MCP `notifications/claude/channel` messages.
+Two dispatch paths based on the command type:
+
+- **Panel commands** (`/context`, `/usage`, `/cost`, `/memory`, `/agents`, `/skills`, `/help`, `/mcp`, `/model`, `/status`, `/permissions`, `/config`, `/release-notes`, `/doctor`) go through a deterministic capture orchestrator that forces tmux geometry to 240×100 (avoiding narrow-width self-corruption), tees the panel render to a per-turn log, and posts the cleaned content back to chat under the agent's avatar.
+- **Everything else** (custom `.claude/commands/`, MCP prompts, model-delegated work like `/openspec-propose`) takes a simple write-and-forget path. ` - answer in chatbridge` is auto-appended so the agent's response reaches chat via `mcp__chatbridge__post` instead of getting stranded in the terminal. The directive is skipped if you already wrote it in your args.
+
+Routing: `/`-prefixed messages bypass the channel entirely and write raw bytes to the agent's tmux PTY (via `pty_write` and `pty_capture_turn` Tauri commands). They do **not** become MCP `notifications/claude/channel` messages.
 
 Guardrails:
 
@@ -90,7 +127,16 @@ Guardrails:
 - `/clear` and `/compact` targeting more than one agent prompt for confirmation (irreversible per-agent context wipe).
 - `external`-state agents (claude sessions A2AChannel doesn't own a PTY for) are not selectable from the slash `@`-popover.
 
-Each successful send produces a single `system` row in the chat log: `human → /clear @all (planner, builder, reviewer, docs)`. The audit row is in-memory only — lost on hub restart.
+Each successful send produces a single `system` row in the chat log: `human → /clear @all (planner, builder, reviewer, docs)`. The audit row is in-memory only — lost on hub restart unless the room has persistent transcripts on (see below).
+
+### Mode cycling (Shift+Tab)
+
+Claude's three modes (Auto / Accept Edits / Plan / Normal) cycle on Shift+Tab. From chat:
+
+- **Press Shift+Tab in the composer** → broadcasts to every live agent in the current room. Same room rules as slash.
+- **Type `Shift+Tab @agent`** + Send → targets one agent. Variants accepted: `shift+tab`, `shifttab`, `shift-tab`. Case-insensitive.
+
+After each send the audit row reports the actual mode each agent landed on (`Plan`, `Accept Edits`, `Auto`, `Normal`) by reading claude's prompt-frame footer via `tmux capture-pane`. No client-side guessing — drift-free even if you also press Shift+Tab in the visible terminal.
 
 ## Quickstart
 
@@ -147,19 +193,35 @@ The agent appears in the roster the moment `chatbridge` registers; in the app's 
 
 ## Config
 
-`~/Library/Application Support/A2AChannel/config.json`:
+`~/Library/Application Support/A2AChannel/config.yml` (seeded with comments on first launch):
 
-```json
-{
-  "human_name": "human",
-  "attachments_dir": null,
-  "attachment_extensions": ["jpg", "jpeg", "png", "pdf", "md"],
-  "claude_path": "~/.claude/local/claude",
-  "anthropic_api_key": ""
-}
+```yaml
+human_name: human
+claude_path: ~/.claude/local/claude
+anthropic_api_key: ""
+attachments_dir: null
+attachment_extensions:
+  - jpg
+  - jpeg
+  - png
+  - pdf
+  - md
+theme: default               # default | rose-pine-dawn | rose-pine-moon
+font_scale: 1.0              # 0.85 – 1.25
+fonts:
+  ui: ""                     # prepended to the built-in chain; empty = use defaults
+  mono: ""
+editor: ""                   # e.g. `code`, `cursor`, `subl`, `open -a Cursor`
+chat_history_limit: 1000     # in-memory ring buffer + replay budget on restart, [10..100000]
 ```
 
-Edit, click **↻** in the header to reload — hub restarts with the new values, no app relaunch. `claude_path` defaults to Anthropic's installer location; override if yours lives elsewhere. `anthropic_api_key` left empty means claude uses its keychain OAuth (the usual case); set it for API-key auth without touching your shell.
+Edit, click **↻** in the header to reload — hub restarts with the new values, no app relaunch.
+
+- `claude_path` defaults to Anthropic's installer location; override if yours lives elsewhere.
+- `anthropic_api_key` left empty means claude uses its keychain OAuth (the usual case); set it for API-key auth without touching your shell.
+- `chat_history_limit` doubles as the per-agent context-replay budget on hub restart for rooms with persistent transcripts on. Lower it (e.g. 200) if agents reconnect into too much history.
+
+**Global MCP servers** at `~/Library/Application Support/A2AChannel/mcp.json` (open via the connector-graph icon in the titlebar). Servers in this file are merged into every per-agent `.mcp.json` at spawn time; the `chatbridge` server name is reserved by A2AChannel and silently stripped from your config.
 
 ## Architecture
 
@@ -236,20 +298,22 @@ Full protocol schemas, endpoints, and state machines: [`docs/PROTOCOL.md`](docs/
 
 ## Persistent transcripts (opt-in)
 
-Off by default. Per-room toggle in the room area shows a `Persist chat transcript` checkbox; flipping it on writes every subsequent chat entry to `~/Library/Application Support/A2AChannel/transcripts/<basename>.jsonl` (mode 0600, line-delimited JSON, `v: 1` schema).
+Off by default. The room-persistence row exposes a switch toggle (orange when on); flipping it on writes every subsequent chat entry for that room to `~/Library/Application Support/A2AChannel/transcripts/<basename>.jsonl` (mode 0600, line-delimited JSON, `v: 1` schema).
 
-When the active file hits 10,000 lines it's renamed to `<basename>.000001.jsonl` and a fresh active file starts. Rotated chunks are preserved indefinitely — the only path that deletes transcript data is the `Clear transcript` button (which removes active + every chunk atomically).
+When the active file hits 10,000 lines it's renamed to `<basename>.000001.jsonl` and a fresh active file starts. Rotated chunks are **never auto-deleted** — they're archive.
 
 ```
 ~/Library/Application Support/A2AChannel/transcripts/
 ├── ab12cd34-auth_review.jsonl              ← active, ≤ 10,000 lines
-├── ab12cd34-auth_review.000001.jsonl       ← rotated chunk
+├── ab12cd34-auth_review.000001.jsonl       ← rotated chunk (oldest)
 └── ab12cd34-auth_review.000002.jsonl       ← rotated chunk
 ```
 
 Each line: `{"v":1,"id":42,"from":"planner","to":"human","text":"...","ts":"...","room":"auth-review"}`. Grep, cat, scp, jq — standard text tooling works.
 
-On hub restart, the active chunk hydrates back into the live chat log so reconnecting clients see continuity. Rotated chunks are kept on disk as archive; access them directly when needed.
+The **Archive & reset** button rotates the active file to a new numbered chunk (non-destructive — past data is preserved on disk) and resets the chat window. On the next reconnect, agents see fresh context. To genuinely wipe everything, remove the chunks manually with `rm`.
+
+On hub restart, only the **active chunk** hydrates back into the live chat log so reconnecting clients see continuity. Rotated chunks are kept on disk as archive; access them directly when needed. The amount of history that replays into reconnecting agents' context is governed by `chat_history_limit` in `config.yml`.
 
 **Caveats**
 
