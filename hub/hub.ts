@@ -43,7 +43,6 @@ import {
   listOptedInRooms,
 } from "./core/ledger";
 import * as transcript from "./core/transcript";
-import * as permissionSnapshots from "./core/permission-snapshots";
 import type {
   Scope,
   Agent as AgentType,
@@ -166,37 +165,9 @@ function openLedger(): void {
 }
 
 openLedger();
-hydrateOptedInRooms();
-
-// On startup, replay each opted-in room's active JSONL chunk into chatLog so
-// SSE clients reconnecting after a hub restart see continuity. Rotated chunks
-// stay on disk as archive — only the active chunk feeds the in-memory cache.
-function hydrateOptedInRooms(): void {
-  if (!ledgerDb) return;
-  try {
-    transcript.init();
-  } catch (e) {
-    console.error("[transcript] init failed:", e);
-    return;
-  }
-  const rooms = listOptedInRooms(ledgerDb);
-  if (!rooms.length) return;
-  let total = 0;
-  for (const room of rooms) {
-    try {
-      const tail = transcript.tailActive(room, HISTORY_LIMIT);
-      for (const entry of tail) {
-        if (typeof entry.id !== "number") entry.id = ++entrySeq;
-        else if (entry.id > entrySeq) entrySeq = entry.id;
-        if (chatLog.length >= HISTORY_LIMIT) chatLog.shift();
-        chatLog.push(entry);
-      }
-      total += tail.length;
-    } catch (e) {
-      console.error(`[transcript] hydrate ${room} failed:`, e);
-    }
-  }
-  if (total) console.log(`[transcript] hydrated ${total} entries from ${rooms.length} room(s)`);
+if (ledgerDb) {
+  try { transcript.init(); }
+  catch (e) { console.error("[transcript] init failed:", e); }
 }
 
 function expireHandoff(id: string): HandoffSnapshot | null {

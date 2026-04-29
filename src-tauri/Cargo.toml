@@ -1,6 +1,6 @@
 [package]
 name = "a2achannel"
-version = "0.11.0"
+version = "0.10.2"
 edition = "2021"
 
 [lib]
@@ -24,7 +24,6 @@ dirs = "5"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "io-util", "fs"] }
 portable-pty = "0.8"
 base64 = "0.22"
-regex = "1"
 
 [profile.release]
 opt-level = "s"

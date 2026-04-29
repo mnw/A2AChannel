@@ -46,9 +46,6 @@ export type PermissionSnapshot = {
   behavior: PermissionBehavior | null;
   room: string;
   version: number;
-  // Scraper-related fields. Both null/0 for manual/chat-first dismissals.
-  dismissed_by_scraper?: boolean;
-  snapshot_path?: string | null;
 };
 
 type PermissionRow = {
@@ -63,8 +60,6 @@ type PermissionRow = {
   resolved_by: string | null;
   behavior: PermissionBehavior | null;
   room: string;
-  dismissed_by_scraper: number | null;
-  snapshot_path: string | null;
 };
 
 // 5 lowercase letters a-z excluding 'l'. Matches Claude Code's request_id format.
@@ -90,8 +85,6 @@ function rowToSnapshot(row: PermissionRow, version: number): PermissionSnapshot 
     behavior: row.behavior,
     room: row.room,
     version,
-    dismissed_by_scraper: !!row.dismissed_by_scraper,
-    snapshot_path: row.snapshot_path,
   };
 }
 
@@ -193,12 +186,7 @@ function resolvePermission(
   return { kind: "transition", snapshot: snapshotPermission(db, id)! };
 }
 
-function dismissPermission(
-  db: Database,
-  id: string,
-  by: string,
-  opts?: { byScraper?: boolean; snapshotPath?: string | null },
-): PermissionOutcome {
+function dismissPermission(db: Database, id: string, by: string): PermissionOutcome {
   const loaded = loadPermission(db, id);
   if (!loaded) return { kind: "not_found" };
   if (loaded.row.status === "dismissed") {
@@ -212,13 +200,11 @@ function dismissPermission(
     };
   }
   const now = Date.now();
-  const byScraper = opts?.byScraper ? 1 : 0;
-  const snapshotPath = opts?.snapshotPath ?? null;
   db.transaction(() => {
-    insertEvent(db, id, "permission.dismissed", by, opts?.byScraper ? { by: "scraper" } : {}, now);
+    insertEvent(db, id, "permission.dismissed", by, {}, now);
     db.run(
-      "UPDATE permissions SET status='dismissed', resolved_at_ms=?, resolved_by=?, dismissed_by_scraper=?, snapshot_path=? WHERE id=?",
-      [now, by, byScraper, snapshotPath, id],
+      "UPDATE permissions SET status='dismissed', resolved_at_ms=?, resolved_by=? WHERE id=?",
+      [now, by, id],
     );
   })();
   return { kind: "transition", snapshot: snapshotPermission(db, id)! };
@@ -280,9 +266,6 @@ export function permissionEntry(
     replay,
     snapshot,
   };
-  if (eventKind === "permission.dismissed" && snapshot.dismissed_by_scraper) {
-    entry.by = "scraper";
-  }
   return entry;
 }
 
@@ -435,56 +418,6 @@ const routes: RouteDef[] = [
   },
 
   {
-    // Scraper-driven dismissal. Body: { by, snapshot } — the snapshot bytes are
-    // written to a sidecar file under permission-snapshots/ for forensic review.
-    // Same terminal-state policy as the manual /dismiss route; idempotent retries
-    // return 200, conflicting verdicts return 409.
-    method: "POST",
-    path: /^\/permissions\/([^/]+)\/dismiss-by-scraper$/,
-    auth: "mutating",
-    bodyMax: PERMISSION_BODY_MAX,
-    handler: async (req, cap, params) => {
-      const id = params.id;
-      if (!PERMISSION_ID_RE.test(id)) {
-        return Response.json({ error: "invalid request_id" }, { status: 400 });
-      }
-      const body = (await req.json().catch(() => ({}))) as { by?: string; snapshot?: string };
-      const by = (body.by ?? "").trim();
-      if (!validName(by)) return Response.json({ error: "invalid by" }, { status: 400 });
-      const snapshotBytes = typeof body.snapshot === "string" ? body.snapshot : "";
-
-      let snapshotPath: string | null = null;
-      if (snapshotBytes.length > 0) {
-        try {
-          const { writeSnapshot } = await import("../core/permission-snapshots");
-          snapshotPath = writeSnapshot(id, snapshotBytes);
-        } catch (e) {
-          console.error(`[scraper] writeSnapshot ${id}:`, e);
-        }
-      }
-
-      const outcome = dismissPermission(cap.db, id, by, { byScraper: true, snapshotPath });
-      switch (outcome.kind) {
-        case "not_found":
-          return Response.json({ error: "not found" }, { status: 404 });
-        case "conflict":
-          return Response.json(
-            { error: `permission already ${outcome.current_status}`, snapshot: outcome.snapshot },
-            { status: 409 },
-          );
-        case "idempotent":
-          return Response.json({ snapshot: outcome.snapshot, idempotent: true }, { status: 200 });
-        case "transition":
-          cap.sse.emit(permissionEntry(outcome.snapshot, "permission.dismissed"), {
-            kind: "room",
-            room: outcome.snapshot.room,
-          });
-          return Response.json({ snapshot: outcome.snapshot }, { status: 200 });
-      }
-    },
-  },
-
-  {
     method: "GET",
     path: "/permissions",
     auth: "read",
@@ -514,41 +447,6 @@ const routes: RouteDef[] = [
     },
   },
 
-  {
-    // Read the scraper's captured pane snapshot for an auto-dismissed
-    // permission. 404 when there's no snapshot (manual dismissal, still
-    // pending, or file pruned). Plain text body — UTF-8.
-    method: "GET",
-    path: /^\/permissions\/([^/]+)\/snapshot$/,
-    auth: "read",
-    handler: async (_req, cap, params) => {
-      const id = params.id;
-      if (!PERMISSION_ID_RE.test(id)) {
-        return Response.json({ error: "invalid request_id" }, { status: 400 });
-      }
-      const row = cap.db
-        .query<{ snapshot_path: string | null }, [string]>(
-          "SELECT snapshot_path FROM permissions WHERE id = ?",
-        )
-        .get(id);
-      if (!row || !row.snapshot_path) {
-        return Response.json({ error: "no snapshot" }, { status: 404 });
-      }
-      const { readSnapshot, snapshotsDir } = await import("../core/permission-snapshots");
-      // Defense-in-depth — only serve files inside the snapshots dir.
-      if (!row.snapshot_path.startsWith(snapshotsDir())) {
-        return Response.json({ error: "snapshot path outside dir" }, { status: 500 });
-      }
-      const bytes = readSnapshot(id);
-      if (bytes === null) {
-        return Response.json({ error: "snapshot pruned" }, { status: 404 });
-      }
-      return new Response(bytes, {
-        status: 200,
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
-      });
-    },
-  },
 ];
 
 // ---------- KindModule export ----------

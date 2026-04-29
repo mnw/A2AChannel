@@ -4,7 +4,7 @@ import { Database } from "bun:sqlite";
 import { chmodSync } from "node:fs";
 import { randomId } from "./ids";
 
-export const LEDGER_SCHEMA_VERSION = 9;
+export const LEDGER_SCHEMA_VERSION = 10;
 
 export type LedgerOpenResult =
   | { db: Database; enabled: true }
@@ -261,15 +261,27 @@ export function migrateLedger(db: Database): void {
     console.log(`[ledger] applied migration v8`);
   }
   if (current < 9) {
-    // v9: scraper-based auto-dismissal columns on permissions.
-    db.transaction(() => {
-      db.exec(`
-        ALTER TABLE permissions ADD COLUMN snapshot_path TEXT;
-        ALTER TABLE permissions ADD COLUMN dismissed_by_scraper INTEGER NOT NULL DEFAULT 0;
-      `);
-      db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '9')");
-    })();
+    // v9: (formerly added scraper columns; reverted in v10)
+    db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '9')");
     console.log(`[ledger] applied migration v9`);
+  }
+  if (current < 10) {
+    // v10: scraper feature pulled. Drop the v9 columns if they exist.
+    // ALTER TABLE DROP COLUMN requires SQLite 3.35+ (Bun bundles a recent version).
+    db.transaction(() => {
+      const cols = db
+        .query<{ name: string }, []>("PRAGMA table_info(permissions)")
+        .all() as { name: string }[];
+      const names = new Set(cols.map((c) => c.name));
+      if (names.has("snapshot_path")) {
+        db.exec("ALTER TABLE permissions DROP COLUMN snapshot_path");
+      }
+      if (names.has("dismissed_by_scraper")) {
+        db.exec("ALTER TABLE permissions DROP COLUMN dismissed_by_scraper");
+      }
+      db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '10')");
+    })();
+    console.log(`[ledger] applied migration v10`);
   }
 }
 

@@ -48,24 +48,6 @@
     try { return await _invoke()('pty_tap_read', { agent, durationMs: durationMs ?? null }); }
     catch (e) { console.warn('[pty] tap-read failed for', agent, e); return ''; }
   }
-  // Poll agent's pane until `pattern` (regex) matches or timeout.
-  async function ptyAwaitPattern(agent, pattern, timeoutMs, pollIntervalMs) {
-    return _invoke()('pty_await_pattern', {
-      agent, pattern,
-      timeoutMs: timeoutMs ?? null,
-      pollIntervalMs: pollIntervalMs ?? null,
-    });
-  }
-  // Resolves matched=true when pattern has been absent for N consecutive snapshots.
-  async function ptyAwaitPatternAbsent(agent, pattern, timeoutMs, confirmations, pollIntervalMs) {
-    return _invoke()('pty_await_pattern_absent', {
-      agent, pattern,
-      timeoutMs: timeoutMs ?? null,
-      confirmations: confirmations ?? null,
-      pollIntervalMs: pollIntervalMs ?? null,
-    });
-  }
-
   const encoder = new TextEncoder();
   function strToB64(str) {
     const bytes = encoder.encode(str);
@@ -84,7 +66,6 @@
   window.__A2A_TERM__.pty = {
     ptySpawn, ptyWrite, ptyResize, ptyKill, ptyList,
     ptyCaptureTurn, ptyReadCapture, ptyHealGeometry, ptyTapRead,
-    ptyAwaitPattern, ptyAwaitPatternAbsent,
     strToB64, b64ToBytes,
   };
 })();

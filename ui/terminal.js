@@ -815,6 +815,10 @@
       await ptySpawn(agent, effectiveCwd);
       setTabState(agent, 'live');
       await attachOutputListener(agent);
+      // Force a fresh tmux repaint AFTER the listener is registered. Without this,
+      // the initial attach repaint races the listener registration and gets lost,
+      // leaving the spinner up until claude emits its next idle byte (could be seconds).
+      try { await invoke('pty_heal_geometry', { agent }); } catch {}
       const tt = tabs.get(agent);
       if (tt) sendResize(tt);
     } catch (e) {

@@ -34,9 +34,6 @@ function renderPermissionCard(event) {
     if (existing.status === 'pending' && snapshot.status !== 'pending') {
       existing.element.remove();
       messagesEl.appendChild(existing.element);
-      if (typeof permissionScraperUnwatch === 'function') {
-        permissionScraperUnwatch(event.permission_id);
-      }
     }
     existing.version = incomingVersion;
     existing.status = snapshot.status;
@@ -45,11 +42,6 @@ function renderPermissionCard(event) {
     const el = buildPermissionCardDom(snapshot, event);
     if (snapshot.status === 'pending') {
       getPermissionStack().appendChild(el);
-      if (typeof permissionScraperWatch === 'function') {
-        permissionScraperWatch(
-          event.permission_id, snapshot.agent, snapshot.room, snapshot.tool_name,
-        );
-      }
     } else {
       messagesEl.appendChild(el);
     }
@@ -85,13 +77,7 @@ function updatePermissionCardDom(el, snapshot, event) {
   let metaSuffix = '';
   if (snapshot.resolved_by) {
     if (snapshot.status === 'dismissed') {
-      const dismisser = snapshot.dismissed_by_scraper || event.by === 'scraper'
-        ? 'auto-dismissed'
-        : `dismissed by ${escHtml(snapshot.resolved_by)}`;
-      metaSuffix = ` · ${dismisser}`;
-      if (snapshot.snapshot_path) {
-        metaSuffix += ` · <a class="permission-snapshot-link" href="#" data-perm-id="${escHtml(snapshot.id)}">view snapshot</a>`;
-      }
+      metaSuffix = ` · dismissed by ${escHtml(snapshot.resolved_by)}`;
     } else {
       metaSuffix = ` · ${escHtml(snapshot.behavior === 'allow' ? 'allowed' : 'denied')} by ${escHtml(snapshot.resolved_by)}`;
     }
@@ -124,45 +110,6 @@ function updatePermissionCardDom(el, snapshot, event) {
   const dismissBtn = el.querySelector('.permission-dismiss');
   if (dismissBtn) {
     dismissBtn.addEventListener('click', () => handlePermissionDismiss(snapshot.id));
-  }
-  const snapLink = el.querySelector('.permission-snapshot-link');
-  if (snapLink) {
-    snapLink.addEventListener('click', (ev) => {
-      ev.preventDefault();
-      handlePermissionSnapshotView(snapLink.dataset.permId);
-    });
-  }
-}
-
-async function handlePermissionSnapshotView(id) {
-  try {
-    const r = await authedFetch(`/permissions/${encodeURIComponent(id)}/snapshot`);
-    if (!r.ok) {
-      const err = await parseErrorBody(r);
-      alert(`Snapshot unavailable: ${err}`);
-      return;
-    }
-    const text = await r.text();
-    // Quick-and-dirty modal — re-uses the existing nutshell-editor box style.
-    const overlay = document.createElement('div');
-    overlay.style.cssText =
-      'position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:9999;' +
-      'display:flex; align-items:center; justify-content:center;';
-    const box = document.createElement('div');
-    box.style.cssText =
-      'background:var(--bg); border:var(--border-1) solid var(--line);' +
-      'border-radius:var(--radius-md); padding:var(--sp-16); max-width:80vw;' +
-      'max-height:80vh; overflow:auto; font-family:var(--mono); font-size:var(--fs-sm);';
-    box.innerHTML =
-      `<div style="margin-bottom:var(--sp-8); color:var(--text-dim); font-size:var(--fs-2xs);">` +
-      `Captured pane bytes used by the scraper to confirm dialog absence. ` +
-      `May contain secrets visible at the time of capture.</div>` +
-      `<pre style="white-space:pre-wrap; margin:0;">${escHtml(text)}</pre>`;
-    overlay.appendChild(box);
-    overlay.addEventListener('click', (ev) => { if (ev.target === overlay) overlay.remove(); });
-    document.body.appendChild(overlay);
-  } catch (e) {
-    alert(`Snapshot fetch error: ${e?.message ?? e}`);
   }
 }
 

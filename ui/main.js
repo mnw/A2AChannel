@@ -80,7 +80,25 @@ function handleEvent(data) {
 }
 
 let activeES = null;
-function connect() {
+async function refreshHubFromTauri() {
+  const invoke =
+    window.__TAURI_INTERNALS__?.invoke ||
+    window.__TAURI__?.core?.invoke ||
+    window.__TAURI__?.invoke;
+  if (!invoke) return;
+  try {
+    const info = await invoke('get_hub_url');
+    if (info && typeof info === 'object') {
+      if (typeof info.url === 'string' && info.url) BUS = info.url;
+      if (typeof info.token === 'string') AUTH_TOKEN = info.token;
+    } else if (typeof info === 'string' && info) {
+      BUS = info;
+    }
+  } catch (e) {
+    console.warn('[sse] get_hub_url refresh failed:', e);
+  }
+}
+async function connect() {
   if (activeES) { try { activeES.close(); } catch {} activeES = null; }
   let qs = `?last_event_id=${lastSeenId}&session=${encodeURIComponent(serverSession)}`;
   if (AUTH_TOKEN) qs += `&token=${encodeURIComponent(AUTH_TOKEN)}`;
@@ -97,7 +115,11 @@ function connect() {
     markAllOffline();
     es.close();
     activeES = null;
-    setTimeout(connect, 3000);
+    // Hub may have respawned on a new port; refresh discovery before retrying.
+    setTimeout(async () => {
+      await refreshHubFromTauri();
+      connect();
+    }, 3000);
   };
 }
 
