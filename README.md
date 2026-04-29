@@ -106,7 +106,7 @@ Guardrails:
 - `/clear` and `/compact` targeting more than one agent prompt for confirmation (irreversible per-agent context wipe).
 - `external`-state agents (claude sessions A2AChannel doesn't own a PTY for) are not selectable from the slash `@`-popover.
 
-Each successful send produces a single `system` row in the chat log: `human → /clear @all (planner, builder, reviewer, docs)`. The audit row is in-memory only — lost on hub restart unless the room has persistent transcripts on (see below).
+Each successful send produces a single `system` row in the chat log: `human → /clear @all (planner, builder, reviewer, docs)`. The audit row is in-memory only — lost on hub restart. Persistent transcripts (see below) capture it to JSONL on disk if the room has them on.
 
 ### Mode cycling (Shift+Tab)
 
@@ -191,14 +191,14 @@ fonts:
   ui: ""                     # prepended to the built-in chain; empty = use defaults
   mono: ""
 editor: ""                   # e.g. `code`, `cursor`, `subl`, `open -a Cursor`
-chat_history_limit: 1000     # in-memory ring buffer + replay budget on restart, [10..100000]
+chat_history_limit: 1000     # in-memory chat ring-buffer cap, [10..100000]
 ```
 
 Edit, click **↻** in the header to reload — hub restarts with the new values, no app relaunch.
 
 - `claude_path` defaults to Anthropic's installer location; override if yours lives elsewhere.
 - `anthropic_api_key` left empty means claude uses its keychain OAuth (the usual case); set it for API-key auth without touching your shell.
-- `chat_history_limit` doubles as the per-agent context-replay budget on hub restart for rooms with persistent transcripts on. Lower it (e.g. 200) if agents reconnect into too much history.
+- `chat_history_limit` is the in-memory ring-buffer cap. Hub restart wipes the chat log regardless of persistence — JSONL stays on disk as forensic record but is not replayed.
 
 **Global MCP servers** at `~/Library/Application Support/A2AChannel/mcp.json` (open via the connector-graph icon in the titlebar). Servers in this file are merged into every per-agent `.mcp.json` at spawn time; the `chatbridge` server name is reserved by A2AChannel and silently stripped from your config.
 
@@ -273,7 +273,7 @@ Full protocol schemas, endpoints, and state machines: [`docs/PROTOCOL.md`](docs/
 
 - **macOS ARM64 only.** No Windows, Linux, or Intel Mac builds.
 - **Research-preview dependency.** Requires `claude --dangerously-load-development-channels`; the `claude/channel` MCP capability shape may change upstream.
-- **In-memory roster.** Agent names and presence reset on app restart. Handoffs/interrupts/nutshell persist (SQLite); chat log persists only when a room opts in (see *Persistent transcripts* below).
+- **In-memory roster + chat log.** Agent names, presence, and the live chat reset on hub/app restart. Handoffs/interrupts/nutshell persist (SQLite). Chat history can be persisted to disk per-room as JSONL (see *Persistent transcripts* below) — that's an offline forensic record, not a replay source.
 
 ## Persistent transcripts (opt-in)
 
@@ -292,7 +292,7 @@ Each line: `{"v":1,"id":42,"from":"planner","to":"human","text":"...","ts":"..."
 
 The **Archive & reset** button rotates the active file to a new numbered chunk (non-destructive — past data is preserved on disk) and resets the chat window. On the next reconnect, agents see fresh context. To genuinely wipe everything, remove the chunks manually with `rm`.
 
-On hub restart, only the **active chunk** hydrates back into the live chat log so reconnecting clients see continuity. Rotated chunks are kept on disk as archive; access them directly when needed. The amount of history that replays into reconnecting agents' context is governed by `chat_history_limit` in `config.yml`.
+Hub restart wipes the in-memory chat log; **the JSONL is not replayed back into the live chat**. This is intentional — closing all your agents and restarting the hub gives a clean slate, regardless of whether transcripts are on. The on-disk JSONL stays untouched for `grep`/`cat`/`jq` review.
 
 **Caveats**
 
