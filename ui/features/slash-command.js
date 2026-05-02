@@ -156,7 +156,10 @@ function _busyAgents() {
 }
 
 // Live in-Room Agents whose PTY we own (excludes Human, Shell, external, offline).
-function _slashTargetCandidates(roomName) {
+// PUBLIC — consumed by ui/features/mentions.js to narrow the @-popover candidate
+// set to slash-eligible peers when the input is in slash mode. Renaming this
+// breaks @-completion in slash mode.
+function slashTargetCandidates(roomName) {
   return ROSTER.filter((a) => {
     if (a.room === null) return false;
     if (roomName === ROOM_ALL) return false;
@@ -168,7 +171,7 @@ function _slashTargetCandidates(roomName) {
 
 function _resolveTargets(target, roomName) {
   if (!target) return { resolved: [], skipped: [] };
-  const candidates = _slashTargetCandidates(roomName);
+  const candidates = slashTargetCandidates(roomName);
   if (target === 'all') {
     const busy = _busyAgents();
     const resolved = [];
@@ -353,6 +356,10 @@ function slashPickerUpdate() {
     });
     _slashPop.appendChild(row);
   });
+  // Keep the active row visible: the popover has overflow-y:auto + max-height
+  // (see composer.css .slash-popover), so without this the highlight scrolls
+  // off-screen as soon as ArrowDown takes us past the visible item count.
+  _slashPop.querySelector('.slash-item.active')?.scrollIntoView({ block: 'nearest' });
 }
 
 function slashPickerMove(delta) {

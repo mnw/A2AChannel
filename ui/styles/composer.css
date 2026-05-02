@@ -182,7 +182,11 @@ footer {
   font-size: var(--fs-base);
   color: var(--text);
 }
-.slash-item:hover, .slash-item.active { background: color-mix(in oklab, var(--orange) 12%, transparent); }
+/* Hover = faint preview; active = strong keyboard cursor. Same orange hue, two
+   intensities so the user can always tell which row Enter will select even
+   when the mouse and keyboard cursor land on different rows. */
+.slash-item:hover { background: color-mix(in oklab, var(--orange) 6%, transparent); }
+.slash-item.active { background: color-mix(in oklab, var(--orange) 20%, transparent); }
 .slash-item .slash-cmd { color: var(--text); flex: 0 0 auto; min-width: 11ch; font-weight: 500; }
 .slash-item .slash-desc {
   flex: 1 1 auto;
