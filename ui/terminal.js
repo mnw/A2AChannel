@@ -529,6 +529,23 @@
     });
   }
 
+  // Indivisible post-spawn sequence: tab marked live → output listener registered
+  // → tmux repaint forced AFTER the listener is up → final resize.
+  //
+  // Order is load-bearing: the geometry-heal MUST follow attachOutputListener,
+  // otherwise the initial tmux refresh-client races the listener registration
+  // and the spinner hangs until claude emits its next idle byte. This is the
+  // cold-start race fixed in v0.10.2 — keeping all four steps in one helper
+  // ensures no future call site (handleLaunch, autoAttach, future spawn flows)
+  // can drift back to the broken ordering.
+  async function _connectLiveTab(agent) {
+    setTabState(agent, 'live');
+    await attachOutputListener(agent);
+    try { await invoke('pty_heal_geometry', { agent }); } catch {}
+    const tt = tabs.get(agent);
+    if (tt) sendResize(tt);
+  }
+
   async function handleLaunch(agent, cwd, sessionMode = null, room = null) {
     if (!_paneEnabled) {
       _paneEnabled = true;
@@ -550,10 +567,8 @@
       rememberCwd(agent, cwd);
       t.cwd = cwd;
       t.external = false;
-      setTabState(agent, 'live');
-      await attachOutputListener(agent);
-      stage('output listener attached');
-      sendResize(t);
+      await _connectLiveTab(agent);
+      stage('tab connected (listener + heal + resize)');
       // Fallback SIGWINCH if claude errored before the dev-channels prompt appeared.
       setTimeout(() => {
         if (!tabs.has(agent) || !t.term) return;
@@ -813,14 +828,7 @@
     try {
       const effectiveCwd = cwd || '/tmp';
       await ptySpawn(agent, effectiveCwd);
-      setTabState(agent, 'live');
-      await attachOutputListener(agent);
-      // Force a fresh tmux repaint AFTER the listener is registered. Without this,
-      // the initial attach repaint races the listener registration and gets lost,
-      // leaving the spinner up until claude emits its next idle byte (could be seconds).
-      try { await invoke('pty_heal_geometry', { agent }); } catch {}
-      const tt = tabs.get(agent);
-      if (tt) sendResize(tt);
+      await _connectLiveTab(agent);
     } catch (e) {
       const msg = String(e?.message ?? e);
       if (msg.includes('already attached')) {
