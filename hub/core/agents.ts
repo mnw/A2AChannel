@@ -1,10 +1,13 @@
-// Agent registry — in-memory roster + per-agent event queues + stale-timer
-// lifecycle. Factory-scoped so the state isn't module-level globals; `hub.ts`
-// creates one instance at startup and passes it into `HubCapabilities`.
+// Agent registry — owns the four-structure invariant (knownAgents,
+// agentQueues, agentConnections, staleTimers). All four are SEALED inside this
+// module: external callers never see the Maps. Mutation is only possible
+// through the methods exposed below, which keeps the four structures in sync
+// atomically and makes the CLAUDE.md "never mutate individually" rule a
+// structural fact rather than a convention.
 //
 // Roster changes (add/remove) and connection-count changes (open/close) invoke
-// caller-provided callbacks so `hub.ts` can trigger `broadcastRoster()` /
-// `broadcastPresence()` without circular imports.
+// caller-provided callbacks so `hub.ts` can trigger broadcastRoster() /
+// broadcastPresence() without circular imports.
 
 import { DropQueue } from "./sse";
 import { colorFromName, validName } from "./ids";
@@ -20,23 +23,34 @@ export type AgentRegistryOptions = {
 };
 
 export type AgentRegistry = {
-  // Raw state — exposed so hub.ts can iterate during broadcasts. Mutate only
-  // through the methods below.
-  knownAgents: Map<string, Agent>;
-  agentQueues: Map<string, DropQueue<Entry>>;
-  agentConnections: Map<string, number>;
-  permanentAgents: Set<string>;
+  // Reads
+  get(name: string): Agent | null;
+  has(name: string): boolean;
+  isPermanent(name: string): boolean;
+  values(): IterableIterator<Agent>;
+  entries(): IterableIterator<[string, Agent]>;
+  connectionCount(name: string): number;
 
   // Lifecycle
-  ensure: (name: string, room?: string | null) => Agent | null;
-  remove: (name: string, reason: string) => boolean;
-  scheduleStaleRemoval: (name: string) => void;
-  cancelStaleTimer: (name: string) => void;
-  markPermanent: (name: string) => void;
+  ensure(name: string, room?: string | null): Agent | null;
+  remove(name: string, reason: string): boolean;
+  markPermanent(name: string): void;
 
-  // Read snapshots
-  rosterSnapshot: () => Entry;
-  presenceSnapshot: () => Entry;
+  // Connection accounting. disconnect() auto-schedules stale removal when the
+  // count hits 0 — callers no longer need to remember that bookkeeping.
+  connect(name: string): number;
+  disconnect(name: string): number;
+
+  // Per-agent queue access — sealed substitutes for `agentQueues.get(...).push(...)`
+  // and `agentQueues.get(...).pull(signal)`. enqueueFor returns false when the
+  // agent has no queue (already removed); subscribe yields entries until signal
+  // aborts or the queue drains (after removal it no longer receives).
+  enqueueFor(name: string, entry: Entry): boolean;
+  subscribe(name: string, signal: AbortSignal): AsyncGenerator<Entry>;
+
+  // Snapshots
+  rosterSnapshot(): Entry;
+  presenceSnapshot(): Entry;
 };
 
 export function createAgentRegistry(opts: AgentRegistryOptions): AgentRegistry {
@@ -52,6 +66,18 @@ export function createAgentRegistry(opts: AgentRegistryOptions): AgentRegistry {
       clearTimeout(t);
       staleTimers.delete(name);
     }
+  }
+
+  function scheduleStaleRemoval(name: string): void {
+    if (permanentAgents.has(name)) return;
+    cancelStaleTimer(name);
+    const t = setTimeout(() => {
+      staleTimers.delete(name);
+      if ((agentConnections.get(name) ?? 0) > 0) return;
+      if (permanentAgents.has(name)) return;
+      remove(name, "stale (no connection)");
+    }, opts.staleMs);
+    staleTimers.set(name, t);
   }
 
   function ensure(name: string, room: string | null = opts.defaultRoom): Agent | null {
@@ -83,20 +109,40 @@ export function createAgentRegistry(opts: AgentRegistryOptions): AgentRegistry {
     return true;
   }
 
-  function scheduleStaleRemoval(name: string): void {
-    if (permanentAgents.has(name)) return;  // permanent members never stale-clean
-    cancelStaleTimer(name);
-    const t = setTimeout(() => {
-      staleTimers.delete(name);
-      if ((agentConnections.get(name) ?? 0) > 0) return;
-      if (permanentAgents.has(name)) return;
-      remove(name, "stale (no connection)");
-    }, opts.staleMs);
-    staleTimers.set(name, t);
-  }
-
   function markPermanent(name: string): void {
     permanentAgents.add(name);
+  }
+
+  function connect(name: string): number {
+    const next = (agentConnections.get(name) ?? 0) + 1;
+    agentConnections.set(name, next);
+    cancelStaleTimer(name);
+    return next;
+  }
+
+  function disconnect(name: string): number {
+    const next = Math.max(0, (agentConnections.get(name) ?? 1) - 1);
+    agentConnections.set(name, next);
+    if (next === 0 && knownAgents.has(name)) scheduleStaleRemoval(name);
+    return next;
+  }
+
+  function enqueueFor(name: string, entry: Entry): boolean {
+    const q = agentQueues.get(name);
+    if (!q) return false;
+    q.push(entry);
+    return true;
+  }
+
+  async function* subscribe(name: string, signal: AbortSignal): AsyncGenerator<Entry> {
+    // Capture queue ref ONCE — survives map removal so an in-flight pull doesn't
+    // get orphaned mid-stream when the agent is stale-cleaned. The SSE handler
+    // aborts via `signal` when the connection drops.
+    const q = agentQueues.get(name);
+    if (!q) return;
+    while (!signal.aborted) {
+      yield await q.pull(signal);
+    }
   }
 
   function rosterSnapshot(): Entry {
@@ -113,15 +159,19 @@ export function createAgentRegistry(opts: AgentRegistryOptions): AgentRegistry {
   }
 
   return {
-    knownAgents,
-    agentQueues,
-    agentConnections,
-    permanentAgents,
+    get: (name) => knownAgents.get(name) ?? null,
+    has: (name) => knownAgents.has(name),
+    isPermanent: (name) => permanentAgents.has(name),
+    values: () => knownAgents.values(),
+    entries: () => knownAgents.entries(),
+    connectionCount: (name) => agentConnections.get(name) ?? 0,
     ensure,
     remove,
-    scheduleStaleRemoval,
-    cancelStaleTimer,
     markPermanent,
+    connect,
+    disconnect,
+    enqueueFor,
+    subscribe,
     rosterSnapshot,
     presenceSnapshot,
   };

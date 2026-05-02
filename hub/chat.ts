@@ -33,10 +33,9 @@ export async function handleSend(req: Request, deps: ChatDeps): Promise<Response
     return json({ error: "invalid image url" }, { status: 400 });
   }
 
-  const { knownAgents } = deps.agents;
   const scopeRoom = body.room && validRoomLabel(body.room) ? body.room : null;
   const agentsInRoom = (room: string): string[] =>
-    [...knownAgents.values()].filter((a) => a.room === room).map((a) => a.name);
+    [...deps.agents.values()].filter((a) => a.room === room).map((a) => a.name);
 
   let targets: string[];
   let broadcast = false;
@@ -44,7 +43,7 @@ export async function handleSend(req: Request, deps: ChatDeps): Promise<Response
   if (Array.isArray(body.targets) && body.targets.length) {
     for (const t of body.targets) {
       if (t === "all") continue;
-      if (!knownAgents.has(t)) {
+      if (!deps.agents.has(t)) {
         return json({ error: `unknown target: ${t}` }, { status: 400 });
       }
     }
@@ -69,7 +68,7 @@ export async function handleSend(req: Request, deps: ChatDeps): Promise<Response
     }
     targets = agentsInRoom(scopeRoom);
     broadcast = true;
-  } else if (knownAgents.has(body.target)) {
+  } else if (deps.agents.has(body.target)) {
     targets = [body.target];
   } else {
     return json({ error: `unknown target: ${body.target}` }, { status: 400 });
@@ -87,7 +86,7 @@ export async function handleSend(req: Request, deps: ChatDeps): Promise<Response
 
   const entryRoom =
     scopeRoom ??
-    (targets.length === 1 ? knownAgents.get(targets[0])?.room ?? null : null);
+    (targets.length === 1 ? deps.agents.get(targets[0])?.room ?? null : null);
 
   const entry: Entry = {
     from: "you",
@@ -124,7 +123,7 @@ export async function handlePost(req: Request, deps: ChatDeps): Promise<Response
   if (!deps.agents.ensure(frm)) {
     return json({ error: `invalid from: ${frm}` }, { status: 400 });
   }
-  const sender = deps.agents.knownAgents.get(frm)!;
+  const sender = deps.agents.get(frm)!;
   const senderRoom = sender.room;  // null = human super-user (rare for /post but possible)
 
   let targets: string[];
@@ -132,11 +131,11 @@ export async function handlePost(req: Request, deps: ChatDeps): Promise<Response
     targets = [];
   } else if (reserved === "all") {
     // Broadcast from an agent scopes to its own room. Human reads via /stream.
-    targets = [...deps.agents.knownAgents.values()]
-      .filter((a) => a.name !== frm && !deps.agents.permanentAgents.has(a.name))
+    targets = [...deps.agents.values()]
+      .filter((a) => a.name !== frm && !deps.agents.isPermanent(a.name))
       .filter((a) => senderRoom === null || a.room === senderRoom)
       .map((a) => a.name);
-  } else if (deps.agents.knownAgents.has(rawTo)) {
+  } else if (deps.agents.has(rawTo)) {
     targets = [rawTo];
   } else {
     return json({ error: `unknown to: ${rawTo}` }, { status: 400 });

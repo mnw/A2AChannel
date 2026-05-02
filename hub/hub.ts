@@ -150,10 +150,8 @@ const agents = createAgentRegistry({
   onRosterChange: () => { broadcastRoster(); broadcastBriefingsToConnectedAgents(); },
   onPresenceChange: () => broadcastPresence(),
 });
-const { knownAgents, agentQueues, agentConnections, permanentAgents } = agents;
 const ensureAgent = agents.ensure;
 const removeAgent = agents.remove;
-const scheduleStaleRemoval = agents.scheduleStaleRemoval;
 
 let ledgerDb: Database | null = null;
 let ledgerEnabled = false;
@@ -217,12 +215,11 @@ function emit(entry: Entry, scope: Scope): void {
   broadcastUI(entry);
   if (scope.kind === "ui-only") return;
   const pushTo = (name: string) => {
-    if (permanentAgents.has(name)) return;
-    const q = agentQueues.get(name);
-    if (q) q.push(entry);
+    if (agents.isPermanent(name)) return;
+    agents.enqueueFor(name, entry);
   };
   if (scope.kind === "broadcast") {
-    for (const name of knownAgents.keys()) pushTo(name);
+    for (const [name] of agents.entries()) pushTo(name);
     return;
   }
   if (scope.kind === "to-agents") {
@@ -230,7 +227,7 @@ function emit(entry: Entry, scope: Scope): void {
     return;
   }
   if (scope.kind === "room") {
-    for (const [name, agent] of knownAgents.entries()) {
+    for (const [name, agent] of agents.entries()) {
       if (agent.room !== scope.room) continue;
       pushTo(name);
     }
@@ -241,11 +238,10 @@ function emit(entry: Entry, scope: Scope): void {
 // Escape hatch; kinds should prefer named scopes and promote to the Scope enum on second use.
 function emitWhere(entry: Entry, predicate: (agent: AgentType) => boolean): void {
   broadcastUI(entry);
-  for (const [name, agent] of knownAgents.entries()) {
-    if (permanentAgents.has(name)) continue;
+  for (const [name, agent] of agents.entries()) {
+    if (agents.isPermanent(name)) continue;
     if (!predicate(agent)) continue;
-    const q = agentQueues.get(name);
-    if (q) q.push(entry);
+    agents.enqueueFor(name, entry);
   }
 }
 
@@ -266,18 +262,16 @@ function buildBriefing(agent: string): Entry & {
   human_name: string;
   nutshell: string | null;
 } {
-  const me = knownAgents.get(agent);
+  const me = agents.get(agent);
   const myRoom = me?.room ?? DEFAULT_ROOM;
   const peers: Array<{ name: string; online: boolean; room: string | null }> = [];
-  for (const [name, a] of knownAgents) {
+  for (const [name, a] of agents.entries()) {
     if (name === agent) continue;
     // Same-room peers and all cross-room members (human = room null).
     if (a.room !== null && a.room !== myRoom) continue;
     peers.push({
       name,
-      online: permanentAgents.has(name)
-        ? true
-        : (agentConnections.get(name) ?? 0) > 0,
+      online: agents.isPermanent(name) ? true : agents.connectionCount(name) > 0,
       room: a.room,
     });
   }
@@ -306,16 +300,14 @@ function briefingSignature(b: ReturnType<typeof buildBriefing>): string {
 }
 
 function broadcastBriefingsToConnectedAgents(forceAll: boolean = false): void {
-  for (const name of knownAgents.keys()) {
-    if (permanentAgents.has(name)) continue;
-    if ((agentConnections.get(name) ?? 0) <= 0) continue;
-    const q = agentQueues.get(name);
-    if (!q) continue;
+  for (const [name] of agents.entries()) {
+    if (agents.isPermanent(name)) continue;
+    if (agents.connectionCount(name) <= 0) continue;
     const brief = buildBriefing(name);
     const sig = briefingSignature(brief);
     if (!forceAll && lastBriefingSig.get(name) === sig) continue;
     lastBriefingSig.set(name, sig);
-    q.push(brief);
+    agents.enqueueFor(name, brief);
   }
 }
 
@@ -346,10 +338,8 @@ function agentEntry(entry: Entry): Entry {
 
 function enqueueTo(name: string, entry: Entry): void {
   // Permanent members read via /stream; no channel-bin queue.
-  if (permanentAgents.has(name)) return;
-  const q = agentQueues.get(name);
-  if (!q) return;
-  q.push(entry);
+  if (agents.isPermanent(name)) return;
+  agents.enqueueFor(name, entry);
 }
 
 const { requireAuth, requireReadAuth, requireJsonBody } = makeAuthHelpers(AUTH_TOKEN);
@@ -408,17 +398,15 @@ function handleAgentStream(agent: string, room: string | null = null): Response 
     return json({ error: `invalid agent name: ${agent}` }, { status: 400 });
   }
   // Room captured on first registration; reconnects ignore the arg.
-  ensureAgent(agent, room ?? DEFAULT_ROOM);
-  const q = agentQueues.get(agent);
-  if (!q) {
+  if (!ensureAgent(agent, room ?? DEFAULT_ROOM)) {
     return json({ error: "agent queue missing" }, { status: 500 });
   }
   return makeSSE(async (send, signal) => {
-    agentConnections.set(agent, (agentConnections.get(agent) ?? 0) + 1);
+    agents.connect(agent);
     broadcastPresence();
 
     // Briefing first so it arrives before replay in the agent's context.
-    if (!permanentAgents.has(agent)) {
+    if (!agents.isPermanent(agent)) {
       try {
         const brief = buildBriefing(agent);
         send(brief);
@@ -431,12 +419,12 @@ function handleAgentStream(agent: string, room: string | null = null): Response 
 
     // Chat is NOT replayed (UI replays via /stream's chatLog). Kinds replay via pendingFor().
     if (ledgerEnabled) {
-      const me = knownAgents.get(agent);
+      const me = agents.get(agent);
       const myRoom = me?.room ?? DEFAULT_ROOM;
       const agentCtx: AgentCtx = {
         name: agent,
         room: me?.room ?? null,
-        permanent: permanentAgents.has(agent),
+        permanent: agents.isPermanent(agent),
       };
       const cap = buildCap();
       try {
@@ -454,17 +442,14 @@ function handleAgentStream(agent: string, room: string | null = null): Response 
     }
 
     try {
-      while (!signal.aborted) {
-        const m = await q.pull(signal);
+      // subscribe() captures the queue ref once; survives stale-removal mid-stream.
+      // disconnect() in the finally auto-schedules stale removal when count hits 0.
+      for await (const m of agents.subscribe(agent, signal)) {
         send(m);
       }
     } finally {
-      const n = Math.max(0, (agentConnections.get(agent) ?? 1) - 1);
-      agentConnections.set(agent, n);
+      agents.disconnect(agent);
       broadcastPresence();
-      if (n === 0 && knownAgents.has(agent)) {
-        scheduleStaleRemoval(agent);
-      }
     }
   });
 }
@@ -497,12 +482,10 @@ function broadcastHandoff(
 function broadcastNutshell(snapshot: NutshellSnapshot): void {
   const entry = nutshellEntry(snapshot);
   for (const q of uiSubscribers) q.push(entry);
-  for (const a of knownAgents.values()) {
-    if (permanentAgents.has(a.name)) continue;
+  for (const a of agents.values()) {
+    if (agents.isPermanent(a.name)) continue;
     if (a.room !== snapshot.room) continue;
-    const q = agentQueues.get(a.name);
-    if (!q) continue;
-    q.push(nutshellEntry(snapshot));
+    agents.enqueueFor(a.name, nutshellEntry(snapshot));
   }
 }
 
@@ -600,31 +583,31 @@ function buildCap(): HubCapabilities {
     db: ledgerDb!,
     agents: {
       get(name): AgentCtx | null {
-        const a = knownAgents.get(name);
+        const a = agents.get(name);
         if (!a) return null;
-        return { name: a.name, room: a.room, permanent: permanentAgents.has(name) };
+        return { name: a.name, room: a.room, permanent: agents.isPermanent(name) };
       },
       isPermanent(name) {
-        return permanentAgents.has(name);
+        return agents.isPermanent(name);
       },
       all(): AgentCtx[] {
-        return [...knownAgents.values()].map((a) => ({
+        return [...agents.values()].map((a) => ({
           name: a.name,
           room: a.room,
-          permanent: permanentAgents.has(a.name),
+          permanent: agents.isPermanent(a.name),
         }));
       },
       ensure(name, room = DEFAULT_ROOM): AgentCtx | null {
         const a = ensureAgent(name, room);
         if (!a) return null;
-        return { name: a.name, room: a.room, permanent: permanentAgents.has(a.name) };
+        return { name: a.name, room: a.room, permanent: agents.isPermanent(a.name) };
       },
     },
     sse: {
       emit,
       emitWhere(entry, predicate) {
         emitWhere(entry, (a: AgentType) =>
-          predicate({ name: a.name, room: a.room, permanent: permanentAgents.has(a.name) }),
+          predicate({ name: a.name, room: a.room, permanent: agents.isPermanent(a.name) }),
         );
       },
     },
@@ -679,7 +662,7 @@ const server = Bun.serve({
       // Read endpoints accept header OR ?token= for EventSource / <img>.
       if (req.method === "GET" && pathname === "/agents") {
         const authFail = requireReadAuth(req, url);
-        return authFail ?? json([...knownAgents.values()]);
+        return authFail ?? json([...agents.values()]);
       }
       if (req.method === "GET" && pathname === "/presence") {
         const authFail = requireReadAuth(req, url);
