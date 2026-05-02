@@ -5,9 +5,8 @@
  * Entry point only. The behavior lives in hub/channel/*:
  *   - instructions.json        — structured system prompt (human-editable)
  *   - instructions.ts          — loads + templates the JSON at boot
- *   - tools.ts                 — MCP tool catalog (pure data)
+ *   - tools.ts                 — MCP tool registry: schema + handler paired per tool
  *   - hub-client.ts            — authedPost/authedUpload/resolveHub (token rotation)
- *   - call-tool.ts             — CallToolRequestSchema dispatcher
  *   - permission-relay.ts      — notifications/claude/channel/permission_request handler
  *   - tail.ts                  — /agent-stream tail + event forwarding + room gate
  *
@@ -25,8 +24,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
 import { buildInstructions } from "./channel/instructions";
-import { CHATBRIDGE_TOOLS } from "./channel/tools";
-import { callTool } from "./channel/call-tool";
+import { findTool, listToolsForMcp } from "./channel/tools";
 import { PermissionRequestSchema, handlePermissionRequest } from "./channel/permission-relay";
 import { tailHub } from "./channel/tail";
 
@@ -59,12 +57,14 @@ const mcp = new Server(
 );
 
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [...CHATBRIDGE_TOOLS],
+  tools: listToolsForMcp(),
 }));
 
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
+  const tool = findTool(req.params.name);
+  if (!tool) throw new Error(`unknown tool: ${req.params.name}`);
   const args = (req.params.arguments ?? {}) as Record<string, unknown>;
-  return callTool({ agent: AGENT, hubEnv: HUB_ENV }, req.params.name, args);
+  return tool.handler({ agent: AGENT, hubEnv: HUB_ENV }, args);
 });
 
 mcp.setNotificationHandler(
