@@ -3,6 +3,7 @@
 // commits without changing this file's interface.
 
 import { createClaudeSummariser } from "./claude";
+import { createOllamaSummariser } from "./ollama";
 import type { Summariser } from "./types";
 
 export type { Summariser, SummariserOptions } from "./types";
@@ -18,7 +19,10 @@ export type SummariserConfig = {
   // Overrides per adapter; ignored by adapters that don't use them.
   claudeBinPath?: string;
   claudeTimeoutMs?: number;
-  // Reserved for llama-cpp / ollama wiring in subsequent commits.
+  ollamaBaseUrl?: string;
+  ollamaModel?: string;
+  ollamaTimeoutMs?: number;
+  // Reserved for llama-cpp wiring in a subsequent commit.
 };
 
 // Returns null when adapter === "disabled" or when the configured adapter
@@ -31,8 +35,13 @@ export function createSummariser(cfg: SummariserConfig): Summariser | null {
         binPath: cfg.claudeBinPath,
         timeoutMs: cfg.claudeTimeoutMs,
       });
-    case "llama-cpp":
     case "ollama":
+      return createOllamaSummariser({
+        baseUrl: cfg.ollamaBaseUrl,
+        model: cfg.ollamaModel,
+        timeoutMs: cfg.ollamaTimeoutMs,
+      });
+    case "llama-cpp":
       console.warn(`[summariser] adapter "${cfg.adapter}" not yet implemented; summarisation disabled`);
       return null;
     case "disabled":
@@ -50,12 +59,24 @@ export function readSummariserConfigFromEnv(): SummariserConfig {
       ? raw
       : "disabled";
   const cfg: SummariserConfig = { adapter };
-  const bin = process.env.A2A_SUMMARISER_CLAUDE_BIN;
-  if (bin) cfg.claudeBinPath = bin;
-  const tRaw = process.env.A2A_SUMMARISER_CLAUDE_TIMEOUT_MS;
-  if (tRaw) {
-    const n = Number(tRaw);
+
+  const claudeBin = process.env.A2A_SUMMARISER_CLAUDE_BIN;
+  if (claudeBin) cfg.claudeBinPath = claudeBin;
+  const claudeT = process.env.A2A_SUMMARISER_CLAUDE_TIMEOUT_MS;
+  if (claudeT) {
+    const n = Number(claudeT);
     if (Number.isFinite(n) && n > 0) cfg.claudeTimeoutMs = n;
   }
+
+  const ollamaUrl = process.env.A2A_SUMMARISER_OLLAMA_URL;
+  if (ollamaUrl) cfg.ollamaBaseUrl = ollamaUrl;
+  const ollamaModel = process.env.A2A_SUMMARISER_OLLAMA_MODEL;
+  if (ollamaModel) cfg.ollamaModel = ollamaModel;
+  const ollamaT = process.env.A2A_SUMMARISER_OLLAMA_TIMEOUT_MS;
+  if (ollamaT) {
+    const n = Number(ollamaT);
+    if (Number.isFinite(n) && n > 0) cfg.ollamaTimeoutMs = n;
+  }
+
   return cfg;
 }

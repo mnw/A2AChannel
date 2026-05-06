@@ -581,20 +581,33 @@ async function handlePutRoomSettings(req: Request, room: string): Promise<Respon
   if (guard) return guard;
   const sizeCheck = requireJsonBody(req);
   if (sizeCheck) return sizeCheck;
-  let body: { persist_transcript?: unknown };
+  let body: { persist_transcript?: unknown; room_summary_enabled?: unknown };
   try {
-    body = (await req.json()) as { persist_transcript?: unknown };
+    body = (await req.json()) as { persist_transcript?: unknown; room_summary_enabled?: unknown };
   } catch {
     return json({ error: "invalid json" }, { status: 400 });
   }
-  const partial: { persist_transcript?: boolean } = {};
+  const partial: { persist_transcript?: boolean; room_summary_enabled?: boolean } = {};
   if ("persist_transcript" in body) {
     if (typeof body.persist_transcript !== "boolean") {
       return json({ error: "persist_transcript must be boolean" }, { status: 400 });
     }
     partial.persist_transcript = body.persist_transcript;
   }
+  if ("room_summary_enabled" in body) {
+    if (typeof body.room_summary_enabled !== "boolean") {
+      return json({ error: "room_summary_enabled must be boolean" }, { status: 400 });
+    }
+    partial.room_summary_enabled = body.room_summary_enabled;
+  }
   setRoomSettings(ledgerDb!, room, partial);
+  // When enabling summaries on a Room with existing transcript content,
+  // kick off backfill immediately so the user doesn't have to wait for the
+  // next agent reconnect to populate L1/L2 entries.
+  if (partial.room_summary_enabled === true && roomSummariser) {
+    roomSummariser.maybeBackfill(room).catch((e) =>
+      console.error(`[summariser] backfill on opt-in failed for ${room}:`, e));
+  }
   return handleGetRoomSettings(room);
 }
 
