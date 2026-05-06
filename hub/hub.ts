@@ -43,6 +43,7 @@ import {
   listOptedInRooms,
 } from "./core/ledger";
 import * as transcript from "./core/transcript";
+import { createRoomHydrator, type RoomHydrator } from "./core/room-hydrator";
 import type {
   Scope,
   Agent as AgentType,
@@ -166,6 +167,18 @@ openLedger();
 if (ledgerDb) {
   try { transcript.init(); }
   catch (e) { console.error("[transcript] init failed:", e); }
+}
+
+// Lazy per-Room transcript replay. Triggered from handleAgentStream on the
+// first connect for each Room post-restart; no-op for Rooms with persist
+// disabled or no agents reconnecting.
+let roomHydrator: RoomHydrator | null = null;
+if (ledgerDb) {
+  roomHydrator = createRoomHydrator({
+    db: ledgerDb,
+    capLines: HISTORY_LIMIT,
+    replay: broadcastUI,
+  });
 }
 
 function expireHandoff(id: string): HandoffSnapshot | null {
@@ -404,6 +417,16 @@ function handleAgentStream(agent: string, room: string | null = null): Response 
   return makeSSE(async (send, signal) => {
     agents.connect(agent);
     broadcastPresence();
+
+    // Lazy transcript hydration: first agent to reconnect to this Room
+    // post-Hub-restart triggers a one-time replay of the active JSONL chunk
+    // into chatLog + UI fan-out. The hydrator's internal per-Room promise
+    // cache makes this idempotent; concurrent same-Room reconnects are safe.
+    const me = agents.get(agent);
+    if (me?.room && roomHydrator) {
+      roomHydrator.maybeHydrate(me.room).catch((e) =>
+        console.error(`[hub] hydration error for room=${me.room}:`, e));
+    }
 
     // Briefing first so it arrives before replay in the agent's context.
     if (!agents.isPermanent(agent)) {
