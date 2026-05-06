@@ -88,12 +88,6 @@ export type HubCapabilities = {
   };
 };
 
-export interface RoomSettings {
-  room: string;
-  persist_transcript: boolean;
-  updated_at: number;
-}
-
 export type KindModule = {
   // Prefix for SSE event kinds (e.g. "handoff" → "handoff.new").
   kind: string;

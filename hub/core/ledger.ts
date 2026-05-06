@@ -4,7 +4,7 @@ import { Database } from "bun:sqlite";
 import { chmodSync } from "node:fs";
 import { randomId } from "./ids";
 
-export const LEDGER_SCHEMA_VERSION = 10;
+export const LEDGER_SCHEMA_VERSION = 11;
 
 export type LedgerOpenResult =
   | { db: Database; enabled: true }
@@ -283,32 +283,74 @@ export function migrateLedger(db: Database): void {
     })();
     console.log(`[ledger] applied migration v10`);
   }
+  if (current < 11) {
+    // v11: room_summary table (Phase 3 — hierarchical L1/L2 summaries) +
+    // room_summary_enabled column on room_settings (per-Room opt-in toggle).
+    db.transaction(() => {
+      db.exec(`
+        ALTER TABLE room_settings ADD COLUMN room_summary_enabled INTEGER NOT NULL DEFAULT 0;
+
+        CREATE TABLE room_summary (
+          room              TEXT    NOT NULL,
+          level             INTEGER NOT NULL,                -- 1 = block, 2 = rollup
+          start_line        INTEGER NOT NULL,
+          end_line          INTEGER NOT NULL,
+          model             TEXT    NOT NULL,                -- e.g. 'gemma4:e2b', 'claude'
+          summary           TEXT    NOT NULL,
+          rolled_up_into    INTEGER,                         -- rowid of the L2 row, NULL while still active
+          generated_at_ms   INTEGER NOT NULL,
+          PRIMARY KEY (room, level, start_line)
+        );
+        CREATE INDEX idx_room_summary_room_level ON room_summary(room, level, end_line);
+        CREATE INDEX idx_room_summary_unrolled   ON room_summary(room, level) WHERE rolled_up_into IS NULL;
+      `);
+      db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '11')");
+    })();
+    console.log(`[ledger] applied migration v11`);
+  }
 }
 
-export function getRoomSettings(
-  db: Database,
-  room: string,
-): { room: string; persist_transcript: boolean; updated_at: number } | null {
+export type RoomSettings = {
+  room: string;
+  persist_transcript: boolean;
+  room_summary_enabled: boolean;
+  updated_at: number;
+};
+
+export function getRoomSettings(db: Database, room: string): RoomSettings | null {
   const row = db
-    .query<{ room: string; persist_transcript: number; updated_at: number }, [string]>(
-      "SELECT room, persist_transcript, updated_at FROM room_settings WHERE room = ?",
+    .query<
+      { room: string; persist_transcript: number; room_summary_enabled: number; updated_at: number },
+      [string]
+    >(
+      "SELECT room, persist_transcript, room_summary_enabled, updated_at FROM room_settings WHERE room = ?",
     )
     .get(room);
   if (!row) return null;
-  return { room: row.room, persist_transcript: !!row.persist_transcript, updated_at: row.updated_at };
+  return {
+    room: row.room,
+    persist_transcript: !!row.persist_transcript,
+    room_summary_enabled: !!row.room_summary_enabled,
+    updated_at: row.updated_at,
+  };
 }
 
 export function setRoomSettings(
   db: Database,
   room: string,
-  partial: { persist_transcript?: boolean },
+  partial: { persist_transcript?: boolean; room_summary_enabled?: boolean },
 ): void {
   const current = getRoomSettings(db, room);
   const persist = partial.persist_transcript ?? current?.persist_transcript ?? false;
+  const summary = partial.room_summary_enabled ?? current?.room_summary_enabled ?? false;
   db.run(
-    `INSERT INTO room_settings (room, persist_transcript, updated_at) VALUES (?, ?, ?)
-     ON CONFLICT(room) DO UPDATE SET persist_transcript = excluded.persist_transcript, updated_at = excluded.updated_at`,
-    [room, persist ? 1 : 0, Date.now()],
+    `INSERT INTO room_settings (room, persist_transcript, room_summary_enabled, updated_at)
+       VALUES (?, ?, ?, ?)
+     ON CONFLICT(room) DO UPDATE SET
+       persist_transcript = excluded.persist_transcript,
+       room_summary_enabled = excluded.room_summary_enabled,
+       updated_at = excluded.updated_at`,
+    [room, persist ? 1 : 0, summary ? 1 : 0, Date.now()],
   );
 }
 
