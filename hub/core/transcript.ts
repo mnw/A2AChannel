@@ -19,6 +19,15 @@ import { join } from "node:path";
 import { redactPrivate } from "./redaction";
 import type { Entry } from "./types";
 
+// Optional callback fired AFTER a successful append. Wired by hub.ts to call
+// roomSummariser.maybeSummarise(room) when the Phase 3 summariser is enabled.
+// Kept as a free-standing setter (rather than threading through every call site)
+// because transcript persistence and the summariser have different lifecycles.
+let _onAppendHook: ((room: string) => void) | null = null;
+export function setAppendHook(fn: ((room: string) => void) | null): void {
+  _onAppendHook = fn;
+}
+
 export const ROTATION_LINES = 10_000;
 const LINE_VERSION = 1;
 const SEQ_PAD = 6;
@@ -120,6 +129,13 @@ export function appendEntry(room: string, entry: Entry): void {
     const seq = nextChunkSeq(room);
     const target = chunkPath(room, seq);
     renameSync(path, target);
+  }
+  // Phase 3 hook: notify the room-summariser that a new line landed.
+  // The summariser's maybeSummarise is idempotent + no-op when the Room
+  // hasn't opted in / hasn't accumulated a full block; safe to call on
+  // every append without performance concern.
+  if (_onAppendHook) {
+    try { _onAppendHook(room); } catch (e) { console.error("[transcript] append hook error:", e); }
   }
 }
 

@@ -44,6 +44,21 @@ import {
 } from "./core/ledger";
 import * as transcript from "./core/transcript";
 import { createRoomHydrator, type RoomHydrator } from "./core/room-hydrator";
+import {
+  createRoomSummariser,
+  type RoomSummariser as RoomSummariserT,
+} from "./core/room-summariser";
+import {
+  createSummariser,
+  readSummariserConfigFromEnv,
+  type Summariser,
+} from "./core/summariser";
+import {
+  createBriefingBuilder,
+  briefingSignature as computeBriefingSignature,
+  type BriefingBuilder,
+  type BriefingPayload,
+} from "./core/briefing";
 import type {
   Scope,
   Agent as AgentType,
@@ -181,6 +196,32 @@ if (ledgerDb) {
   });
 }
 
+// Phase 3: pluggable Summariser + per-Room RoomSummariser. Adapter selection
+// is env-driven (A2A_SUMMARISER=claude|llama-cpp|ollama|disabled, default
+// disabled). When disabled the modules are null and Briefing skips the
+// room_summary layer cleanly.
+let summariser: Summariser | null = null;
+let roomSummariser: RoomSummariserT | null = null;
+if (ledgerDb) {
+  const sCfg = readSummariserConfigFromEnv();
+  summariser = createSummariser(sCfg);
+  if (summariser) {
+    roomSummariser = createRoomSummariser({
+      db: ledgerDb,
+      summariser,
+    });
+    // Wire transcript.appendEntry → roomSummariser.maybeSummarise (fire-and-forget).
+    transcript.setAppendHook((room) => {
+      roomSummariser?.maybeSummarise(room).catch((e) =>
+        console.error(`[summariser] maybeSummarise error room=${room}:`, e),
+      );
+    });
+    console.log(`[summariser] enabled adapter=${sCfg.adapter} model=${summariser.modelId}`);
+  } else {
+    console.log(`[summariser] disabled (A2A_SUMMARISER=${sCfg.adapter})`);
+  }
+}
+
 function expireHandoff(id: string): HandoffSnapshot | null {
   if (!ledgerDb) return null;
   return expireHandoffK(ledgerDb, id);
@@ -265,51 +306,34 @@ function broadcastRoster(): void {
   scheduleBriefingFanout();
 }
 
-// Peer list excludes self + non-same-room agents (human always included). Tool list mirrors channel.ts.
-function buildBriefing(agent: string): Entry & {
-  type: string;
-  room: string | null;
-  tools: string[];
-  peers: Array<{ name: string; online: boolean; room: string | null }>;
-  attachments_dir: string;
-  human_name: string;
-  nutshell: string | null;
-} {
-  const me = agents.get(agent);
-  const myRoom = me?.room ?? DEFAULT_ROOM;
-  const peers: Array<{ name: string; online: boolean; room: string | null }> = [];
-  for (const [name, a] of agents.entries()) {
-    if (name === agent) continue;
-    // Same-room peers and all cross-room members (human = room null).
-    if (a.room !== null && a.room !== myRoom) continue;
-    peers.push({
-      name,
-      online: agents.isPermanent(name) ? true : agents.connectionCount(name) > 0,
-      room: a.room,
-    });
-  }
-  const nutshell = ledgerEnabled ? readNutshell(myRoom).text : "";
-  return {
-    type: "briefing",
-    tools: ["post", "post_file", ...KINDS.flatMap((k) => k.toolNames)],
-    peers,
-    attachments_dir: ATTACHMENTS_DIR,
-    human_name: HUMAN_NAME,
-    nutshell: nutshell || null,
-    ts: ts(),
-    room: myRoom,
-  };
+// Briefing assembly is delegated to BriefingBuilder (hub/core/briefing.ts).
+// Lazy-initialised on first use because it depends on KINDS, which is defined
+// later in this file alongside the other Hub-local state.
+let _briefingBuilder: BriefingBuilder | null = null;
+function briefingBuilder(): BriefingBuilder {
+  if (_briefingBuilder) return _briefingBuilder;
+  _briefingBuilder = createBriefingBuilder({
+    agents,
+    kinds: KINDS,
+    ledgerDb,
+    ledgerEnabled,
+    roomSummariser,
+    defaultRoom: DEFAULT_ROOM,
+    attachmentsDir: ATTACHMENTS_DIR,
+    humanName: HUMAN_NAME,
+  });
+  return _briefingBuilder;
+}
+
+function buildBriefing(agent: string): BriefingPayload {
+  return briefingBuilder().build(agent);
 }
 
 // Suppresses re-briefings with unchanged visible content; without this, reconnect storms fan O(N²).
 const lastBriefingSig = new Map<string, string>();
 
-function briefingSignature(b: ReturnType<typeof buildBriefing>): string {
-  const peers = b.peers
-    .map((p) => `${p.name}:${p.online ? 1 : 0}:${p.room ?? ""}`)
-    .sort()
-    .join(",");
-  return `${b.room ?? ""}|${peers}|${b.nutshell ?? ""}`;
+function briefingSignature(b: BriefingPayload): string {
+  return computeBriefingSignature(b);
 }
 
 function broadcastBriefingsToConnectedAgents(forceAll: boolean = false): void {
@@ -426,6 +450,15 @@ function handleAgentStream(agent: string, room: string | null = null): Response 
     if (me?.room && roomHydrator) {
       roomHydrator.maybeHydrate(me.room).catch((e) =>
         console.error(`[hub] hydration error for room=${me.room}:`, e));
+    }
+
+    // Phase 3: opportunistic backfill for the room_summary L1/L2 layers.
+    // Fire-and-forget — backfill runs in the background and updates summary
+    // tables; subsequent Briefings (or this agent on next reconnect) see
+    // the populated rows. The Briefing path itself stays read-only.
+    if (me?.room && roomSummariser) {
+      roomSummariser.maybeBackfill(me.room).catch((e) =>
+        console.error(`[hub] backfill error for room=${me.room}:`, e));
     }
 
     // Briefing first so it arrives before replay in the agent's context.
