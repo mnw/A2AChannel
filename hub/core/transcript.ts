@@ -16,6 +16,7 @@ import {
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { redactPrivate } from "./redaction";
 import type { Entry } from "./types";
 
 export const ROTATION_LINES = 10_000;
@@ -103,7 +104,11 @@ export function activeStats(room: string): { path: string; sizeBytes: number; li
 export function appendEntry(room: string, entry: Entry): void {
   init();
   const path = activePath(room);
-  const wrapped = { v: LINE_VERSION, ...entry };
+  // Persistence-only redaction: live agents/UI see the unredacted entry
+  // (already broadcast by hub.broadcastUI before persistEntry runs); only
+  // disk gets the stripped version.
+  const redacted = redactPrivate(entry);
+  const wrapped = { v: LINE_VERSION, ...redacted };
   const line = JSON.stringify(wrapped) + "\n";
   const created = !existsSync(path);
   appendFileSync(path, line);
