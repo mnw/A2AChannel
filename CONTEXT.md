@@ -73,8 +73,12 @@ A **Kind** representing a Claude Code tool-use approval prompt that has been rel
 _Avoid_: approval, request (too generic), prompt.
 
 **Nutshell**:
-A per-**Room** single-row document (the `nutshell` table) that captures the current shared mental model for that **Room**. Edits flow through the **Handoff** primitive (task prefix `[nutshell]`, `context.patch` carries the new full text) and apply atomically with the accept event. **Nutshell** is *not* a **Kind** — it has no lifecycle and no fan-out of its own.
-_Avoid_: doc, summary, status (too vague).
+A per-**Room** single-row document (the `nutshell` table) that captures the current shared mental model for that **Room**. Edits flow through the **Handoff** primitive (task prefix `[nutshell]`, `context.patch` carries the new full text) and apply atomically with the accept event. **Nutshell** is *not* a **Kind** — it has no lifecycle and no fan-out of its own. **Hand-curated** by the human; the auto-generated counterpart is the **Room summary**.
+_Avoid_: doc, summary (collides with **Room summary** — keep them distinct), status (too vague).
+
+**Room summary**:
+A per-**Room** auto-generated compression of older **Transcript** content, complementing (not replacing) the **Nutshell**. Where the **Nutshell** is what the human deliberately wants new **Agents** to know, the **Room summary** is what's been happening in the chat that the **Nutshell** didn't capture. Replayed on **Briefing** alongside the **Nutshell**.
+_Avoid_: digest, recap, condensation (use **Room summary** specifically — generic terms drift).
 
 ### Storage
 
