@@ -20,8 +20,10 @@
 
 import type { Database } from "bun:sqlite";
 
-import { tailActive, activePath, roomBasename } from "./transcript";
-import { existsSync } from "node:fs";
+import {
+  readLineRange,
+  activeLineCountBytes,
+} from "./transcript";
 import {
   type Summariser,
   SummariserCallError,
@@ -98,17 +100,13 @@ export function createRoomSummariser(opts: RoomSummariserOptions): RoomSummarise
   }
 
   function activeLineCount(room: string): number {
-    const path = activePath(room);
-    if (!existsSync(path)) return 0;
-    // tailActive parses; for line counting we don't need parsing, but reusing
-    // the same code keeps version handling consistent (skips v>1 lines).
-    // For large active files we'd want a streaming count; the chat_history_limit
-    // cap is small enough that reading all of it is acceptable.
+    // Cheap byte-scan line count — no parsing, no Entry array allocation.
+    // The summariser only needs to know "are 300 more lines available?";
+    // the slice itself is read on demand via readLineRange.
     try {
-      const all = tailActive(room, Number.MAX_SAFE_INTEGER);
-      return all.length;
+      return activeLineCountBytes(room);
     } catch (e) {
-      console.error(`[summariser] read failed for ${room}:`, e);
+      console.error(`[summariser] line-count read failed for ${room}:`, e);
       return 0;
     }
   }
@@ -158,9 +156,12 @@ export function createRoomSummariser(opts: RoomSummariserOptions): RoomSummarise
     // (the in-memory map dies with the process) or on first success.
     if ((roomFailures.get(room) ?? 0) >= FAILURE_THRESHOLD) return;
 
-    // Read the line range from the active JSONL.
-    const allEntries = tailActive(room, Number.MAX_SAFE_INTEGER);
-    const slice = allEntries.slice(startLine - 1, endLine);
+    // Read ONLY the requested line range, not the full JSONL. With a 4MB
+    // transcript this avoids allocating an N-Entry array per block (which on
+    // an 11-block backfill = 11 full re-reads + 11 full Entry-array
+    // allocations under GC pressure — a likely contributor to the
+    // hub-dies-mid-backfill issue).
+    const slice = readLineRange(room, startLine, endLine);
     if (!slice.length) return;
 
     const nutshellSnapshot = readNutshell(db, room);

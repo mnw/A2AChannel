@@ -175,6 +175,57 @@ export function clearRoom(room: string): { removed: string[] } {
   return { removed };
 }
 
+// Read a 1-indexed line range [startLine, endLine] inclusive from the active
+// JSONL. Reads the file once but only parses lines in the requested range, so
+// a 4MB file with 3235 lines doesn't allocate 11x as the summariser walks
+// through it block-by-block. Returns [] if the range is past EOF or empty.
+export function readLineRange(room: string, startLine: number, endLine: number): Entry[] {
+  if (startLine < 1 || endLine < startLine) return [];
+  const path = activePath(room);
+  if (!existsSync(path)) return [];
+  const buf = readFileSync(path);
+  if (buf.length === 0) return [];
+  const text = buf.toString("utf8");
+  const rawLines = text.split("\n");
+  const lastIsTruncated = rawLines.length > 0 && rawLines[rawLines.length - 1] !== "";
+  const lines = lastIsTruncated ? rawLines.slice(0, -1) : rawLines.filter((l) => l !== "");
+  const fromIdx = startLine - 1;
+  const toIdx = Math.min(endLine, lines.length);
+  if (fromIdx >= lines.length) return [];
+  const out: Entry[] = [];
+  for (let i = fromIdx; i < toIdx; i++) {
+    const line = lines[i];
+    if (!line) continue;
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(line);
+    } catch (e) {
+      const isLast = i === lines.length - 1 && lastIsTruncated;
+      if (isLast) continue;
+      throw new Error(`[transcript] parse error in ${path} line ${i + 1}: ${e}`);
+    }
+    const v = typeof parsed.v === "number" ? parsed.v : 0;
+    if (v > LINE_VERSION) {
+      if (!_warnedFiles.has(path)) {
+        console.warn(`[transcript] ${path} contains v=${v} lines (we support v=${LINE_VERSION}); skipping`);
+        _warnedFiles.add(path);
+      }
+      continue;
+    }
+    out.push(parsed as Entry);
+  }
+  return out;
+}
+
+// Cheap line count without parsing. Used by the summariser to decide whether
+// a full block has accumulated; avoids allocating an Entry array just to
+// learn its length.
+export function activeLineCountBytes(room: string): number {
+  const path = activePath(room);
+  if (!existsSync(path)) return 0;
+  return countLines(path);
+}
+
 // Read last `n` lines from active file; tolerant of truncated final line, throws on
 // mid-file parse error. Reads in chunks from the end so we don't load big files fully.
 export function tailActive(room: string, n: number): Entry[] {
