@@ -34,6 +34,9 @@ import type { Entry } from "./types";
 export const L1_LINES_PER_BLOCK_DEFAULT = 300; // tuned for Gemma 4 E2B / Qwen 3 1.7B
 export const L2_ROLLUP_BATCH_SIZE_DEFAULT = 20;
 export const PRIOR_L1_CONTEXT_HINT = 5; // last N L1 entries shown as "known state" alongside Nutshell
+// Stop trying after N consecutive failures per Room. Resets on hub restart.
+// Prevents log spam when the adapter is broken (auth, missing model, etc.).
+export const FAILURE_THRESHOLD = 3;
 
 export type RoomSummariserOptions = {
   db: Database;
@@ -80,6 +83,10 @@ export function createRoomSummariser(opts: RoomSummariserOptions): RoomSummarise
   // Per-Room in-flight promise caches (Concern A race-safety).
   const summariseInFlight = new Map<string, Promise<void>>();
   const backfillInFlight = new Map<string, Promise<void>>();
+  // Per-Room consecutive-failure counter. Once >= FAILURE_THRESHOLD, all
+  // subsequent generateL1 calls bail silently for that Room until the hub
+  // restarts. Counter resets on first successful L1 store.
+  const roomFailures = new Map<string, number>();
 
   function lastSummarisedLine(room: string): number {
     const row = db
@@ -107,25 +114,26 @@ export function createRoomSummariser(opts: RoomSummariserOptions): RoomSummarise
   }
 
   function maybeSummarise(room: string): Promise<void> {
+    // Synchronous bail checks live OUTSIDE the IIFE/cache. If we put them
+    // inside, the IIFE finishes synchronously on bail and the finally clause
+    // runs before backfillInFlight.set(...), so the .set() poisons the cache
+    // with an already-resolved promise — every subsequent call short-circuits
+    // through the cache and never does work.
+    const settings = getRoomSettings(db, room);
+    if (!settings?.room_summary_enabled) return Promise.resolve();
+
+    const lastLine = lastSummarisedLine(room);
+    const totalLines = activeLineCount(room);
+    if (totalLines - lastLine < linesPerBlock) return Promise.resolve();
+
     const cached = summariseInFlight.get(room);
     if (cached) return cached;
 
-    // Set the promise BEFORE the async work — same race-fix pattern as
-    // RoomHydrator.maybeHydrate (Concern A from the architecture review).
+    const startLine = lastLine + 1;
+    const endLine = lastLine + linesPerBlock;
     const p = (async () => {
       try {
-        const settings = getRoomSettings(db, room);
-        if (!settings?.room_summary_enabled) return;
-
-        const lastLine = lastSummarisedLine(room);
-        const totalLines = activeLineCount(room);
-        // Need a full block past the last summarised line before triggering.
-        if (totalLines - lastLine < linesPerBlock) return;
-
-        const startLine = lastLine + 1;
-        const endLine = lastLine + linesPerBlock;
         await generateL1(room, startLine, endLine);
-
         // After a successful L1, check whether we have enough unrolled L1s
         // to trigger a rollup. Single pass — if rollup itself produces yet
         // another batch worth of L1s (impossible in practice; would mean
@@ -145,6 +153,11 @@ export function createRoomSummariser(opts: RoomSummariserOptions): RoomSummarise
     startLine: number,
     endLine: number,
   ): Promise<void> {
+    // Failure-threshold guard: if this Room's adapter has failed
+    // FAILURE_THRESHOLD times in a row, stop trying. Resets on hub restart
+    // (the in-memory map dies with the process) or on first success.
+    if ((roomFailures.get(room) ?? 0) >= FAILURE_THRESHOLD) return;
+
     // Read the line range from the active JSONL.
     const allEntries = tailActive(room, Number.MAX_SAFE_INTEGER);
     const slice = allEntries.slice(startLine - 1, endLine);
@@ -169,12 +182,24 @@ export function createRoomSummariser(opts: RoomSummariserOptions): RoomSummarise
         temperature: 0.2,
       });
     } catch (e) {
-      if (e instanceof SummariserUnavailableError) {
-        console.warn(`[summariser] adapter unavailable for room=${room}: ${e.message}`);
-      } else if (e instanceof SummariserCallError) {
-        console.error(`[summariser] call failed for room=${room}: ${e.message}`);
-      } else {
-        console.error(`[summariser] unexpected error for room=${room}:`, e);
+      const fails = (roomFailures.get(room) ?? 0) + 1;
+      roomFailures.set(room, fails);
+      if (fails === FAILURE_THRESHOLD) {
+        console.warn(
+          `[summariser] room=${room} disabled after ${FAILURE_THRESHOLD} consecutive failures; ` +
+            `next attempt requires hub restart`,
+        );
+      }
+      // Log the first FAILURE_THRESHOLD attempts (so the user sees what's
+      // wrong) but suppress everything after.
+      if (fails <= FAILURE_THRESHOLD) {
+        if (e instanceof SummariserUnavailableError) {
+          console.warn(`[summariser] adapter unavailable for room=${room}: ${e.message}`);
+        } else if (e instanceof SummariserCallError) {
+          console.error(`[summariser] call failed for room=${room}: ${e.message}`);
+        } else {
+          console.error(`[summariser] unexpected error for room=${room}:`, e);
+        }
       }
       return;
     }
@@ -191,6 +216,8 @@ export function createRoomSummariser(opts: RoomSummariserOptions): RoomSummarise
        VALUES (?, 1, ?, ?, ?, ?, NULL, ?)`,
       [room, startLine, endLine, summariser.modelId, raw.trim(), Date.now()],
     );
+    // Reset the failure counter on first successful store.
+    roomFailures.delete(room);
     console.log(`[summariser] room=${room} L1 [${startLine}-${endLine}] stored (${raw.length} chars, ${countBullets(raw)} bullets)`);
   }
 
@@ -242,15 +269,21 @@ export function createRoomSummariser(opts: RoomSummariserOptions): RoomSummarise
   }
 
   function maybeBackfill(room: string): Promise<void> {
+    // Same cache-poison fix as maybeSummarise: synchronous bail checks must
+    // not touch the in-flight cache. See the comment there for the full
+    // explanation.
+    const settings = getRoomSettings(db, room);
+    if (!settings?.room_summary_enabled) return Promise.resolve();
+
+    const lastLine = lastSummarisedLine(room);
+    const totalLines = activeLineCount(room);
+    if (totalLines - lastLine < linesPerBlock) return Promise.resolve();
+
     const cached = backfillInFlight.get(room);
     if (cached) return cached;
+
     const p = (async () => {
       try {
-        const settings = getRoomSettings(db, room);
-        if (!settings?.room_summary_enabled) return;
-
-        const lastLine = lastSummarisedLine(room);
-        const totalLines = activeLineCount(room);
         // Backfill processes whole blocks only; partial trailing block is
         // picked up by the next maybeSummarise after more chat lands.
         let cursor = lastLine;

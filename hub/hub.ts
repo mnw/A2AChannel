@@ -860,6 +860,17 @@ function shutdown() {
 process.on("SIGINT", () => { shutdown(); process.exit(0); });
 process.on("SIGTERM", () => { shutdown(); process.exit(0); });
 
+// Defensive: never let a single rogue error kill the hub. Log + continue.
+// Each kind/sidecar/adapter SHOULD handle its own errors locally; these are
+// last-resort guards. EPIPE on child-process stdin (when a spawned tool exits
+// before draining input) is the most likely uncaught case.
+process.on("uncaughtException", (e) => {
+  console.error("[hub] uncaughtException — continuing:", e);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[hub] unhandledRejection — continuing:", reason);
+});
+
 console.log(`[hub] listening on http://${server.hostname}:${server.port}`);
 console.log(
   `[hub] dynamic roster — agents register on /agent-stream connect (auth ${AUTH_TOKEN ? "enabled" : "DISABLED"})`,

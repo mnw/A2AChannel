@@ -153,14 +153,6 @@ pub(crate) fn app_data_dir() -> PathBuf {
         .join("A2AChannel")
 }
 
-fn discovery_file() -> PathBuf {
-    app_data_dir().join("hub.url")
-}
-
-fn token_file() -> PathBuf {
-    app_data_dir().join("hub.token")
-}
-
 fn config_file() -> PathBuf {
     app_data_dir().join("config.yml")
 }

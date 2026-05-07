@@ -4,6 +4,7 @@
 
 import { createClaudeSummariser } from "./claude";
 import { createOllamaSummariser } from "./ollama";
+import { SummariserUnavailableError } from "./types";
 import type { Summariser } from "./types";
 
 export type { Summariser, SummariserOptions } from "./types";
@@ -25,30 +26,41 @@ export type SummariserConfig = {
   // Reserved for llama-cpp wiring in a subsequent commit.
 };
 
-// Returns null when adapter === "disabled" or when the configured adapter
-// can't be constructed (e.g. unsupported name). Callers treat null as
-// "summarisation off — Briefing falls back to Nutshell + active chunk only."
+// Returns null when adapter === "disabled", when the configured adapter can't
+// be constructed (e.g. binary missing), or when the name is unsupported.
+// Callers treat null as "summarisation off — Briefing falls back to Nutshell
+// + active chunk only." Construction errors are logged once at startup so the
+// runtime never spams per-call adapter-unavailable errors for a known-broken
+// adapter.
 export function createSummariser(cfg: SummariserConfig): Summariser | null {
-  switch (cfg.adapter) {
-    case "claude":
-      return createClaudeSummariser({
-        binPath: cfg.claudeBinPath,
-        timeoutMs: cfg.claudeTimeoutMs,
-      });
-    case "ollama":
-      return createOllamaSummariser({
-        baseUrl: cfg.ollamaBaseUrl,
-        model: cfg.ollamaModel,
-        timeoutMs: cfg.ollamaTimeoutMs,
-      });
-    case "llama-cpp":
-      console.warn(`[summariser] adapter "${cfg.adapter}" not yet implemented; summarisation disabled`);
+  try {
+    switch (cfg.adapter) {
+      case "claude":
+        return createClaudeSummariser({
+          binPath: cfg.claudeBinPath,
+          timeoutMs: cfg.claudeTimeoutMs,
+        });
+      case "ollama":
+        return createOllamaSummariser({
+          baseUrl: cfg.ollamaBaseUrl,
+          model: cfg.ollamaModel,
+          timeoutMs: cfg.ollamaTimeoutMs,
+        });
+      case "llama-cpp":
+        console.warn(`[summariser] adapter "${cfg.adapter}" not yet implemented; summarisation disabled`);
+        return null;
+      case "disabled":
+        return null;
+      default:
+        console.warn(`[summariser] unknown adapter "${cfg.adapter}"; summarisation disabled`);
+        return null;
+    }
+  } catch (e) {
+    if (e instanceof SummariserUnavailableError) {
+      console.warn(`[summariser] adapter "${cfg.adapter}" disabled at startup: ${e.message}`);
       return null;
-    case "disabled":
-      return null;
-    default:
-      console.warn(`[summariser] unknown adapter "${cfg.adapter}"; summarisation disabled`);
-      return null;
+    }
+    throw e;
   }
 }
 
