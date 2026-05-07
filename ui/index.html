@@ -95,6 +95,11 @@
   </button>
   <div class="rp-meta" id="rp-meta"></div>
   <button type="button" class="rp-clear-btn" id="rp-clear-btn" style="display:none;" title="Archive the active transcript to a rotated chunk and start fresh. Past data is preserved on disk; the chat window resets; agents see fresh context on restart.">Archive &amp; reset</button>
+  <button type="button" class="rp-toggle-btn" id="rp-summary-input" aria-pressed="false" style="display:none;" title="Auto-generate Room summary (L1 blocks every 300 lines, L2 rollups every 20 L1s) — replayed in Briefing for new agents">
+    <span class="rp-toggle-track"><span class="rp-toggle-thumb"></span></span>
+    <span class="rp-toggle-label">Auto-summarise this room</span>
+  </button>
+  <div class="rp-summary-meta" id="rp-summary-meta" style="display:none;"></div>
 </div>
 
 <div class="nutshell-editor" id="nutshell-editor">

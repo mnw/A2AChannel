@@ -5,6 +5,8 @@
   const toggle = document.getElementById('rp-toggle-input');
   const meta = document.getElementById('rp-meta');
   const clearBtn = document.getElementById('rp-clear-btn');
+  const summaryToggle = document.getElementById('rp-summary-input');
+  const summaryMeta = document.getElementById('rp-summary-meta');
   if (!root || !toggle || !meta || !clearBtn) {
     console.warn('[room-persistence] required elements missing', { root, toggle, meta, clearBtn });
     return;
@@ -20,6 +22,12 @@
 
   function isOn() { return toggle.getAttribute('aria-pressed') === 'true'; }
   function setOn(on) { toggle.setAttribute('aria-pressed', on ? 'true' : 'false'); }
+  function isSummaryOn() {
+    return summaryToggle?.getAttribute('aria-pressed') === 'true';
+  }
+  function setSummaryOn(on) {
+    if (summaryToggle) summaryToggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
 
   // Always-visible row. When in "All rooms" the toggle is disabled with a hint;
   // user must pick a concrete room before the API calls make sense.
@@ -35,6 +43,10 @@
       setOn(false);
       meta.textContent = 'Pick a single room to enable';
       clearBtn.style.display = 'none';
+      if (summaryToggle) {
+        summaryToggle.style.display = 'none';
+        if (summaryMeta) summaryMeta.style.display = 'none';
+      }
       return;
     }
     toggle.disabled = false;
@@ -55,6 +67,35 @@
       } else {
         meta.textContent = 'Off — chat history resets on hub restart';
         clearBtn.style.display = 'none';
+      }
+      // Phase 3 summary toggle. Only meaningful when persist is on (no
+      // transcript = nothing to summarise). Visible regardless to make the
+      // dependency visible to the user.
+      if (summaryToggle) {
+        const summaryOn = !!data.settings?.room_summary_enabled;
+        setSummaryOn(summaryOn);
+        summaryToggle.style.display = '';
+        summaryToggle.disabled = !on;
+        summaryToggle.style.opacity = on ? '' : '0.5';
+        if (summaryMeta) {
+          summaryMeta.style.display = '';
+          if (!on) {
+            summaryMeta.textContent = 'Enable transcript persistence first';
+          } else if (!summaryOn) {
+            summaryMeta.textContent = 'Off — Briefing skips the summary layer';
+          } else if (data.summary) {
+            const s = data.summary;
+            const adapterNote = s.adapter_active
+              ? ''
+              : ' (adapter unavailable — set summariser.adapter in config.yml)';
+            summaryMeta.textContent =
+              `${s.l1_count} block summar${s.l1_count === 1 ? 'y' : 'ies'}, ` +
+              `${s.l2_count} rollup${s.l2_count === 1 ? '' : 's'}, ` +
+              `covered through line ${s.last_summarised_line}${adapterNote}`;
+          } else {
+            summaryMeta.textContent = 'On — waiting for summariser';
+          }
+        }
       }
     } catch (e) {
       meta.textContent = `Error: ${e?.message || e}`;
@@ -80,6 +121,25 @@
       meta.textContent = `Error: ${err?.message || err}`;
       console.error('[room-persistence] toggle failed', err);
       setOn(!desired);
+    }
+    refresh();
+  });
+
+  summaryToggle?.addEventListener('click', async () => {
+    if (inAllRooms() || summaryToggle.disabled) return;
+    const desired = !isSummaryOn();
+    setSummaryOn(desired);
+    try {
+      const r = await authedFetch(`/rooms/${encodeURIComponent(SELECTED_ROOM)}/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ room_summary_enabled: desired }),
+      });
+      if (!r.ok) throw new Error(`status ${r.status}`);
+    } catch (err) {
+      if (summaryMeta) summaryMeta.textContent = `Error: ${err?.message || err}`;
+      console.error('[room-persistence] summary toggle failed', err);
+      setSummaryOn(!desired);
     }
     refresh();
   });

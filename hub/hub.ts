@@ -569,11 +569,32 @@ function handleGetRoomSettings(room: string): Response {
   const settings = getRoomSettings(ledgerDb!, room) ?? {
     room,
     persist_transcript: false,
+    room_summary_enabled: false,
     updated_at: 0,
   };
   const stats = settings.persist_transcript ? transcript.activeStats(room) : null;
   const chunks = settings.persist_transcript ? transcript.listChunks(room) : [];
-  return json({ settings, active: stats, chunks });
+  // When summarisation is on, surface counts so the UI can render
+  // "X block summaries, Y rollups, last covered line N" without a second call.
+  let summary: { l1_count: number; l2_count: number; last_summarised_line: number; adapter_active: boolean } | null = null;
+  if (settings.room_summary_enabled && ledgerDb) {
+    const l1 = ledgerDb.query<{ c: number }, [string]>(
+      "SELECT COUNT(*) AS c FROM room_summary WHERE room=? AND level=1",
+    ).get(room);
+    const l2 = ledgerDb.query<{ c: number }, [string]>(
+      "SELECT COUNT(*) AS c FROM room_summary WHERE room=? AND level=2",
+    ).get(room);
+    const last = ledgerDb.query<{ m: number | null }, [string]>(
+      "SELECT MAX(end_line) AS m FROM room_summary WHERE room=? AND level=1",
+    ).get(room);
+    summary = {
+      l1_count: l1?.c ?? 0,
+      l2_count: l2?.c ?? 0,
+      last_summarised_line: last?.m ?? 0,
+      adapter_active: roomSummariser !== null,
+    };
+  }
+  return json({ settings, active: stats, chunks, summary });
 }
 
 async function handlePutRoomSettings(req: Request, room: string): Promise<Response> {

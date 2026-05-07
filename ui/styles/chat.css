@@ -351,7 +351,8 @@
   transform: translateX(14px);
   background: var(--orange);
 }
-.room-persistence .rp-meta {
+.room-persistence .rp-meta,
+.room-persistence .rp-summary-meta {
   flex: 1;
   font-family: var(--mono);
   font-size: var(--fs-sm);
