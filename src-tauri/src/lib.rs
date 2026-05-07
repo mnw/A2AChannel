@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::{Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_shell::{
-    process::{CommandChild, CommandEvent},
+    process::{Command, CommandChild, CommandEvent},
     ShellExt,
 };
 use tokio::io::AsyncWriteExt;
@@ -71,6 +71,30 @@ struct AppConfig {
     // as the per-agent context-replay budget.
     #[serde(default)]
     chat_history_limit: Option<u32>,
+    // Phase 3: room-summary adapter selection. Forwarded to the hub sidecar
+    // as A2A_SUMMARISER + adapter-specific env vars.
+    #[serde(default)]
+    summariser: Option<SummariserConfig>,
+}
+
+#[derive(Deserialize, Serialize, Default, Clone)]
+struct SummariserConfig {
+    // One of: "disabled" (default), "claude", "ollama", "llama-cpp".
+    #[serde(default)]
+    adapter: Option<String>,
+    // Override the auto-discovered claude binary path (only used when adapter=claude).
+    #[serde(default)]
+    claude_bin: Option<String>,
+    #[serde(default)]
+    claude_timeout_ms: Option<u64>,
+    // Ollama HTTP base URL (default: http://127.0.0.1:11434).
+    #[serde(default)]
+    ollama_url: Option<String>,
+    // Ollama model tag (default: gemma4:e2b).
+    #[serde(default)]
+    ollama_model: Option<String>,
+    #[serde(default)]
+    ollama_timeout_ms: Option<u64>,
 }
 
 #[derive(Serialize, Clone, Default)]
@@ -141,6 +165,63 @@ fn resolve_chat_history_limit() -> u32 {
         .chat_history_limit
         .unwrap_or(CHAT_HISTORY_LIMIT_DEFAULT);
     raw.clamp(CHAT_HISTORY_LIMIT_MIN, CHAT_HISTORY_LIMIT_MAX)
+}
+
+// Validates the adapter name to one of the four accepted values; falls back
+// to "disabled" silently for unknown values so a misconfig doesn't break
+// hub start. Empty string also maps to "disabled".
+const VALID_SUMMARISER_ADAPTERS: &[&str] = &["disabled", "claude", "ollama", "llama-cpp"];
+
+fn resolve_summariser_config() -> SummariserConfig {
+    let cfg = load_config().summariser.unwrap_or_default();
+    let mut out = cfg;
+    if let Some(a) = out.adapter.as_ref() {
+        let trimmed = a.trim().to_ascii_lowercase();
+        if !VALID_SUMMARISER_ADAPTERS.iter().any(|v| *v == trimmed.as_str()) {
+            eprintln!(
+                "[setup] summariser.adapter \"{}\" not recognised; falling back to \"disabled\"",
+                a
+            );
+            out.adapter = Some("disabled".to_string());
+        } else {
+            out.adapter = Some(trimmed);
+        }
+    }
+    out
+}
+
+// Translates the SummariserConfig from config.yml into env vars that the hub
+// sidecar's `readSummariserConfigFromEnv()` (hub/core/summariser/index.ts)
+// reads at startup. Each field is conditional — unset fields stay unset so
+// the hub falls back to its own defaults. Used at both spawn sites
+// (initial boot in setup() and reload via reload_settings).
+fn apply_summariser_env(mut cmd: Command) -> Command {
+    let cfg = resolve_summariser_config();
+    if let Some(adapter) = cfg.adapter.as_deref() {
+        cmd = cmd.env("A2A_SUMMARISER", adapter);
+    }
+    if let Some(bin) = cfg.claude_bin.as_deref() {
+        if !bin.trim().is_empty() {
+            cmd = cmd.env("A2A_SUMMARISER_CLAUDE_BIN", bin.trim());
+        }
+    }
+    if let Some(t) = cfg.claude_timeout_ms {
+        cmd = cmd.env("A2A_SUMMARISER_CLAUDE_TIMEOUT_MS", t.to_string());
+    }
+    if let Some(url) = cfg.ollama_url.as_deref() {
+        if !url.trim().is_empty() {
+            cmd = cmd.env("A2A_SUMMARISER_OLLAMA_URL", url.trim());
+        }
+    }
+    if let Some(model) = cfg.ollama_model.as_deref() {
+        if !model.trim().is_empty() {
+            cmd = cmd.env("A2A_SUMMARISER_OLLAMA_MODEL", model.trim());
+        }
+    }
+    if let Some(t) = cfg.ollama_timeout_ms {
+        cmd = cmd.env("A2A_SUMMARISER_OLLAMA_TIMEOUT_MS", t.to_string());
+    }
+    cmd
 }
 
 fn target_triple() -> String {
@@ -509,7 +590,25 @@ fn render_seed_yaml(
          # are reloaded from JSONL into memory and replayed to reconnecting\n\
          # agents (token cost in their context window). Default 1000. Clamped\n\
          # to [10, 100000].\n\
-         chat_history_limit: {chat_history_limit}\n",
+         chat_history_limit: {chat_history_limit}\n\
+         \n\
+         # Phase 3 Room summary. Per-Room opt-in toggle is in the UI; this\n\
+         # block selects which inference backend the summariser uses.\n\
+         #\n\
+         # adapter values:\n\
+         #   disabled  — Phase 3 off entirely (default)\n\
+         #   claude    — spawn `claude --print` per L1; uses your Pro/Max sub\n\
+         #   ollama    — HTTP to a local ollama service (you run `ollama serve`)\n\
+         #   llama-cpp — bundled local model (NOT YET IMPLEMENTED, planned default)\n\
+         #\n\
+         # claude_bin: override the auto-discovered claude binary path\n\
+         # ollama_url: defaults to http://127.0.0.1:11434\n\
+         # ollama_model: defaults to gemma4:e2b — must already be `ollama pull`ed\n\
+         summariser:\n  \
+         adapter: disabled\n  \
+         # claude_bin: ~/.claude/local/node_modules/.bin/claude\n  \
+         # ollama_url: http://127.0.0.1:11434\n  \
+         # ollama_model: gemma4:e2b\n",
         ui                 = fonts.ui,
         mono               = fonts.mono,
         editor             = editor,
@@ -785,7 +884,7 @@ fn reload_settings(
     }
 
     let shell = handle.shell();
-    let cmd = shell
+    let mut cmd = shell
         .sidecar("a2a-bin")
         .map_err(|e| format!("sidecar builder: {e}"))?
         .env("PORT", port.to_string())
@@ -796,6 +895,7 @@ fn reload_settings(
         .env("A2A_HUMAN_NAME", &human_name)
         .env("A2A_ALLOWED_EXTENSIONS", extensions.join(","))
         .env("A2A_CHAT_HISTORY_LIMIT", chat_history_limit.to_string());
+    cmd = apply_summariser_env(cmd);
     let (rx, child) = cmd.spawn().map_err(|e| format!("spawn a2a-bin: {e}"))?;
 
     let new_info = HubInfo {
@@ -1078,7 +1178,7 @@ pub fn run() {
             println!("[setup] ledger: {}", ledger_path.display());
 
             let shell = handle.shell();
-            let cmd = shell
+            let mut cmd = shell
                 .sidecar("a2a-bin")
                 .map_err(|e| format!("sidecar builder: {e}"))?
                 .env("PORT", port.to_string())
@@ -1089,6 +1189,7 @@ pub fn run() {
                 .env("A2A_HUMAN_NAME", &human_name)
                 .env("A2A_ALLOWED_EXTENSIONS", extensions.join(","))
                 .env("A2A_CHAT_HISTORY_LIMIT", chat_history_limit.to_string());
+            cmd = apply_summariser_env(cmd);
 
             let (rx, child) = cmd.spawn().map_err(|e| format!("spawn a2a-bin: {e}"))?;
 
