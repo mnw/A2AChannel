@@ -20,6 +20,7 @@ export type SummariserConfig = {
   // Overrides per adapter; ignored by adapters that don't use them.
   claudeBinPath?: string;
   claudeTimeoutMs?: number;
+  claudeModel?: string;
   ollamaBaseUrl?: string;
   ollamaModel?: string;
   ollamaTimeoutMs?: number;
@@ -39,6 +40,7 @@ export function createSummariser(cfg: SummariserConfig): Summariser | null {
         return createClaudeSummariser({
           binPath: cfg.claudeBinPath,
           timeoutMs: cfg.claudeTimeoutMs,
+          modelAlias: cfg.claudeModel,
         });
       case "ollama":
         return createOllamaSummariser({
@@ -79,6 +81,8 @@ export function readSummariserConfigFromEnv(): SummariserConfig {
     const n = Number(claudeT);
     if (Number.isFinite(n) && n > 0) cfg.claudeTimeoutMs = n;
   }
+  const claudeModel = process.env.A2A_SUMMARISER_CLAUDE_MODEL;
+  if (claudeModel) cfg.claudeModel = claudeModel;
 
   const ollamaUrl = process.env.A2A_SUMMARISER_OLLAMA_URL;
   if (ollamaUrl) cfg.ollamaBaseUrl = ollamaUrl;

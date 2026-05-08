@@ -87,6 +87,11 @@ struct SummariserConfig {
     claude_bin: Option<String>,
     #[serde(default)]
     claude_timeout_ms: Option<u64>,
+    // Claude Code --model flag value: alias ("haiku", "sonnet", "opus") or
+    // full name ("claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-7").
+    // Unset → Claude Code's session default (typically Sonnet).
+    #[serde(default)]
+    claude_model: Option<String>,
     // Ollama HTTP base URL (default: http://127.0.0.1:11434).
     #[serde(default)]
     ollama_url: Option<String>,
@@ -207,6 +212,11 @@ fn apply_summariser_env(mut cmd: Command) -> Command {
     }
     if let Some(t) = cfg.claude_timeout_ms {
         cmd = cmd.env("A2A_SUMMARISER_CLAUDE_TIMEOUT_MS", t.to_string());
+    }
+    if let Some(model) = cfg.claude_model.as_deref() {
+        if !model.trim().is_empty() {
+            cmd = cmd.env("A2A_SUMMARISER_CLAUDE_MODEL", model.trim());
+        }
     }
     if let Some(url) = cfg.ollama_url.as_deref() {
         if !url.trim().is_empty() {

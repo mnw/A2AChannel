@@ -32,8 +32,13 @@ export type ClaudeSummariserOptions = {
   binPath?: string;
   // Hard timeout for the whole subprocess. Defaults to 90s.
   timeoutMs?: number;
-  // Identifier written into room_summary.model. Defaults to "claude".
+  // Identifier written into room_summary.model. Defaults to "claude" or
+  // "claude:<model>" when modelAlias is set.
   modelId?: string;
+  // Claude Code --model flag. Aliases (haiku, sonnet, opus) or full names
+  // (claude-haiku-4-5, claude-sonnet-4-6, claude-opus-4-7). Unset → Claude
+  // Code's session default (typically Sonnet).
+  modelAlias?: string;
 };
 
 const FALLBACK_PATHS = [
@@ -72,8 +77,9 @@ export function createClaudeSummariser(opts: ClaudeSummariserOptions = {}): Summ
   // remains `string | null` inside the inner async fn and spawn() rejects.
   const binPath: string = resolved;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const modelId = opts.modelId ?? "claude";
-  console.log(`[summariser:claude] resolved bin: ${binPath}`);
+  const modelAlias = opts.modelAlias?.trim() || null;
+  const modelId = opts.modelId ?? (modelAlias ? `claude:${modelAlias}` : "claude");
+  console.log(`[summariser:claude] resolved bin: ${binPath}${modelAlias ? ` model=${modelAlias}` : ""}`);
 
   async function summarise(
     systemPrompt: string,
@@ -82,6 +88,7 @@ export function createClaudeSummariser(opts: ClaudeSummariserOptions = {}): Summ
   ): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       const args = ["--print", "--append-system-prompt", systemPrompt];
+      if (modelAlias) args.push("--model", modelAlias);
       // Strip ANTHROPIC_API_KEY from the inherited env. Claude Code Pro/Max
       // sessions set this to a subscription token (e.g. "sk-cp-...") that is
       // NOT a valid Anthropic API key — `claude --print` picks it up first

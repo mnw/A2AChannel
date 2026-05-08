@@ -344,7 +344,7 @@ function buildL1SystemPrompt(): string {
     "",
     "If nothing of substance happened, output an empty list (no bullets at all).",
     "",
-    "Output: bullet list (lines starting with `- `), max 10 items, one short line each. No preamble, no header, no closing remarks. Just bullets, or nothing.",
+    "Output: bullet list, every line starting with `- `, max 10 items, one short line each. No preamble, no header, no closing remarks. No `#` headers, no `**bold**`, no numbered lists. Just `- ` lines, or nothing.",
   ].join("\n");
 }
 
@@ -439,12 +439,16 @@ function formatEntryForPrompt(e: Entry): string {
 // EMPTY-SUMMARY DETECTION (Concern D — bullet count, not magic string).
 // =============================================================================
 
+// Only matches dash bullets — `- text`. The prompt explicitly tells the model
+// to produce "lines starting with `- `", so asterisks and bullets-of-the-week
+// are false positives we don't want: markdown sub-bullets like `*   **Item:**`
+// and PHP docblock asterisks ` * @var Field[]` would otherwise be counted as
+// bullets and let useless prose / hallucinated code through to storage.
 function countBullets(text: string): number {
   if (!text) return 0;
   let count = 0;
   for (const line of text.split("\n")) {
-    const t = line.trim();
-    if (t.startsWith("- ") || t.startsWith("* ") || t.startsWith("• ")) count++;
+    if (line.trimStart().startsWith("- ")) count++;
   }
   return count;
 }
