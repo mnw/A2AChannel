@@ -3,10 +3,14 @@
 // detects via A2A_SUMMARISER=ollama. No binary bundling, no auth surface
 // (loopback only), no API key.
 //
-// API contract: ollama's /api/chat endpoint accepts a chat-message array
-// with role + content. We pass the systemPrompt as role=system and the
-// userContent as role=user. The non-streaming response carries the full
-// completion in a single message.
+// API contract: we use /api/generate (not /api/chat) deliberately. /api/chat
+// applies the model's chat template — BOS/EOS tokens, turn markers, the
+// instruction-tuning preamble — which biases small models toward
+// conversational responses ("let me clarify what you want…") rather than
+// transformation tasks. /api/generate sends the prompt verbatim, giving us
+// full control over framing. The system prompt and user content are
+// concatenated with a blank line between them — same effective shape as
+// our claude.ts adapter passes via --append-system-prompt + stdin.
 
 import {
   type Summariser,
@@ -43,20 +47,18 @@ export function createOllamaSummariser(opts: OllamaSummariserOptions = {}): Summ
 
     let resp: Response;
     try {
-      resp = await fetch(`${baseUrl}/api/chat`, {
+      resp = await fetch(`${baseUrl}/api/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: ac.signal,
         body: JSON.stringify({
           model,
           stream: false,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userContent },
-          ],
+          // Concatenate system + user with a clear separator. /api/generate
+          // does NOT apply a chat template; the prompt is sent verbatim.
+          prompt: `${systemPrompt}\n\n${userContent}`,
           options: {
             temperature: sopts.temperature ?? 0.2,
-            // ollama uses num_predict for max output tokens.
             num_predict: sopts.maxOutputTokens ?? 800,
           },
         }),
@@ -97,12 +99,13 @@ export function createOllamaSummariser(opts: OllamaSummariserOptions = {}): Summ
     } catch (e) {
       throw new SummariserCallError(`ollama response not JSON: ${(e as Error).message}`);
     }
+    // /api/generate returns { response: "...", done: true, ... }
     const content =
-      json && typeof json === "object" && "message" in json
-        ? ((json as { message?: { content?: string } }).message?.content ?? "")
+      json && typeof json === "object" && "response" in json
+        ? ((json as { response?: string }).response ?? "")
         : "";
     if (!content) {
-      throw new SummariserCallError(`ollama returned empty content`);
+      throw new SummariserCallError(`ollama returned empty response`);
     }
     return content.trim();
   }
