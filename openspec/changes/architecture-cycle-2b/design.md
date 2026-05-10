@@ -4,12 +4,14 @@
 
 The split was made because 1.5–2 weeks of test-agent install.sh churn would compound disruption. The 2a/2b boundary is the Hub|Webview boundary, which has no shared files. The two cycles share only the orchestration-shape decision from 2a's pre-grill 1.1 (which the Webview's `KindRenderer.placement` mirrors); otherwise they touch disjoint files.
 
-This cycle (architecture-cycle-2b) targets three layers of friction 2a deliberately deferred:
+This cycle (architecture-cycle-2b) targets five layers of friction (three deferred from 2a; two added by post-2a code-audit):
 
 1. **Webview has no Kind abstraction AND uses a classic-`<script>` shared-lexical-scope arrangement.** `ui/kinds/handoff.js`, `ui/kinds/interrupt.js`, `ui/kinds/permission.js` each reimplement DOM mount/update/dismiss with `(id, version)` reconciliation. They share `ui/main.js`'s lexical scope via classic `<script>` load order — 12+ globals (`messagesEl`, `authedFetch`, `parseErrorBody`, `askReason`, `escHtml`, `HUMAN_NAME`, `addMessage`, `trimMessages`, `updateCountdownLabel`, `handoffCards`, `interruptCards`, `permissionCards`) — no module boundary, no exports.
 2. **Per-Kind CSS spans 5 sources, 380+ LOC.** `ui/kinds/handoff.css` (112 LOC), `ui/kinds/interrupt.css` (86 LOC), `ui/kinds/permission.css` (183 LOC), the shared skeleton in `ui/styles/card.css` (67 LOC, holds `.handoff-card / .interrupt-card / .permission-card` grid+border+padding), and `ui/features/rooms.js` lines 125-127 (runtime-injected room-filter CSS that hard-codes the per-Kind class names). `ui/styles/chat.css` is already clean of Kind-specific rules — earlier audit framing of "rules grew opportunistically in chat.css" was incorrect.
 3. **`ui/terminal.js` is 873 LOC** mixing Tab lifecycle, xterm binding, and PTY event handling — touched on every Tab feature change, every xterm bump, every PTY plumbing change.
 4. **`pty_capture_turn` uses closure-defer for cleanup.** Three try-blocks + manual cleanup arms for geometry-set / pipe-pane / sentinel-watch. Fragile to early returns and panics. RAII via `Drop` is the idiomatic Rust shape.
+5. **`Composer` send mode is implicit; three send paths coupled through DOM state.** `ui/features/composer.js` branches three modes (chat → Hub `/post`, slash → Tauri `pty_write`, shift-tab → escape codes) but the dispatch decision lives in `_refreshSlashState`'s mutation of `sendBtn.disabled` based on `input.value` + `SELECTED_ROOM`. Mid-keystroke state mutations can flip the active mode underneath the user. The Interface ("send a thing") is implicit; mode is a derived, fragile property of DOM state.
+6. **`pty_spawn` is a 63-LOC orchestrator with a silent-failure path** (`let _ = tmux_run(...)` at line 369 swallows errors from `configure_existing_session`). Six concerns interleaved inline (validation, room resolution, registry idempotency, MCP-config materialization, locale resolution, session-existing-vs-new branching, tmux argv assembly, attach). Argv assembly bugs (the kind that broke v0.6 with quoted-path splitting) are buried inline rather than at a named seam. CLAUDE.md mandates per-helper test scenarios for `resolve_utf8_locale`, `configure_existing_session`, `attach_and_stream` — but the orchestrator that sequences them has no integration test (verified — `tests/integration/pty-plumbing.test.ts` never calls `pty_spawn` end-to-end).
 
 Stakeholders: A2AChannel (single-developer codebase), the long-running test agents whose live sessions are the smoke-test surface — same as 2a.
 
@@ -22,6 +24,8 @@ Stakeholders: A2AChannel (single-developer codebase), the long-running test agen
 - Consolidate per-Kind CSS from `ui/kinds/<kind>.css` (3 files, 381 LOC) + `ui/styles/card.css` (67 LOC shared skeleton) into `ui/styles/kinds.css` keyed by `[data-kind]`. Migrate `ui/features/rooms.js`'s runtime-injected room-filter CSS to use `[data-kind][data-room]` selectors instead of hardcoded `.handoff-card[data-room]` strings.
 - Split `ui/terminal.js` (873 LOC) into `Tab` + `XtermBinder` + `PtyEvents` modules (gated by `tests/smoke/tab-lifecycle.md` checklist all-rows-pass).
 - Rewrite `pty_capture_turn` around a `CaptureTransaction` struct with `Drop` cleanup. Tests assert `CaptureState` is restored on success / timeout / panic.
+- Carve `Composer` Module emitting `SendIntent` discriminated union (`chat | slash | shift-tab`). Three single-purpose adapters consume the intent. Mode detection returns the discriminator instead of mutating `sendBtn.disabled` across modes.
+- Extract `build_spawn_argv` + `ensure_session_configured` from `pty_spawn`. Replace the silent `let _ = tmux_run(...)` with a `Result<bool, String>` propagation. Add the missing orchestrator-level integration test scenario.
 - Land each candidate as a discrete commit; smoke-test before the next starts.
 - Strip any debug instrumentation introduced during the cycle before merge.
 
@@ -91,11 +95,44 @@ This matrix lives ON `KindCard`'s placement-strategy implementation, NOT on indi
 
 **Rationale:** The `ctx` pattern is the project's idiom (Hub side uses `cap`; Webview should mirror it). Sub-millisecond unit tests of `extractSnapshot` / `dispatch` become possible without DOM (just a fake `ctx` with `authedFetch: jest.fn()`).
 
-### Decision 5: Sequential commits in dependency order; smoke-test gate between each
+### Decision 5: Composer SendIntent is a discriminated union, not a mode flag
 
-**Choice:** Land candidates as discrete commits in the order: `KindRenderer + KindCard (with ES-module migration)` → `kinds.css consolidation (incl. card.css fold + rooms.js migration)` → `Tab/XtermBinder/PtyEvents split (gated)` → `CaptureTransaction (Rust)`. Each commit must compile + pass `bun x tsc --noEmit` (for JS modules with type assertions or generated types) + `cargo check` (for Rust commits) + drive the running app through the relevant scenarios before the next commits.
+**Choice:** `Composer` Module exposes `detectIntent(inputState): SendIntent` returning one of three discriminated arms:
+- `{ mode: "chat", target: string, text: string, attachments?: Attachment[] }`
+- `{ mode: "slash", agent: string, command: string, args: string[] }`
+- `{ mode: "shift-tab", target: string }`
 
-**Alternatives considered:** Batch the Webview commits into one. Rejected because `KindRenderer + ES-module migration` lands first and is independently reviewable; CSS consolidation is mechanical; Tab-split has the highest risk and benefits from being the last Webview commit so the smoke-test surface is well-understood by then.
+A separate `dispatch(intent: SendIntent): Promise<void>` reads the discriminator and routes to one of three per-mode adapter functions (`sendChat`, `sendSlash`, `sendShiftTab`) that own validation + the actual send. `_refreshSlashState` collapses into a pure `detectIntent` call that returns the discriminator; the Send button's `disabled` state derives from the discriminator (single decision, single source).
+
+**Alternatives considered:**
+- **Mode flag (status quo):** `currentMode = "chat" | "slash" | "shift-tab"` set by `_refreshSlashState` mutating shared state. Rejected — the bug pattern (mid-keystroke flip from chat to slash) is exactly the failure mode that discriminated unions eliminate at the type level.
+- **Three completely separate Composer instances:** rejected — they share input state (the `<textarea>`, attachments tray, target room). Forking into three Composers would duplicate input-handling code.
+- **Single `send(input)` with internal branching:** rejected — internal branching is the status quo; the seam isn't where the orchestration lives.
+
+**Rationale:** Discriminated unions make mode an explicit property of the value, not an emergent property of DOM state. The three adapters are independently testable: passing a constructed `{ mode: "slash", agent: "alice", ... }` to `sendSlash` exercises the path without DOM. Adding a fourth send mode (e.g. file-drop send) is a new arm + new adapter, not surgery on `_refreshSlashState`.
+
+### Decision 6: Two extractions from `pty_spawn` + one new integration test
+
+**Choice:** Extract two named seams from `pty_spawn`:
+- `build_spawn_argv(agent: &str, cwd: &str, api_key: Option<&str>, lang: &str, spawn_cmd: &str, session_existed: bool) -> Vec<String>` — pure tmux argv assembly. Today's inline lines 375-394; argv-related bugs (v0.6's quoted-path splitting) live here.
+- `ensure_session_configured(agent: &str, lang: &str) -> Result<bool, String>` — replaces the silent `let _ = tmux_run(...)` at line 369. Returns `Ok(true)` when an existing session was reconfigured (forced `remain-on-exit off`), `Ok(false)` when a new session must be created, `Err(msg)` when the tmux command itself failed.
+
+After extraction, `pty_spawn` is ~20 LOC of clear sequencing: validate name → resolve room → registry check → materialize MCP config + settings → ensure-configured → build argv → spawn (or attach existing) → `attach_and_stream`.
+
+Add one integration scenario to `tests/integration/pty-plumbing.test.ts`: "spawn → tmux session created with `remain-on-exit off` and `LANG` env set" (the missing orchestrator-level test that CLAUDE.md's per-helper rule was designed to prevent).
+
+**Alternatives considered:**
+- **Single `spawn_orchestration(...)` extraction:** rejected — would just rename the god function. The named-seam payoff comes from extracting the two atomic operations (argv build + ensure-configured) so each gets its own focused test.
+- **Keep `let _ = tmux_run(...)`:** rejected — silent failure is exactly the bug class CLAUDE.md's pty.rs hard rule was written to prevent.
+- **Rewrite `pty_spawn` from scratch:** rejected — over-scope. The shape is correct; only the inline-orchestration noise needs to leave.
+
+**Rationale:** Two helpers + one orchestrator-level integration test closes the gap CLAUDE.md's per-helper rule was designed to prevent (every helper has a test, but the orchestrator that sequences them doesn't). Argv bugs become localized to a 20-LOC pure function that takes string arguments and returns a `Vec<String>` — sub-millisecond test surface, no tmux required.
+
+### Decision 7: Sequential commits in dependency order; smoke-test gate between each
+
+**Choice:** Land candidates as discrete commits in the order: `KindRenderer + KindCard (with ES-module migration)` → `kinds.css consolidation (incl. card.css fold + rooms.js migration)` → `Composer SendIntent` → `Tab/XtermBinder/PtyEvents split (gated)` → `pty_spawn extractions + orchestrator test` → `CaptureTransaction (Rust)`. Each commit must compile + pass `bun x tsc --noEmit` (for JS modules with type assertions or generated types) + `cargo check` (for Rust commits) + drive the running app through the relevant scenarios before the next commits.
+
+**Alternatives considered:** Batch the Webview commits into one. Rejected because each carve is independently reviewable; CSS consolidation is mechanical; Composer SendIntent is independent of KindRenderer (different file); Tab-split has the highest risk and benefits from being the last Webview commit so the smoke-test surface is well-understood by then. The two Rust commits land in either order — `pty_spawn` extractions are independent of `CaptureTransaction` (different functions, different concerns).
 
 **Rationale:** Per saved feedback memory ("Architecture-skill cadence: per-candidate commits, manual smoke-test"). Each commit has a clean revert path.
 
@@ -136,28 +173,42 @@ This matrix lives ON `KindCard`'s placement-strategy implementation, NOT on indi
    │     rooms.js [data-kind] migration) │
    └──────────┬──────────────────────────┘
               │
-              ▼  (gated by smoke-checklist)
+              ▼  (independent of 1+2; can run in parallel after 0)
    ┌──────────────────────────────┐
-   │ 3. Tab / XtermBinder /       │
-   │    PtyEvents split           │
+   │ 3. Composer SendIntent       │
+   │    + per-mode adapters       │
    └──────────┬───────────────────┘
-              │  (independent, can run in parallel after 0)
+              │  (gated by smoke-checklist)
               ▼
    ┌──────────────────────────────┐
-   │ 4. CaptureTransaction (Rust) │
+   │ 4. Tab / XtermBinder /       │
+   │    PtyEvents split           │
+   └──────────┬───────────────────┘
+              │
+              ▼  (Rust; independent of Webview commits)
+   ┌──────────────────────────────────────┐
+   │ 5. pty_spawn extractions + orch test │
+   └──────────┬───────────────────────────┘
+              │
+              ▼
+   ┌──────────────────────────────┐
+   │ 6. CaptureTransaction (Rust) │
    └──────────────────────────────┘
 ```
 
 **Hard dependencies:**
 - 1 (KindRenderer) requires the ES-module migration to land in the same commit — they're inseparable; the renderer factories can't run alongside classic-`<script>` shared-lexical-scope.
 - 2 (CSS consolidation) depends on 1 — the Kind module structure is what tells us which CSS rules belong to which Kind.
-- 3 (Tab-split) depends on the smoke-checklist artifact existing and being passable; technically independent of 1 + 2 but smoke-tested last because it's highest-risk.
-- 4 (CaptureTransaction) is independent of 1/2/3 — Rust only, no Webview crossover. Can land first if the Webview gate (smoke-checklist) needs more time.
+- 3 (Composer SendIntent) is independent of 1/2 — different file, different concern. Can land in parallel after pre-grill 0.
+- 4 (Tab-split) depends on the smoke-checklist artifact existing and being passable; technically independent of 1/2/3 but smoke-tested last in the Webview cluster because it's highest-risk.
+- 5 (pty_spawn extractions) and 6 (CaptureTransaction) are both Rust, both in `pty.rs`, but touch different functions — they can land in either order. Independent of 1/2/3/4. The pty_spawn extraction lands first when the orchestrator test scaffolding (catch_unwind harness for #6's panic test) is still being figured out — extracting first defers the test-harness lift.
 
 **Intermediate states the plan accepts:**
 - After 1 lands but before 2: per-Kind CSS still in `ui/kinds/<kind>.css` + `card.css` + `rooms.js`. Renderer files set `data-kind` on cards but the existing per-Kind class names still work too. Fine; the consolidation commit is mechanical.
-- After 2 lands but before 3: terminal.js untouched. Fine; it's an independent file.
-- After 4 lands but before 3: Rust capture transactional but Tab still monolithic. Fine; PTY layer changes don't touch Tab.
+- After 2 lands but before 4: terminal.js untouched. Fine; it's an independent file.
+- After 3 lands but before 4: Composer is mode-discriminated but terminal still monolithic. Fine; different files.
+- After 5 lands but before 6: pty.rs is half-cleaned (spawn refactored, capture still inline). Fine; concerns are disjoint.
+- After 6 lands but before 4: Rust capture transactional but Tab still monolithic. Fine; PTY layer changes don't touch Tab.
 
 ### Steps
 
@@ -170,12 +221,14 @@ This matrix lives ON `KindCard`'s placement-strategy implementation, NOT on indi
 3. **Webview commits in order:**
    1. `feat(ui): KindRenderer + KindCard + ES-module migration with ctx factory`
    2. `style(ui): consolidate per-Kind CSS into ui/styles/kinds.css (incl. card.css fold + rooms.js [data-kind] migration)`
-   3. `feat(ui): split terminal.js into Tab + XtermBinder + PtyEvents (gated)` — gate is the smoke-checklist all observed-rows passing
-4. **Rust commit:**
-   1. `feat(pty): CaptureTransaction with Drop cleanup; tests assert CaptureState`
+   3. `refactor(ui): Composer SendIntent discriminated union + per-mode adapters`
+   4. `feat(ui): split terminal.js into Tab + XtermBinder + PtyEvents (gated)` — gate is the smoke-checklist all observed-rows passing
+4. **Rust commits:**
+   1. `refactor(pty): extract build_spawn_argv + ensure_session_configured from pty_spawn; surface tmux-run errors via Result; add orchestrator integration test`
+   2. `feat(pty): CaptureTransaction with Drop cleanup; tests assert CaptureState`
 5. **Each commit:** type-check (`bun x tsc --noEmit` if applicable) + Rust commits add `cargo check` + `./scripts/install.sh` + manual smoke-test of the affected flow + (for the KindRenderer commit) `tests/unit/kind-renderer.test.ts` passes. No commit lands without these green.
 6. **Post-cycle:** Strip any debug instrumentation introduced during smoke-testing. Final pass on each commit's diff before merge.
-7. **Ship 2 ADRs alongside the cycle:** ADR-0007 (RAII over closure-defer in Rust for `CaptureTransaction`), ADR-0008 (`KindRenderer.placement` declarative string vs vtable + the per-placement dismiss matrix). ADRs reference design.md for the full rationale and add only post-implementation lessons (e.g., "did a 4th placement mode appear during implementation?", "did the panic-test setup uncover a Drop ordering issue?").
+7. **Ship 4 ADRs alongside the cycle:** ADR-0007 (RAII over closure-defer in Rust for `CaptureTransaction`), ADR-0008 (`KindRenderer.placement` declarative string vs vtable + the per-placement dismiss matrix), ADR-0009 (Composer SendIntent discriminated union vs mode flag), ADR-0010 (pty_spawn extractions + the missing orchestrator integration test that closes CLAUDE.md's per-helper-rule gap). ADRs reference design.md for the full rationale and add only post-implementation lessons.
 8. **Merge:** Fast-forward `main` to `architecture-cycle-2b`. Delete the branch. **CLAUDE.md anchors to update (enumerated):** the dev-channels prompt auto-dismiss rule (`terminal.js watches the PTY output stream...` → `PtyEvents watches the PTY output stream...`); the Tab cold-start regression-guard rule's path; the "raw PTY, not tmux -C" rule's commentary if `attach_and_stream` shape shifts; the `pty.rs` hard rule covering `pty_capture_turn`'s atomic three-layer geometry/pipe-pane/sentinel coordination — now structurally enforced by `CaptureTransaction::Drop`.
 9. **Rollback:** Each commit is independently revertable. Worst-case: revert from the most recent commit backward; prior commits stay landed. The CaptureTransaction commit is the most isolated (Rust-only); the Tab-split is the riskiest and is the gate point.
 
