@@ -4,7 +4,7 @@ import { Database } from "bun:sqlite";
 import { chmodSync } from "node:fs";
 import { randomId } from "./ids";
 
-export const LEDGER_SCHEMA_VERSION = 11;
+export const LEDGER_SCHEMA_VERSION = 12;
 
 export type LedgerOpenResult =
   | { db: Database; enabled: true }
@@ -307,6 +307,32 @@ export function migrateLedger(db: Database): void {
       db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '11')");
     })();
     console.log(`[ledger] applied migration v11`);
+  }
+  if (current < 12) {
+    // v12: materialize `version = events.seq` as a column on the three Kind-derived
+    // tables (handoffs, interrupts, permissions). Eliminates today's per-row
+    // SELECT MAX(seq) FROM events WHERE entity_id = ? subquery in listByStatus
+    // (the N+1 the architecture-cycle-2a LedgerEntity carve removes structurally).
+    // Backfill from existing events; new rows write `version` inside the same
+    // transaction as the event INSERT (see hub/core/store.ts).
+    db.transaction(() => {
+      db.exec(`
+        ALTER TABLE handoffs    ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE interrupts  ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE permissions ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
+      `);
+      db.run(
+        "UPDATE handoffs SET version = COALESCE((SELECT MAX(seq) FROM events WHERE entity_id = handoffs.id), 0)",
+      );
+      db.run(
+        "UPDATE interrupts SET version = COALESCE((SELECT MAX(seq) FROM events WHERE entity_id = interrupts.id), 0)",
+      );
+      db.run(
+        "UPDATE permissions SET version = COALESCE((SELECT MAX(seq) FROM events WHERE entity_id = permissions.id), 0)",
+      );
+      db.run("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '12')");
+    })();
+    console.log(`[ledger] applied migration v12`);
   }
 }
 

@@ -56,6 +56,10 @@ _Avoid_: handshake, init, hello, sync.
 
 ### State-machines
 
+**HubFeature**:
+A unit of **Hub** functionality that contributes HTTP routes to the dispatcher. Defined as `{ routes: RouteDef[] }` in `hub/core/types.ts`. Every **Hub** route SHALL be declared inside a **HubFeature**; the dispatcher consumes a static `HubFeature[]` array, never inline route registrations. **Kinds** are the persistent-state-machine subset of **HubFeature** (they extend the contract with `entity`, `pendingFor`, `toolNames`, `priority?`); chat, transcript, attachments, sessions, usage, **Roster**, and stream endpoints are non-**Kind** **HubFeatures**.
+_Avoid_: module (collides with the LANGUAGE.md core term — every **HubFeature** is a Module, but not every Module is a **HubFeature**), service (too generic, implies process boundary), endpoint (singular — a **HubFeature** owns many routes), plugin (implies optional/external load — **HubFeatures** are statically composed in `hub/hub.ts`).
+
 **Kind**:
 A persistent state-machine type with a lifecycle (verbs that drive it through statuses), durable storage, and broadcast fan-out on each verb. Each **Kind** lives in its own `hub/kinds/<kind>.ts` file implementing the `KindModule` contract. The current **Kinds** are **Handoff**, **Interrupt**, and **Permission**.
 _Avoid_: entity, primitive (used informally elsewhere — keep "Kind" precise), record type.

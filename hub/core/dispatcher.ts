@@ -1,16 +1,21 @@
-// Kind-route dispatcher. Precompiles `KINDS.flatMap(k => k.routes)` into a
-// flat table keyed by (method, pathname-matcher), then dispatches incoming
-// requests with per-route auth + body-size guards before invoking the handler.
+// Route dispatcher. Precompiles `FEATURES.flatMap(f => f.routes)` into a flat
+// table keyed by (method, pathname-matcher), then dispatches incoming requests
+// with per-route auth + body-size + ledger guards before invoking the handler.
 //
-// Adding a kind adds its RouteDef[] entries into the registry; no hub.ts edit
-// needed. Path matchers support strings (exact match → {}) and RegExps
-// (single-capture-group regex → { id: <capture> }).
+// Adding a route = creating or editing a HubFeature module under hub/features/
+// and appending it to the FEATURES array in hub.ts. No edit to dispatcher.ts.
+// Path matchers support strings (exact match → {}) and RegExps (single-capture
+// → { id: <capture> }).
+//
+// SSE long-lived routes (/stream, /agent-stream) do NOT go through this
+// dispatcher — see hub/features/streams.ts and hub.ts's direct Bun.serve wiring
+// (per design.md Decision 3).
 
 import type {
   AuthHelpers,
 } from "./auth";
 import { corsHeaders } from "./auth";
-import type { HubCapabilities, KindModule, RouteDef } from "./types";
+import type { HubCapabilities, HubFeature, RouteDef } from "./types";
 
 // WebKit rejects cross-origin responses (even on 127.0.0.1) that lack
 // Access-Control-Allow-Origin — the browser surfaces this as "Load failed"
@@ -23,10 +28,11 @@ function withCors(res: Response): Response {
 }
 
 type CompiledRoute = {
-  method: "GET" | "POST";
+  method: "GET" | "POST" | "PUT";
   matcher: (pathname: string) => Record<string, string> | null;
   auth: "mutating" | "read";
   bodyMax?: number;
+  requiresLedger: boolean;
   handler: RouteDef["handler"];
 };
 
@@ -35,14 +41,14 @@ export type Dispatcher = {
 };
 
 export type DispatcherOptions = {
-  kinds: readonly KindModule[];
+  features: readonly HubFeature[];
   auth: AuthHelpers;
   ledgerGuard: () => Response | null;
   buildCap: () => HubCapabilities;
 };
 
 export function createDispatcher(opts: DispatcherOptions): Dispatcher {
-  const compiled: CompiledRoute[] = opts.kinds.flatMap((k) => k.routes).map((r) => {
+  const compiled: CompiledRoute[] = opts.features.flatMap((f) => f.routes).map((r) => {
     let matcher: CompiledRoute["matcher"];
     if (typeof r.path === "string") {
       const path = r.path;
@@ -57,7 +63,14 @@ export function createDispatcher(opts: DispatcherOptions): Dispatcher {
         return params;
       };
     }
-    return { method: r.method, matcher, auth: r.auth, bodyMax: r.bodyMax, handler: r.handler };
+    return {
+      method: r.method,
+      matcher,
+      auth: r.auth,
+      bodyMax: r.bodyMax,
+      requiresLedger: r.requiresLedger ?? false,
+      handler: r.handler,
+    };
   });
 
   async function dispatch(req: Request, url: URL): Promise<Response | null> {
@@ -75,10 +88,10 @@ export function createDispatcher(opts: DispatcherOptions): Dispatcher {
         const authFail = opts.auth.requireReadAuth(req, url);
         if (authFail) return withCors(authFail);
       }
-      // Kind routes that hit the ledger need the ledger open. Kinds can assume
-      // cap.db is non-null because we guard here.
-      const guard = opts.ledgerGuard();
-      if (guard) return withCors(guard);
+      if (r.requiresLedger) {
+        const guard = opts.ledgerGuard();
+        if (guard) return withCors(guard);
+      }
       return withCors(await r.handler(req, opts.buildCap(), params));
     }
     return null;

@@ -16,7 +16,6 @@ import {
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { redactPrivate } from "./redaction";
 import type { Entry } from "./types";
 
 // Optional callback fired AFTER a successful append. Wired by hub.ts to call
@@ -113,11 +112,10 @@ export function activeStats(room: string): { path: string; sizeBytes: number; li
 export function appendEntry(room: string, entry: Entry): void {
   init();
   const path = activePath(room);
-  // Persistence-only redaction: live agents/UI see the unredacted entry
-  // (already broadcast by hub.broadcastUI before persistEntry runs); only
-  // disk gets the stripped version.
-  const redacted = redactPrivate(entry);
-  const wrapped = { v: LINE_VERSION, ...redacted };
+  // Caller (Fanout in cycle 2a) is responsible for calling redactPrivate before
+  // passing the entry here. transcript.appendEntry is now a thin file-appender;
+  // the redaction call site is canonical in hub/core/fanout.ts.
+  const wrapped = { v: LINE_VERSION, ...entry };
   const line = JSON.stringify(wrapped) + "\n";
   const created = !existsSync(path);
   appendFileSync(path, line);

@@ -19,27 +19,23 @@ import {
 import { DropQueue, HEARTBEAT_MS, makeSSE, type SSESend } from "./core/sse";
 import { createAgentRegistry } from "./core/agents";
 import {
-  handleSaveSession as handleSaveSessionCore,
-  handleGetSession as handleGetSessionCore,
-} from "./sessions";
-import {
   buildAllowedExtensions,
-  handleUpload as handleUploadCore,
-  handleImage as handleImageCore,
-  imageUrlToPath as imageUrlToPathCore,
   IMAGE_URL_RE,
 } from "./core/attachments";
-import {
-  handleSend as handleSendCore,
-  handlePost as handlePostCore,
-} from "./chat";
 import { createDispatcher } from "./core/dispatcher";
-import { insertEvent } from "./core/events";
+import { createFanout } from "./core/fanout";
+import { createBriefingDispatcher } from "./core/briefing-dispatcher";
+import { createCapBuilder } from "./core/capabilities";
+import { createUsageFeature } from "./features/usage";
+import { createSessionsFeature } from "./features/sessions";
+import { createAttachmentsFeature } from "./features/attachments";
+import { createRosterFeature } from "./features/roster";
+import { createTranscriptFeature } from "./features/transcript";
+import { createChatFeature } from "./features/chat";
+import { createStreamHandlers } from "./features/streams";
 import {
   openLedger as openLedgerCore,
   LEDGER_SCHEMA_VERSION,
-  getRoomSettings,
-  setRoomSettings,
   listOptedInRooms,
 } from "./core/ledger";
 import * as transcript from "./core/transcript";
@@ -60,10 +56,8 @@ import {
   type BriefingPayload,
 } from "./core/briefing";
 import type {
-  Scope,
-  Agent as AgentType,
-  AgentCtx,
-  HubCapabilities,
+  Entry,
+  HubFeature,
   KindModule,
 } from "./core/types";
 import {
@@ -71,16 +65,12 @@ import {
   nutshellEntry,
   type NutshellSnapshot,
 } from "./nutshell";
-import { readUsageSnapshot } from "./usage";
-import { interruptKind } from "./kinds/interrupt";
+import { buildKinds } from "./kinds";
 import {
-  handoffKind,
-  handoffEntry,
   expireHandoff as expireHandoffK,
   findExpirable as findExpirableK,
-  type HandoffSnapshot,
+  broadcastHandoffSnapshot,
 } from "./kinds/handoff";
-import { permissionKind } from "./kinds/permission";
 import {
   AGENT_NAME_RE,
   RESERVED_NAMES,
@@ -133,38 +123,28 @@ if (!LEDGER_DB) {
   );
 }
 
-type Agent = {
-  name: string;
-  color: string;
-  // null = human (super-user in every room).
-  room: string | null;
-};
-type Entry = {
-  id?: number;
-  from?: string;
-  to?: string;
-  text?: string;
-  ts?: string;
-  image?: string | null;
-  type?: string;
-  agents?: Agent[] | Record<string, boolean>;
-  // null for human-originated events and global system events.
-  room?: string | null;
-};
+// (Agent and Entry types live in hub/core/types.ts; no need to redeclare here.)
 
 const chatLog: Entry[] = [];
 const uiSubscribers = new Set<DropQueue<Entry>>();
 let entrySeq = 0;
 const SESSION_ID = randomId(8);
 
-// Callbacks use forward refs via closure (broadcastRoster + broadcastPresence defined below).
+// Callbacks fire roster/presence snapshots through Fanout (ambient — no chatLog) and
+// schedule a debounced briefing re-fanout that dedups via per-Agent signature.
 const agents = createAgentRegistry({
   defaultRoom: DEFAULT_ROOM,
   staleMs: STALE_AGENT_MS,
   queueMax: AGENT_QUEUE_MAX,
   resolveRoom: (raw) => resolveRoom(raw),
-  onRosterChange: () => { broadcastRoster(); broadcastBriefingsToConnectedAgents(); },
-  onPresenceChange: () => broadcastPresence(),
+  onRosterChange: () => {
+    fanout.send(agents.rosterSnapshot(), { kind: "ui-only-ambient" });
+    briefingDispatcher.scheduleFanout();
+  },
+  onPresenceChange: () => {
+    fanout.send(agents.presenceSnapshot(), { kind: "ui-only-ambient" });
+    briefingDispatcher.scheduleFanout();
+  },
 });
 const ensureAgent = agents.ensure;
 const removeAgent = agents.remove;
@@ -192,7 +172,7 @@ if (ledgerDb) {
   roomHydrator = createRoomHydrator({
     db: ledgerDb,
     capLines: HISTORY_LIMIT,
-    replay: broadcastUI,
+    replay: (entry) => fanout.send(entry, { kind: "ui-only" }),
   });
 }
 
@@ -222,514 +202,127 @@ if (ledgerDb) {
   }
 }
 
-function expireHandoff(id: string): HandoffSnapshot | null {
-  if (!ledgerDb) return null;
-  return expireHandoffK(ledgerDb, id);
-}
-function findExpirable(nowMs: number): string[] {
-  if (!ledgerDb) return [];
-  return findExpirableK(ledgerDb, nowMs);
-}
-
-function readNutshell(room: string): NutshellSnapshot {
-  return readNutshellCore(ledgerDb, resolveRoom(room));
-}
-
 // Returns DEFAULT_ROOM on empty/invalid input so callers don't have to branch.
 function resolveRoom(raw: string | null | undefined): string {
   const s = (raw ?? "").trim();
   return s && validRoomLabel(s) ? s : DEFAULT_ROOM;
 }
 
-function broadcastUI(entry: Entry): void {
-  entry.id = ++entrySeq;
-  if (chatLog.length >= HISTORY_LIMIT) chatLog.shift();
-  chatLog.push(entry);
-  persistEntry(entry);
-  for (const q of uiSubscribers) q.push(entry);
+function readNutshell(room: string): NutshellSnapshot {
+  return readNutshellCore(ledgerDb, resolveRoom(room));
 }
 
-// Write-through to opt-in JSONL transcript. Entries without a concrete room
-// (super-user broadcasts from human) are skipped — there's no room to file under.
-function persistEntry(entry: Entry): void {
-  if (!ledgerDb) return;
-  const room = typeof entry.room === "string" && entry.room ? entry.room : null;
-  if (!room) return;
-  const settings = getRoomSettings(ledgerDb, room);
-  if (!settings?.persist_transcript) return;
-  try {
-    transcript.appendEntry(room, entry);
-  } catch (e) {
-    console.error(`[transcript] append failed for ${room}:`, e);
-  }
-}
-
-// Scopes: broadcast | to-agents | ui-only | room. Permanent agents (human) skipped — they read /stream.
-function emit(entry: Entry, scope: Scope): void {
-  broadcastUI(entry);
-  if (scope.kind === "ui-only") return;
-  const pushTo = (name: string) => {
-    if (agents.isPermanent(name)) return;
-    agents.enqueueFor(name, entry);
-  };
-  if (scope.kind === "broadcast") {
-    for (const [name] of agents.entries()) pushTo(name);
-    return;
-  }
-  if (scope.kind === "to-agents") {
-    for (const name of new Set(scope.agents)) pushTo(name);
-    return;
-  }
-  if (scope.kind === "room") {
-    for (const [name, agent] of agents.entries()) {
-      if (agent.room !== scope.room) continue;
-      pushTo(name);
-    }
-    return;
-  }
-}
-
-// Escape hatch; kinds should prefer named scopes and promote to the Scope enum on second use.
-function emitWhere(entry: Entry, predicate: (agent: AgentType) => boolean): void {
-  broadcastUI(entry);
-  for (const [name, agent] of agents.entries()) {
-    if (agents.isPermanent(name)) continue;
-    if (!predicate(agent)) continue;
-    agents.enqueueFor(name, entry);
-  }
-}
-
-function broadcastRoster(): void {
-  const snap = agents.rosterSnapshot();
-  for (const q of uiSubscribers) q.push(snap);
-  // Debounced so reconnect storms collapse into a single final-state briefing per peer.
-  scheduleBriefingFanout();
-}
+// Fanout — single owner of every SSE broadcast path (carved in §5).
+const fanout = createFanout({
+  chatLog,
+  uiSubscribers,
+  agents,
+  historyLimit: HISTORY_LIMIT,
+  ledgerDb,
+  nextEntryId: () => ++entrySeq,
+});
 
 // Briefing assembly is delegated to BriefingBuilder (hub/core/briefing.ts).
-// Lazy-initialised on first use because it depends on KINDS, which is defined
-// later in this file alongside the other Hub-local state.
+// Lazy-initialised because it depends on KINDS (defined below in source order).
 let _briefingBuilder: BriefingBuilder | null = null;
-function briefingBuilder(): BriefingBuilder {
-  if (_briefingBuilder) return _briefingBuilder;
-  _briefingBuilder = createBriefingBuilder({
-    agents,
-    kinds: KINDS,
-    ledgerDb,
-    ledgerEnabled,
-    roomSummariser,
-    defaultRoom: DEFAULT_ROOM,
-    attachmentsDir: ATTACHMENTS_DIR,
-    humanName: HUMAN_NAME,
-  });
-  return _briefingBuilder;
-}
-
 function buildBriefing(agent: string): BriefingPayload {
-  return briefingBuilder().build(agent);
-}
-
-// Suppresses re-briefings with unchanged visible content; without this, reconnect storms fan O(N²).
-const lastBriefingSig = new Map<string, string>();
-
-function briefingSignature(b: BriefingPayload): string {
-  return computeBriefingSignature(b);
-}
-
-function broadcastBriefingsToConnectedAgents(forceAll: boolean = false): void {
-  for (const [name] of agents.entries()) {
-    if (agents.isPermanent(name)) continue;
-    if (agents.connectionCount(name) <= 0) continue;
-    const brief = buildBriefing(name);
-    const sig = briefingSignature(brief);
-    if (!forceAll && lastBriefingSig.get(name) === sig) continue;
-    lastBriefingSig.set(name, sig);
-    agents.enqueueFor(name, brief);
+  if (!_briefingBuilder) {
+    _briefingBuilder = createBriefingBuilder({
+      agents, kinds: KINDS, ledgerDb, ledgerEnabled, roomSummariser,
+      defaultRoom: DEFAULT_ROOM, attachmentsDir: ATTACHMENTS_DIR, humanName: HUMAN_NAME,
+    });
   }
+  return _briefingBuilder.build(agent);
 }
 
-// Reset-on-call: fires 500ms after the LAST presence change so reconnect storms collapse.
-let briefingFanoutTimer: ReturnType<typeof setTimeout> | null = null;
-function scheduleBriefingFanout(): void {
-  if (briefingFanoutTimer) clearTimeout(briefingFanoutTimer);
-  briefingFanoutTimer = setTimeout(() => {
-    briefingFanoutTimer = null;
-    broadcastBriefingsToConnectedAgents();
-  }, 500);
-}
-
-function broadcastPresence(): void {
-  const snap = agents.presenceSnapshot();
-  for (const q of uiSubscribers) q.push(snap);
-  // Keeps briefing-derived peer-online view aligned; debounced + sig-deduped.
-  scheduleBriefingFanout();
-}
-
-// Agents get disk paths (Read directly); UI still gets URL form via /stream.
-function agentEntry(entry: Entry): Entry {
-  if (!entry.image) return entry;
-  const absPath = ATTACHMENTS_DIR ? imageUrlToPathCore(entry.image, ATTACHMENTS_DIR) : entry.image;
-  const suffix = `\n[attachment: ${absPath}]`;
-  return { ...entry, text: (entry.text ?? "") + suffix };
-}
-
-function enqueueTo(name: string, entry: Entry): void {
-  // Permanent members read via /stream; no channel-bin queue.
-  if (agents.isPermanent(name)) return;
-  agents.enqueueFor(name, entry);
-}
+// BriefingDispatcher — owns lastSig + timer + scheduleFanout + forceFanout + seedSig (carved in §6).
+const briefingDispatcher = createBriefingDispatcher({
+  agents, buildBriefing, briefingSignature: computeBriefingSignature,
+});
 
 const { requireAuth, requireReadAuth, requireJsonBody } = makeAuthHelpers(AUTH_TOKEN);
 
-const chatDeps = { agents, broadcastUI, agentEntry, enqueueTo };
-async function handleSend(req: Request): Promise<Response> {
-  const sizeCheck = requireJsonBody(req);
-  if (sizeCheck) return sizeCheck;
-  return handleSendCore(req, chatDeps);
-}
-async function handlePost(req: Request): Promise<Response> {
-  const sizeCheck = requireJsonBody(req);
-  if (sizeCheck) return sizeCheck;
-  return handlePostCore(req, chatDeps);
-}
-
-async function handleUpload(req: Request): Promise<Response> {
-  const sizeCheck = requireJsonBody(req, IMAGE_MAX_BYTES + 64 * 1024);
-  if (sizeCheck) return sizeCheck;
-  return handleUploadCore(req, ATTACHMENTS_DIR, ALLOWED_EXTENSIONS);
-}
-async function handleImage(segment: string): Promise<Response> {
-  return handleImageCore(segment, ATTACHMENTS_DIR);
-}
-
-function handleStream(req: Request): Response {
-  const url = new URL(req.url);
-  const lastIdRaw =
-    url.searchParams.get("last_event_id") ?? req.headers.get("last-event-id");
-  const clientSession = url.searchParams.get("session");
-  const lastId =
-    clientSession === SESSION_ID && lastIdRaw ? Number(lastIdRaw) : 0;
-  return makeSSE(async (send, signal) => {
-    const q = new DropQueue<Entry>(UI_QUEUE_MAX);
-    uiSubscribers.add(q);
-    try {
-      send({ type: "session", id: SESSION_ID });
-      send(agents.rosterSnapshot());
-      send(agents.presenceSnapshot());
-      for (const m of chatLog) {
-        if ((m.id ?? 0) > lastId) send(m, m.id);
-      }
-      while (!signal.aborted) {
-        const m = await q.pull(signal);
-        if (m.id !== undefined) send(m, m.id);
-        else send(m);
-      }
-    } finally {
-      uiSubscribers.delete(q);
-    }
-  });
-}
-
-function handleAgentStream(agent: string, room: string | null = null): Response {
-  if (!validName(agent)) {
-    return json({ error: `invalid agent name: ${agent}` }, { status: 400 });
-  }
-  // Room captured on first registration; reconnects ignore the arg.
-  if (!ensureAgent(agent, room ?? DEFAULT_ROOM)) {
-    return json({ error: "agent queue missing" }, { status: 500 });
-  }
-  return makeSSE(async (send, signal) => {
-    agents.connect(agent);
-    broadcastPresence();
-
-    // Lazy transcript hydration: first agent to reconnect to this Room
-    // post-Hub-restart triggers a one-time replay of the active JSONL chunk
-    // into chatLog + UI fan-out. The hydrator's internal per-Room promise
-    // cache makes this idempotent; concurrent same-Room reconnects are safe.
-    const me = agents.get(agent);
-    if (me?.room && roomHydrator) {
-      roomHydrator.maybeHydrate(me.room).catch((e) =>
-        console.error(`[hub] hydration error for room=${me.room}:`, e));
-    }
-
-    // Phase 3: opportunistic backfill for the room_summary L1/L2 layers.
-    // Fire-and-forget — backfill runs in the background and updates summary
-    // tables; subsequent Briefings (or this agent on next reconnect) see
-    // the populated rows. The Briefing path itself stays read-only.
-    if (me?.room && roomSummariser) {
-      roomSummariser.maybeBackfill(me.room).catch((e) =>
-        console.error(`[hub] backfill error for room=${me.room}:`, e));
-    }
-
-    // Briefing first so it arrives before replay in the agent's context.
-    if (!agents.isPermanent(agent)) {
-      try {
-        const brief = buildBriefing(agent);
-        send(brief);
-        // Seed dedup so the queued re-briefing from broadcastPresence doesn't double-send.
-        lastBriefingSig.set(agent, briefingSignature(brief));
-      } catch (e) {
-        console.error("[briefing]", e);
-      }
-    }
-
-    // Chat is NOT replayed (UI replays via /stream's chatLog). Kinds replay via pendingFor().
-    if (ledgerEnabled) {
-      const me = agents.get(agent);
-      const myRoom = me?.room ?? DEFAULT_ROOM;
-      const agentCtx: AgentCtx = {
-        name: agent,
-        room: me?.room ?? null,
-        permanent: agents.isPermanent(agent),
-      };
-      const cap = buildCap();
-      try {
-        const sortedKinds = [...KINDS].sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
-        for (const k of sortedKinds) {
-          for (const entry of k.pendingFor(agentCtx, cap)) {
-            // Cross-room items never leak on reconnect (channel-bin gate is line 2).
-            if (entry.room != null && entry.room !== myRoom) continue;
-            send(entry);
-          }
-        }
-      } catch (e) {
-        console.error("[replay]", e);
-      }
-    }
-
-    try {
-      // subscribe() captures the queue ref once; survives stale-removal mid-stream.
-      // disconnect() in the finally auto-schedules stale removal when count hits 0.
-      for await (const m of agents.subscribe(agent, signal)) {
-        send(m);
-      }
-    } finally {
-      agents.disconnect(agent);
-      broadcastPresence();
-    }
-  });
-}
-
-async function handleRemove(req: Request): Promise<Response> {
-  const sizeCheck = requireJsonBody(req);
-  if (sizeCheck) return sizeCheck;
-
-  const body = (await req.json().catch(() => ({}))) as { agent?: string };
-  const name = (body.agent ?? "").trim();
-  if (!name) return json({ error: "missing agent" }, { status: 400 });
-  const removed = removeAgent(name, "manual");
-  if (!removed) return json({ error: `unknown agent: ${name}` }, { status: 404 });
-  return json({ ok: true });
-}
-
-// Kept hub-local for the expire-sweep below.
-function broadcastHandoff(
-  snapshot: HandoffSnapshot,
-  eventKind: "handoff.new" | "handoff.update",
-): void {
-  const recipients =
-    eventKind === "handoff.new"
-      ? [snapshot.to_agent]
-      : [snapshot.from_agent, snapshot.to_agent];
-  emit(handoffEntry(snapshot, eventKind), { kind: "to-agents", agents: recipients });
-}
-
-// Ambient fan-out, not chatLog-backed; nutshell updates are fetched via GET /nutshell.
-function broadcastNutshell(snapshot: NutshellSnapshot): void {
-  const entry = nutshellEntry(snapshot);
-  for (const q of uiSubscribers) q.push(entry);
-  for (const a of agents.values()) {
-    if (agents.isPermanent(a.name)) continue;
-    if (a.room !== snapshot.room) continue;
-    agents.enqueueFor(a.name, nutshellEntry(snapshot));
-  }
-}
-
 function ledgerGuard(): Response | null {
-  if (!ledgerEnabled) {
-    return json({ error: "ledger disabled" }, { status: 503 });
-  }
-  return null;
-}
-
-function handleGetNutshell(url: URL): Response {
-  const room = url.searchParams.get("room");
-  if (room === null) {
-    return json({ error: "room parameter required" }, { status: 400 });
-  }
-  if (!validRoomLabel(room)) {
-    return json({ error: "invalid room" }, { status: 400 });
-  }
-  return json(readNutshell(room));
-}
-
-function handleGetRoomSettings(room: string): Response {
-  const guard = ledgerGuard();
-  if (guard) return guard;
-  const settings = getRoomSettings(ledgerDb!, room) ?? {
-    room,
-    persist_transcript: false,
-    room_summary_enabled: false,
-    updated_at: 0,
-  };
-  const stats = settings.persist_transcript ? transcript.activeStats(room) : null;
-  const chunks = settings.persist_transcript ? transcript.listChunks(room) : [];
-  // When summarisation is on, surface counts so the UI can render
-  // "X block summaries, Y rollups, last covered line N" without a second call.
-  let summary: { l1_count: number; l2_count: number; last_summarised_line: number; adapter_active: boolean } | null = null;
-  if (settings.room_summary_enabled && ledgerDb) {
-    const l1 = ledgerDb.query<{ c: number }, [string]>(
-      "SELECT COUNT(*) AS c FROM room_summary WHERE room=? AND level=1",
-    ).get(room);
-    const l2 = ledgerDb.query<{ c: number }, [string]>(
-      "SELECT COUNT(*) AS c FROM room_summary WHERE room=? AND level=2",
-    ).get(room);
-    const last = ledgerDb.query<{ m: number | null }, [string]>(
-      "SELECT MAX(end_line) AS m FROM room_summary WHERE room=? AND level=1",
-    ).get(room);
-    summary = {
-      l1_count: l1?.c ?? 0,
-      l2_count: l2?.c ?? 0,
-      last_summarised_line: last?.m ?? 0,
-      adapter_active: roomSummariser !== null,
-    };
-  }
-  return json({ settings, active: stats, chunks, summary });
-}
-
-async function handlePutRoomSettings(req: Request, room: string): Promise<Response> {
-  const guard = ledgerGuard();
-  if (guard) return guard;
-  const sizeCheck = requireJsonBody(req);
-  if (sizeCheck) return sizeCheck;
-  let body: { persist_transcript?: unknown; room_summary_enabled?: unknown };
-  try {
-    body = (await req.json()) as { persist_transcript?: unknown; room_summary_enabled?: unknown };
-  } catch {
-    return json({ error: "invalid json" }, { status: 400 });
-  }
-  const partial: { persist_transcript?: boolean; room_summary_enabled?: boolean } = {};
-  if ("persist_transcript" in body) {
-    if (typeof body.persist_transcript !== "boolean") {
-      return json({ error: "persist_transcript must be boolean" }, { status: 400 });
-    }
-    partial.persist_transcript = body.persist_transcript;
-  }
-  if ("room_summary_enabled" in body) {
-    if (typeof body.room_summary_enabled !== "boolean") {
-      return json({ error: "room_summary_enabled must be boolean" }, { status: 400 });
-    }
-    partial.room_summary_enabled = body.room_summary_enabled;
-  }
-  setRoomSettings(ledgerDb!, room, partial);
-  // When enabling summaries on a Room with existing transcript content,
-  // kick off backfill immediately so the user doesn't have to wait for the
-  // next agent reconnect to populate L1/L2 entries.
-  if (partial.room_summary_enabled === true && roomSummariser) {
-    roomSummariser.maybeBackfill(room).catch((e) =>
-      console.error(`[summariser] backfill on opt-in failed for ${room}:`, e));
-  }
-  return handleGetRoomSettings(room);
-}
-
-function handleGetRoomTranscripts(room: string): Response {
-  const active = transcript.activeStats(room);
-  const chunks = transcript.listChunks(room);
-  const totalBytes = active.sizeBytes + chunks.reduce((s, c) => s + c.sizeBytes, 0);
-  return json({ active, chunks, totalBytes });
-}
-
-function handlePostClearTranscript(room: string): Response {
-  const guard = ledgerGuard();
-  if (guard) return guard;
-  const settings = getRoomSettings(ledgerDb!, room);
-  // Non-destructive: rotate the active file to a numbered chunk so historical
-  // data is archived. Subsequent appends start a fresh active file. ChatLog is
-  // filtered so the visible chat window resets and restart hydration replays
-  // nothing into reconnecting agents.
-  const result = transcript.rotateActive(room);
-  for (let i = chatLog.length - 1; i >= 0; i--) {
-    if (chatLog[i].room === room) chatLog.splice(i, 1);
-  }
-  return json({ archivedTo: result.archivedTo, persistence: settings?.persist_transcript ?? false });
-}
-
-async function handleSaveSession(req: Request): Promise<Response> {
-  const guard = ledgerGuard();
-  if (guard) return guard;
-  const sizeCheck = requireJsonBody(req);
-  if (sizeCheck) return sizeCheck;
-  return handleSaveSessionCore(req, ledgerDb!);
-}
-function handleGetSession(url: URL): Response {
-  const guard = ledgerGuard();
-  if (guard) return guard;
-  return handleGetSessionCore(url, ledgerDb!);
+  return ledgerEnabled ? null : json({ error: "ledger disabled" }, { status: 503 });
 }
 
 // HubCapabilities: DI surface kinds consume via routes / pendingFor hooks.
-function buildCap(): HubCapabilities {
-  return {
-    db: ledgerDb!,
-    agents: {
-      get(name): AgentCtx | null {
-        const a = agents.get(name);
-        if (!a) return null;
-        return { name: a.name, room: a.room, permanent: agents.isPermanent(name) };
-      },
-      isPermanent(name) {
-        return agents.isPermanent(name);
-      },
-      all(): AgentCtx[] {
-        return [...agents.values()].map((a) => ({
-          name: a.name,
-          room: a.room,
-          permanent: agents.isPermanent(a.name),
-        }));
-      },
-      ensure(name, room = DEFAULT_ROOM): AgentCtx | null {
-        const a = ensureAgent(name, room);
-        if (!a) return null;
-        return { name: a.name, room: a.room, permanent: agents.isPermanent(a.name) };
-      },
-    },
-    sse: {
-      emit,
-      emitWhere(entry, predicate) {
-        emitWhere(entry, (a: AgentType) =>
-          predicate({ name: a.name, room: a.room, permanent: agents.isPermanent(a.name) }),
-        );
-      },
-    },
-    auth: {
-      requireAuth,
-      requireReadAuth,
-      requireJsonBody,
-    },
-    ids: {
-      mint(_prefix, bytes) {
-        return randomId(bytes);
-      },
-    },
-    events: {
-      insert: insertEvent,
-    },
-    config: {
-      humanName: HUMAN_NAME,
-      attachmentsDir: ATTACHMENTS_DIR,
-      defaultRoom: DEFAULT_ROOM,
-    },
-  };
-}
+const buildCap = createCapBuilder({
+  db: ledgerDb,
+  agents,
+  ensureAgent,
+  fanoutSend: (entry, scope) => fanout.send(entry, scope),
+  auth: { requireAuth, requireReadAuth, requireJsonBody },
+  config: { humanName: HUMAN_NAME, attachmentsDir: ATTACHMENTS_DIR, defaultRoom: DEFAULT_ROOM },
+});
 
 // Adding a kind = one import + one array entry. Kinds MUST NOT depend on cross-kind ordering.
-const KINDS: readonly KindModule[] = [handoffKind, interruptKind, permissionKind];
+// Kinds that have migrated to LedgerEntity (architecture-cycle-2a) are constructed via
+// per-Kind factories that take the live ledger db; legacy kinds remain const exports
+// until they migrate. KINDS is empty when the ledger is disabled — routes don't register,
+// requests to /handoffs etc. return 404 (was 503 via ledgerGuard pre-cycle-2a).
+// Adding a new Kind = one import + one entry in `hub/kinds/index.ts`. hub.ts unchanged.
+const KINDS: readonly KindModule[] = buildKinds(ledgerDb);
 
-// Kind routes take precedence over legacy inline routes.
-const { dispatch: dispatchKindRoute } = createDispatcher({
-  kinds: KINDS,
+// Per architecture-cycle-2a kind-runtime/spec.md: iterate KINDS and call each kind's
+// migrate(db) at startup. Today's three Kinds delegate to LedgerEntity.migrate which
+// runs CREATE TABLE IF NOT EXISTS — a no-op for tables already created by the
+// versioned migrateLedger() (handoffs/interrupts/permissions exist via v1/v2/v6/v12).
+// New Kinds added later don't need a ledger.ts migration; their entity.migrate creates
+// the table on first hub start.
+if (ledgerDb) {
+  for (const k of KINDS) k.migrate(ledgerDb);
+}
+
+// HubFeatures: per architecture-cycle-2a route-modules/spec.md, every Hub route lives
+// inside a HubFeature module under hub/features/. Kinds are the persistent-state-machine
+// subset of HubFeature. SSE long-lived routes (/stream, /agent-stream) do NOT use this
+// shape — they wire directly into Bun.serve below per design.md Decision 3.
+const FEATURES: readonly HubFeature[] = [
+  ...KINDS,
+  createUsageFeature(),
+  ...(ledgerDb ? [createSessionsFeature(ledgerDb)] : []),
+  createAttachmentsFeature({
+    attachmentsDir: ATTACHMENTS_DIR,
+    allowedExtensions: ALLOWED_EXTENSIONS,
+    imageMaxBytes: IMAGE_MAX_BYTES,
+  }),
+  createRosterFeature({ agents, removeAgent, defaultRoom: DEFAULT_ROOM, readNutshell }),
+  ...(ledgerDb
+    ? [createTranscriptFeature({ db: ledgerDb, chatLog, roomSummariser })]
+    : []),
+  createChatFeature({
+    agents,
+    broadcastUI: (entry) => fanout.send(entry, { kind: "ui-only" }),
+    attachmentsDir: ATTACHMENTS_DIR,
+  }),
+];
+
+const { dispatch } = createDispatcher({
+  features: FEATURES,
   auth: { requireAuth, requireReadAuth, requireJsonBody },
   ledgerGuard,
+  buildCap,
+});
+
+const { handleStream, handleAgentStream } = createStreamHandlers({
+  sessionId: SESSION_ID,
+  uiQueueMax: UI_QUEUE_MAX,
+  defaultRoom: DEFAULT_ROOM,
+  ledgerEnabled: () => ledgerEnabled,
+  chatLog,
+  uiSubscribers,
+  agents,
+  ensureAgent,
+  broadcastPresence: () => {
+    fanout.send(agents.presenceSnapshot(), { kind: "ui-only-ambient" });
+    briefingDispatcher.scheduleFanout();
+  },
+  roomHydrator,
+  roomSummariser,
+  buildBriefing,
+  seedBriefingSignature: (agent, brief) => briefingDispatcher.seedSignature(agent, brief),
+  kinds: KINDS,
   buildCap,
 });
 
@@ -746,18 +339,9 @@ const server = Bun.serve({
     }
 
     try {
-      const kindResp = await dispatchKindRoute(req, url);
-      if (kindResp) return kindResp;
-
-      // Read endpoints accept header OR ?token= for EventSource / <img>.
-      if (req.method === "GET" && pathname === "/agents") {
-        const authFail = requireReadAuth(req, url);
-        return authFail ?? json([...agents.values()]);
-      }
-      if (req.method === "GET" && pathname === "/presence") {
-        const authFail = requireReadAuth(req, url);
-        return authFail ?? json(agents.presenceSnapshot());
-      }
+      // SSE long-lived routes — registered directly here, not through the dispatcher
+      // (they own per-connection state: briefing, hydration, kind replay, queue subscribe).
+      // See design.md Decision 3.
       if (req.method === "GET" && pathname === "/stream") {
         const authFail = requireReadAuth(req, url);
         return authFail ?? handleStream(req);
@@ -769,81 +353,11 @@ const server = Bun.serve({
         const room = url.searchParams.get("room");
         return handleAgentStream(agent, room);
       }
-      if (req.method === "GET" && pathname.startsWith("/image/")) {
-        const authFail = requireReadAuth(req, url);
-        return authFail ?? (await handleImage(pathname.slice("/image/".length)));
-      }
 
-      if (req.method === "POST" && pathname === "/send") {
-        const authFail = requireAuth(req);
-        return authFail ?? (await handleSend(req));
-      }
-      if (req.method === "POST" && pathname === "/post") {
-        const authFail = requireAuth(req);
-        return authFail ?? (await handlePost(req));
-      }
-      if (req.method === "POST" && pathname === "/remove") {
-        const authFail = requireAuth(req);
-        return authFail ?? (await handleRemove(req));
-      }
-      if (req.method === "POST" && pathname === "/upload") {
-        const authFail = requireAuth(req);
-        return authFail ?? (await handleUpload(req));
-      }
-      // Nutshell read; write path is /handoffs with task prefix "[nutshell]".
-      if (req.method === "GET" && pathname === "/nutshell") {
-        const authFail = requireReadAuth(req, url);
-        return authFail ?? handleGetNutshell(url);
-      }
-      // Fallback for external-spawn agents that lack CHATBRIDGE_ROOM.
-      if (req.method === "GET" && pathname === "/room-default") {
-        const authFail = requireReadAuth(req, url);
-        return authFail ?? json({ room: DEFAULT_ROOM });
-      }
-      // Per-room settings + transcript management.
-      const roomSettingsMatch = /^\/rooms\/([^/]+)\/settings$/.exec(pathname);
-      if (roomSettingsMatch) {
-        const room = decodeURIComponent(roomSettingsMatch[1]);
-        if (!validRoomLabel(room)) return json({ error: "invalid room label" }, { status: 400 });
-        if (req.method === "GET") {
-          const authFail = requireReadAuth(req, url);
-          return authFail ?? handleGetRoomSettings(room);
-        }
-        if (req.method === "PUT") {
-          const authFail = requireAuth(req);
-          return authFail ?? (await handlePutRoomSettings(req, room));
-        }
-      }
-      const roomTranscriptsMatch = /^\/rooms\/([^/]+)\/transcripts$/.exec(pathname);
-      if (roomTranscriptsMatch && req.method === "GET") {
-        const authFail = requireReadAuth(req, url);
-        if (authFail) return authFail;
-        const room = decodeURIComponent(roomTranscriptsMatch[1]);
-        if (!validRoomLabel(room)) return json({ error: "invalid room label" }, { status: 400 });
-        return handleGetRoomTranscripts(room);
-      }
-      const roomClearMatch = /^\/rooms\/([^/]+)\/clear-transcript$/.exec(pathname);
-      if (roomClearMatch && req.method === "POST") {
-        const authFail = requireAuth(req);
-        if (authFail) return authFail;
-        const room = decodeURIComponent(roomClearMatch[1]);
-        if (!validRoomLabel(room)) return json({ error: "invalid room label" }, { status: 400 });
-        return handlePostClearTranscript(room);
-      }
-      if (req.method === "POST" && pathname === "/sessions") {
-        const authFail = requireAuth(req);
-        return authFail ?? (await handleSaveSession(req));
-      }
-      if (req.method === "GET" && pathname === "/sessions") {
-        const authFail = requireReadAuth(req, url);
-        return authFail ?? handleGetSession(url);
-      }
-      // Parsed from ~/.claude/projects JSONL transcripts (no Claude Code API).
-      if (req.method === "GET" && pathname === "/usage") {
-        const authFail = requireReadAuth(req, url);
-        if (authFail) return authFail;
-        return json(await readUsageSnapshot());
-      }
+      // All other routes go through the HubFeature dispatcher.
+      const featResp = await dispatch(req, url);
+      if (featResp) return featResp;
+
       return json({ error: "not found", path: pathname }, { status: 404 });
     } catch (e) {
       // Log server-side; return generic message so internals don't leak.
@@ -862,12 +376,13 @@ if (validName(HUMAN_NAME)) {
 }
 
 const sweepTimer = setInterval(() => {
-  if (!ledgerEnabled) return;
+  if (!ledgerEnabled || !ledgerDb) return;
   try {
-    const expirable = findExpirable(Date.now());
-    for (const id of expirable) {
-      const snapshot = expireHandoff(id);
-      if (snapshot) broadcastHandoff(snapshot, "handoff.update");
+    for (const id of findExpirableK(ledgerDb, Date.now())) {
+      const snapshot = expireHandoffK(ledgerDb, id);
+      if (snapshot) {
+        broadcastHandoffSnapshot((entry, scope) => fanout.send(entry, scope), snapshot, "handoff.update");
+      }
     }
   } catch (e) {
     console.error("[sweep]", e);
@@ -876,6 +391,7 @@ const sweepTimer = setInterval(() => {
 
 function shutdown() {
   clearInterval(sweepTimer);
+  briefingDispatcher.dispose();
   try { ledgerDb?.close(); } catch {}
 }
 process.on("SIGINT", () => { shutdown(); process.exit(0); });

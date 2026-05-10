@@ -2,15 +2,20 @@
 // Half-implemented kinds (e.g. a new kind that satisfies the TypeScript type
 // but leaves `migrate` as an empty stub) fail here.
 //
-// This test imports the same `KINDS` array the hub ships with, so it's always
-// verifying the live registry — no mocks, no duplication.
+// Post-architecture-cycle-2a: kinds are constructed via per-Kind factories that
+// take the live ledger db. We use a :memory: SQLite for the conformance test —
+// the assertions are about contract shape, not behavior.
 
 import { describe, test, expect } from "bun:test";
-import { handoffKind } from "../../hub/kinds/handoff";
-import { interruptKind } from "../../hub/kinds/interrupt";
-import { permissionKind } from "../../hub/kinds/permission";
+import { Database } from "bun:sqlite";
+import { migrateLedger } from "../../hub/core/ledger";
+import { createHandoffKind } from "../../hub/kinds/handoff";
+import { createInterruptKind } from "../../hub/kinds/interrupt";
+import { createPermissionKind } from "../../hub/kinds/permission";
 
-const KINDS = [handoffKind, interruptKind, permissionKind] as const;
+const db = new Database(":memory:");
+migrateLedger(db);
+const KINDS = [createHandoffKind(db), createInterruptKind(db), createPermissionKind(db)] as const;
 
 describe("KindModule contract conformance", () => {
   for (const k of KINDS) {
@@ -26,7 +31,7 @@ describe("KindModule contract conformance", () => {
 
       test("routes are well-formed RouteDefs", () => {
         for (const r of k.routes) {
-          expect(["GET", "POST"]).toContain(r.method);
+          expect(["GET", "POST", "PUT"]).toContain(r.method);
           expect(typeof r.handler).toBe("function");
           expect(["mutating", "read"]).toContain(r.auth);
           // path is either a string or a RegExp
