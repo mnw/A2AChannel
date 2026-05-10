@@ -69,21 +69,15 @@ This is the structural enforcement of the cold-start race fix: claude probes its
 - **AND** no orphan xterm instances remain
 - **AND** PTY event subscriptions match exactly one binding
 
-### Requirement: Smoke-checklist file is the gate for the Tab-split commit
+### Requirement: Smoke-checklist file `tests/smoke/tab-lifecycle.md` is a tracked artifact
 
-The Tab-split commit (#3 of the migration plan) SHALL NOT land until `tests/smoke/tab-lifecycle.md` exists with four scenarios — cold-start race, reconnect storm, theme-change refit, kill+respawn — and all observed-rows pass under manual exercise.
+`tests/smoke/tab-lifecycle.md` SHALL exist as a tracked file in the repo with four scenarios — cold-start race, reconnect storm, theme-change refit, kill+respawn — each row containing `expected` / `observed` / `pass-fail` columns. The file is the auditable record of the manual smoke-test that gates the Tab-split commit per design.md Decision 2.
 
-#### Scenario: Checklist file exists and is readable
+(The "Tab-split commit gated on all observed-rows passing" rule is operational policy, not a runtime invariant — see design.md Decision 2 for the gating logic. This requirement covers ONLY the existence + shape of the artifact, which IS auditable post-merge via `git ls-files`.)
 
-- **GIVEN** the Tab-split commit is about to land
-- **WHEN** the developer reviews the working tree
+#### Scenario: Checklist file exists and is shape-conformant
+
+- **WHEN** the post-cycle codebase is examined
 - **THEN** `tests/smoke/tab-lifecycle.md` is a tracked file
-- **AND** it contains four scenarios with `expected` / `observed` / `pass-fail` columns
-- **AND** all `observed` rows match the `expected` rows
-
-#### Scenario: Failure to pass the checklist defers the commit
-
-- **GIVEN** an observed row does not match its expected row
-- **WHEN** the developer attempts to land the Tab-split commit
-- **THEN** the commit is deferred to a future cycle
-- **AND** `architecture-cycle-2b` ships with the other commits only (KindRenderer + CSS + CaptureTransaction)
+- **AND** it contains four scenario sections (cold-start race, reconnect storm, theme-change refit, kill+respawn)
+- **AND** each section has `expected` / `observed` / `pass-fail` columns or equivalent fields
