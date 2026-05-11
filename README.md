@@ -247,7 +247,7 @@ Edit, click **↻** in the header to reload — hub restarts with the new values
 
 **a2a-bin (channel mode)** — MCP server, one per Claude Code session. Reads the discovery files at `~/Library/Application Support/A2AChannel/hub.{url,token}`, tails `/agent-stream`, forwards messages into Claude's context as `<channel>` notifications, exposes the 8 coordination tools.
 
-**Webview** — vanilla HTML/CSS/JS, no framework. `main.js` owns chat/handoff/interrupt/nutshell, `terminal.js` owns the PTY pane + xterm.js lifecycle. Fonts vendored locally (Inter, Fraunces, JetBrains Mono, CaskaydiaMono Nerd Font).
+**Webview** — vanilla HTML/CSS/JS, no framework. `main.js` orchestrates SSE + chat + nutshell; each structured Kind (handoff, interrupt, permission) lives under `ui/kinds/<kind>.js` and self-registers with `KindCardRenderer` so `main.js` dispatches by prefix instead of branching per kind. `terminal.js` owns the PTY pane + xterm.js lifecycle. Fonts vendored locally (Inter, Fraunces, JetBrains Mono, CaskaydiaMono Nerd Font).
 
 **pty.rs** — per-agent PTY registry. Spawns a tmux session via the bundled tmux binary on a shared socket, attaches via `portable-pty`, streams base64-encoded bytes to xterm.js over Tauri events. Raw PTY bridge — no `tmux -C` control mode, no `send-keys` for input forwarding.
 
