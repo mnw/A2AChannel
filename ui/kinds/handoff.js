@@ -43,6 +43,7 @@ function renderHandoffCard(event) {
 function buildHandoffCardDom(snapshot, event) {
   const el = document.createElement('div');
   el.className = 'handoff-card';
+  el.dataset.kind = 'handoff';
   el._handoffId = snapshot.id;
   if (typeof snapshot.room === 'string' && snapshot.room) el.dataset.room = snapshot.room;
   updateHandoffCardDom(el, snapshot, event);
@@ -51,6 +52,7 @@ function buildHandoffCardDom(snapshot, event) {
 
 function updateHandoffCardDom(el, snapshot, event) {
   el.className = 'handoff-card';
+  el.dataset.kind = 'handoff';
   el.classList.add(`status-${snapshot.status}`);
 
   const replayBadge = event.replay === true || event.replay === 'true'

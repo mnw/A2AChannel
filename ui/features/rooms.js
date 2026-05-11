@@ -122,9 +122,7 @@ function applyRoomFilter() {
     // Elements without data-room (system events, generic human messages) stay visible everywhere.
     styleEl.textContent = `
       body.room-filtered .msg[data-room]:not([data-room="${r}"]),
-      body.room-filtered .handoff-card[data-room]:not([data-room="${r}"]),
-      body.room-filtered .interrupt-card[data-room]:not([data-room="${r}"]),
-      body.room-filtered .permission-card[data-room]:not([data-room="${r}"]),
+      body.room-filtered [data-kind][data-room]:not([data-room="${r}"]),
       body.room-filtered .legend-item[data-room]:not([data-room="${r}"]),
       body.room-filtered .terminal-tab[data-room]:not([data-room="${r}"]) {
         display: none;

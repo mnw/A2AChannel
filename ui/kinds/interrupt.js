@@ -39,6 +39,7 @@ function renderInterruptCard(event) {
 function buildInterruptCardDom(snapshot, event) {
   const el = document.createElement('div');
   el.className = 'interrupt-card';
+  el.dataset.kind = 'interrupt';
   el._interruptId = snapshot.id;
   if (typeof snapshot.room === 'string' && snapshot.room) el.dataset.room = snapshot.room;
   updateInterruptCardDom(el, snapshot, event);
@@ -47,6 +48,7 @@ function buildInterruptCardDom(snapshot, event) {
 
 function updateInterruptCardDom(el, snapshot, event) {
   el.className = 'interrupt-card';
+  el.dataset.kind = 'interrupt';
   el.classList.add(`status-${snapshot.status}`);
   const replayBadge = event.replay === true || event.replay === 'true'
     ? `<span class="interrupt-replay-badge">(replay)</span>` : '';

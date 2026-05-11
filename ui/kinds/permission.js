@@ -56,6 +56,7 @@ function renderPermissionCard(event) {
 function buildPermissionCardDom(snapshot, event) {
   const el = document.createElement('div');
   el.className = 'permission-card';
+  el.dataset.kind = 'permission';
   el._permissionId = snapshot.id;
   if (typeof snapshot.room === 'string' && snapshot.room) el.dataset.room = snapshot.room;
   updatePermissionCardDom(el, snapshot, event);
@@ -64,6 +65,7 @@ function buildPermissionCardDom(snapshot, event) {
 
 function updatePermissionCardDom(el, snapshot, event) {
   el.className = 'permission-card';
+  el.dataset.kind = 'permission';
   el.classList.add(`status-${snapshot.status}`);
   const replayBadge = event.replay === true || event.replay === 'true'
     ? `<span class="permission-replay-badge">(replay)</span>` : '';
