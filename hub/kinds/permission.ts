@@ -1,13 +1,4 @@
-// Permission kind — Claude Code tool-use approval relay.
-// Lifecycle: pending → allowed | denied | dismissed (all terminal).
-// Migrated to LedgerEntity in architecture-cycle-2a — see ADR-0004.
-//
-// Idempotency policy: same-status-retry, applied to the TARGET status (not the
-// requested behavior verb). i.e. verdict("allow") on a row already `allowed` → 200
-// idempotent; verdict("deny") on a row already `allowed` → 409 (different target).
-// dismiss on a row already `dismissed` → 200; verdict on a row already `dismissed`
-// → 409. Uniform with handoff/interrupt's same-status-retry rule (CLAUDE.md
-// "Terminal-state policy on handoff accept/decline/cancel and interrupt ack").
+// Permission kind — Claude Code tool-use approval relay. pending → allowed | denied | dismissed.
 
 import type { Database } from "bun:sqlite";
 import type {
@@ -56,7 +47,7 @@ export type PermissionSnapshot = {
   version: number;
 };
 
-// 5 lowercase letters a-z excluding 'l'. Matches Claude Code's request_id format.
+// Matches Claude Code's request_id format: 5 letters a-z excluding 'l'.
 const PERMISSION_ID_RE = /^[a-km-z]{5}$/i;
 const PERMISSION_TOOL_NAME_MAX_CHARS = 120;
 const PERMISSION_DESCRIPTION_MAX_CHARS = 2_000;
@@ -148,7 +139,6 @@ type CreateInput = {
 const createPermissionVerb: VerbDecl<PermissionSnapshot, CreateInput> = {
   decide(prior, payload, _actor): Decision<PermissionSnapshot> {
     if (prior) {
-      // Re-create with the same id: idempotent if still pending, conflict if terminal.
       if (prior.status === "pending") return { kind: "idempotent" };
       return { kind: "conflict", httpStatus: 409, message: `permission already ${prior.status}` };
     }
@@ -186,12 +176,10 @@ type VerdictInput = { by: string; behavior: PermissionBehavior; humanRoom: strin
 const verdictPermissionVerb: VerbDecl<PermissionSnapshot, VerdictInput> = {
   decide(prior, payload, _actor): Decision<PermissionSnapshot> {
     if (!prior) return { kind: "conflict", httpStatus: 404, message: "not found" };
-    // Cross-room verdict rule: voter must be in the requester's room, or be the human (humanRoom === null).
     if (payload.humanRoom !== null && payload.humanRoom !== prior.room) {
       return { kind: "conflict", httpStatus: 403, message: "cross-room verdict not permitted" };
     }
     const targetStatus: PermissionStatus = payload.behavior === "allow" ? "allowed" : "denied";
-    // Same-status-retry on the target: same target → idempotent; different terminal → 409.
     if (prior.status === targetStatus) return { kind: "idempotent" };
     if (PERM_TERMINAL.has(prior.status)) {
       return { kind: "conflict", httpStatus: 409, message: `permission already ${prior.status}` };
@@ -219,7 +207,6 @@ const dismissPermissionVerb: VerbDecl<PermissionSnapshot, DismissInput> = {
   decide(prior, payload, _actor): Decision<PermissionSnapshot> {
     if (!prior) return { kind: "conflict", httpStatus: 404, message: "not found" };
     if (PERM_TERMINAL.has(prior.status)) {
-      // First-verdict-wins applies to dismiss too: prior verdict stands.
       return prior.status === "dismissed"
         ? { kind: "idempotent" }
         : { kind: "conflict", httpStatus: 409, message: `permission already ${prior.status}` };
@@ -293,7 +280,6 @@ export function createPermissionKind(db: Database): KindModule {
           if (r.emitted) {
             return Response.json({ id: r.snapshot.id, snapshot: r.snapshot }, { status: 201 });
           }
-          // Idempotent re-create with same request_id while still pending.
           return Response.json({ id: r.snapshot.id, snapshot: r.snapshot, idempotent: true }, { status: 200 });
         } catch (e) {
           if (e instanceof LedgerConflict) return ledgerConflictResponse(e);
@@ -320,7 +306,7 @@ export function createPermissionKind(db: Database): KindModule {
           return Response.json({ error: "invalid behavior" }, { status: 400 });
         }
         const voter = cap.agents.get(by);
-        const humanRoom = voter ? voter.room : null; // null = human (super-user; can vote across rooms)
+        const humanRoom = voter ? voter.room : null;
         try {
           const r = entity.apply(id, verdictPermissionVerb, { by, behavior, humanRoom }, by, cap);
           return Response.json({ snapshot: r.snapshot, ...(r.emitted ? {} : { idempotent: true }) }, { status: 200 });
@@ -398,7 +384,5 @@ export function createPermissionKind(db: Database): KindModule {
     toolNames: ["ack_permission"],
   };
 }
-
-// ---------- Re-exports for back-compat ----------
 
 export { PERMISSION_ID_RE };

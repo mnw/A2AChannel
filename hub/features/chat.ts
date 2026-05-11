@@ -1,9 +1,4 @@
-// Chat feature — /post (agent send) + /send (UI/human send).
-// Carved out of hub.ts inline routes in architecture-cycle-2a §4 and §7 follow-up.
-//
-// Owns agentEntry (URL→disk-path rewrite for agent-targeted entries) + enqueueTo
-// (permanent-agent skip + per-agent queue push) — these used to be hub.ts inline
-// helpers. They're co-located here because chat.ts is their sole caller.
+// /post (agent send) + /send (UI/human send). Owns agentEntry URL→disk-path rewrite.
 
 import type { Entry, HubFeature } from "../core/types";
 import type { AgentRegistry } from "../core/agents";
@@ -17,8 +12,7 @@ export type ChatFeatureDeps = {
 };
 
 export function createChatFeature(deps: ChatFeatureDeps): HubFeature {
-  // Agents get on-disk paths inlined into entry.text (so they can Read directly);
-  // the UI version of the entry retains the /image/<id>.<ext> URL form via /stream.
+  // Inline absolute path into entry.text for agent-bound entries; UI keeps the /image URL via /stream.
   function agentEntry(entry: Entry): Entry {
     if (!entry.image) return entry;
     const absPath = deps.attachmentsDir
@@ -29,7 +23,6 @@ export function createChatFeature(deps: ChatFeatureDeps): HubFeature {
   }
 
   function enqueueTo(name: string, entry: Entry): void {
-    // Permanent members read via /stream; no channel-bin queue.
     if (deps.agents.isPermanent(name)) return;
     deps.agents.enqueueFor(name, entry);
   }

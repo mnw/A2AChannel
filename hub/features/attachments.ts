@@ -1,8 +1,4 @@
-// Attachments feature — file upload + serve.
-// Carved out of hub.ts inline routes in architecture-cycle-2a §4.
-//
-// Upload extension allowlist + max size are env-resolved at hub startup; the factory
-// captures them in closure so handlers don't re-derive them per request.
+// File upload + serve. Allowlist + max size are env-resolved at hub startup and captured in closure.
 
 import type { HubFeature } from "../core/types";
 import { handleUpload, handleImage } from "../core/attachments";

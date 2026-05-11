@@ -123,15 +123,11 @@ if (!LEDGER_DB) {
   );
 }
 
-// (Agent and Entry types live in hub/core/types.ts; no need to redeclare here.)
-
 const chatLog: Entry[] = [];
 const uiSubscribers = new Set<DropQueue<Entry>>();
 let entrySeq = 0;
 const SESSION_ID = randomId(8);
 
-// Callbacks fire roster/presence snapshots through Fanout (ambient — no chatLog) and
-// schedule a debounced briefing re-fanout that dedups via per-Agent signature.
 const agents = createAgentRegistry({
   defaultRoom: DEFAULT_ROOM,
   staleMs: STALE_AGENT_MS,
@@ -164,9 +160,6 @@ if (ledgerDb) {
   catch (e) { console.error("[transcript] init failed:", e); }
 }
 
-// Lazy per-Room transcript replay. Triggered from handleAgentStream on the
-// first connect for each Room post-restart; no-op for Rooms with persist
-// disabled or no agents reconnecting.
 let roomHydrator: RoomHydrator | null = null;
 if (ledgerDb) {
   roomHydrator = createRoomHydrator({
@@ -176,10 +169,7 @@ if (ledgerDb) {
   });
 }
 
-// Phase 3: pluggable Summariser + per-Room RoomSummariser. Adapter selection
-// is env-driven (A2A_SUMMARISER=claude|llama-cpp|ollama|disabled, default
-// disabled). When disabled the modules are null and Briefing skips the
-// room_summary layer cleanly.
+// Pluggable Summariser — env-driven adapter (A2A_SUMMARISER, default disabled).
 let summariser: Summariser | null = null;
 let roomSummariser: RoomSummariserT | null = null;
 if (ledgerDb) {
@@ -190,7 +180,6 @@ if (ledgerDb) {
       db: ledgerDb,
       summariser,
     });
-    // Wire transcript.appendEntry → roomSummariser.maybeSummarise (fire-and-forget).
     transcript.setAppendHook((room) => {
       roomSummariser?.maybeSummarise(room).catch((e) =>
         console.error(`[summariser] maybeSummarise error room=${room}:`, e),
@@ -202,7 +191,6 @@ if (ledgerDb) {
   }
 }
 
-// Returns DEFAULT_ROOM on empty/invalid input so callers don't have to branch.
 function resolveRoom(raw: string | null | undefined): string {
   const s = (raw ?? "").trim();
   return s && validRoomLabel(s) ? s : DEFAULT_ROOM;
@@ -212,7 +200,6 @@ function readNutshell(room: string): NutshellSnapshot {
   return readNutshellCore(ledgerDb, resolveRoom(room));
 }
 
-// Fanout — single owner of every SSE broadcast path (carved in §5).
 const fanout = createFanout({
   chatLog,
   uiSubscribers,
@@ -222,8 +209,7 @@ const fanout = createFanout({
   nextEntryId: () => ++entrySeq,
 });
 
-// Briefing assembly is delegated to BriefingBuilder (hub/core/briefing.ts).
-// Lazy-initialised because it depends on KINDS (defined below in source order).
+// Lazy-init: depends on KINDS, defined below in source order.
 let _briefingBuilder: BriefingBuilder | null = null;
 function buildBriefing(agent: string): BriefingPayload {
   if (!_briefingBuilder) {
@@ -235,7 +221,6 @@ function buildBriefing(agent: string): BriefingPayload {
   return _briefingBuilder.build(agent);
 }
 
-// BriefingDispatcher — owns lastSig + timer + scheduleFanout + forceFanout + seedSig (carved in §6).
 const briefingDispatcher = createBriefingDispatcher({
   agents, buildBriefing, briefingSignature: computeBriefingSignature,
 });
@@ -246,7 +231,6 @@ function ledgerGuard(): Response | null {
   return ledgerEnabled ? null : json({ error: "ledger disabled" }, { status: 503 });
 }
 
-// HubCapabilities: DI surface kinds consume via routes / pendingFor hooks.
 const buildCap = createCapBuilder({
   db: ledgerDb,
   agents,
@@ -256,28 +240,13 @@ const buildCap = createCapBuilder({
   config: { humanName: HUMAN_NAME, attachmentsDir: ATTACHMENTS_DIR, defaultRoom: DEFAULT_ROOM },
 });
 
-// Adding a kind = one import + one array entry. Kinds MUST NOT depend on cross-kind ordering.
-// Kinds that have migrated to LedgerEntity (architecture-cycle-2a) are constructed via
-// per-Kind factories that take the live ledger db; legacy kinds remain const exports
-// until they migrate. KINDS is empty when the ledger is disabled — routes don't register,
-// requests to /handoffs etc. return 404 (was 503 via ledgerGuard pre-cycle-2a).
-// Adding a new Kind = one import + one entry in `hub/kinds/index.ts`. hub.ts unchanged.
+// Add a Kind: one entry in `hub/kinds/index.ts`. hub.ts unchanged.
 const KINDS: readonly KindModule[] = buildKinds(ledgerDb);
 
-// Per architecture-cycle-2a kind-runtime/spec.md: iterate KINDS and call each kind's
-// migrate(db) at startup. Today's three Kinds delegate to LedgerEntity.migrate which
-// runs CREATE TABLE IF NOT EXISTS — a no-op for tables already created by the
-// versioned migrateLedger() (handoffs/interrupts/permissions exist via v1/v2/v6/v12).
-// New Kinds added later don't need a ledger.ts migration; their entity.migrate creates
-// the table on first hub start.
 if (ledgerDb) {
   for (const k of KINDS) k.migrate(ledgerDb);
 }
 
-// HubFeatures: per architecture-cycle-2a route-modules/spec.md, every Hub route lives
-// inside a HubFeature module under hub/features/. Kinds are the persistent-state-machine
-// subset of HubFeature. SSE long-lived routes (/stream, /agent-stream) do NOT use this
-// shape — they wire directly into Bun.serve below per design.md Decision 3.
 const FEATURES: readonly HubFeature[] = [
   ...KINDS,
   createUsageFeature(),
@@ -339,9 +308,7 @@ const server = Bun.serve({
     }
 
     try {
-      // SSE long-lived routes — registered directly here, not through the dispatcher
-      // (they own per-connection state: briefing, hydration, kind replay, queue subscribe).
-      // See design.md Decision 3.
+      // SSE long-lived routes are wired directly (own per-connection state).
       if (req.method === "GET" && pathname === "/stream") {
         const authFail = requireReadAuth(req, url);
         return authFail ?? handleStream(req);
@@ -354,13 +321,11 @@ const server = Bun.serve({
         return handleAgentStream(agent, room);
       }
 
-      // All other routes go through the HubFeature dispatcher.
       const featResp = await dispatch(req, url);
       if (featResp) return featResp;
 
       return json({ error: "not found", path: pathname }, { status: 404 });
     } catch (e) {
-      // Log server-side; return generic message so internals don't leak.
       console.error("[hub] error", e);
       return json({ error: "internal error" }, { status: 500 });
     }
@@ -397,10 +362,7 @@ function shutdown() {
 process.on("SIGINT", () => { shutdown(); process.exit(0); });
 process.on("SIGTERM", () => { shutdown(); process.exit(0); });
 
-// Defensive: never let a single rogue error kill the hub. Log + continue.
-// Each kind/sidecar/adapter SHOULD handle its own errors locally; these are
-// last-resort guards. EPIPE on child-process stdin (when a spawned tool exits
-// before draining input) is the most likely uncaught case.
+// Last-resort guards — log + continue rather than crash the hub.
 process.on("uncaughtException", (e) => {
   console.error("[hub] uncaughtException — continuing:", e);
 });

@@ -1,13 +1,4 @@
-// Capabilities — factory for the HubCapabilities object passed to every Kind/Feature
-// route handler. Carved out of hub.ts in architecture-cycle-2a §7 follow-up.
-//
-// `cap` is the SOLE access path Kind code has to shared Hub services. It exposes:
-//   - db: the live ledger Database
-//   - agents: a sanitized AgentCtx-shaped read view of the AgentRegistry
-//   - sse.emit: delegates to Fanout (single broadcast call site)
-//   - auth: requireAuth / requireReadAuth / requireJsonBody helpers
-//   - events.insert: the events-table append helper (transcribed from core/events.ts)
-//   - config: the env-resolved humanName / attachmentsDir / defaultRoom
+// Factory for the HubCapabilities object — sole access path for Kind/Feature route handlers.
 
 import type { Database } from "bun:sqlite";
 import type { AgentCtx, Entry, HubCapabilities, Scope } from "./types";

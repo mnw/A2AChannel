@@ -1,23 +1,4 @@
-// ledger-entity.ts — the ONE Module Kind code learns. External seam.
-//
-// Composes the load → decide → transact → emit lifecycle. Owns the database
-// reference (closure) and the internal Store collaborator (closure). Kind code
-// receives only the LedgerEntity surface defined in hub/core/types.ts:
-//
-//   - migrate(db)              — DDL via internal Store
-//   - load(id)                 — primary-key lookup
-//   - listByStatus(filter)     — single-query SELECT (no N+1; see store.ts)
-//   - apply(...)               — common case: 5-line verbs
-//   - applyWithSideEffect(...) — rare case: cross-table writes inside the same tx
-//
-// The Store reference is captured here and NEVER re-exposed (no `entity.store`
-// getter, no `entity.unsafeStore` escape). Tests that need direct Store access
-// hold their own reference before calling createLedgerEntity({ decl, db, store }).
-//
-// Idempotency policy (same-status-retry, first-verdict-wins, etc.) lives entirely
-// inside each verb's `decide(prior, payload, actor, cap): Decision` callback —
-// LedgerEntity itself carries no policy enum; it just dispatches on the Decision
-// arms (idempotent | conflict | create | transition). See ADR-0004.
+// External seam: load → decide → transact → emit. Wraps internal Store closure. See ADR-0004.
 
 import type { Database } from "bun:sqlite";
 import type {
@@ -31,17 +12,14 @@ import type {
 import { LedgerConflict } from "./types";
 import { createSqliteStore, type Store } from "./store";
 
-/** Translate a thrown LedgerConflict into the standard HTTP response shape used by all Kind routes. */
+// Standard HTTP response shape for LedgerConflict, used by every Kind route.
 export function ledgerConflictResponse(e: LedgerConflict): Response {
   const body: Record<string, unknown> = { error: e.message };
   if (e.snapshot) body.snapshot = e.snapshot;
   return Response.json(body, { status: e.httpStatus });
 }
 
-/**
- * Wrap a Kind's RouteDef[] so every route is auto-flagged `requiresLedger: true`.
- * Used by createXKind factories so authors don't have to set the flag per route.
- */
+// Auto-flag every route as requiresLedger so per-Kind factories don't have to.
 export function withLedgerRequired(routes: import("./types").RouteDef[]): import("./types").RouteDef[] {
   return routes.map((r) => ({ ...r, requiresLedger: true }));
 }
@@ -49,7 +27,6 @@ export function withLedgerRequired(routes: import("./types").RouteDef[]): import
 export type CreateLedgerEntityOpts<S extends Snapshot> = {
   decl: StateMachineDecl<S>;
   db: Database;
-  /** Override the default SQLite-backed Store. Used by tests with createInMemoryStore(). */
   store?: Store<S>;
 };
 
@@ -155,8 +132,6 @@ export function createLedgerEntity<S extends Snapshot>(
 
   return {
     migrate(targetDb: Database) {
-      // Tolerate being called with a different db reference at startup (e.g. when migrate runs
-      // before the entity is fully wired). Default to the constructor-time db otherwise.
       store.migrate(targetDb ?? db);
     },
 

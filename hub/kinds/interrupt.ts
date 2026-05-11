@@ -1,5 +1,4 @@
 // Interrupt kind — pending → acknowledged (terminal). No cancel, no expire.
-// Migrated to LedgerEntity in architecture-cycle-2a — see ADR-0004.
 
 import type { Database } from "bun:sqlite";
 import type {
@@ -48,7 +47,6 @@ function isInterruptStatusFilter(s: string): s is InterruptStatus | "all" {
 const interruptDecl: StateMachineDecl<InterruptSnapshot> = {
   kind: "interrupt",
   table: "interrupts",
-  // The Store auto-adds id (PK) and version columns; everything else is declared here.
   columns: {
     id: "TEXT",
     from_agent: "TEXT",
@@ -118,7 +116,6 @@ type CreateInput = { id: string; from: string; to: string; text: string; room: s
 const createInterruptVerb: VerbDecl<InterruptSnapshot, CreateInput> = {
   decide(prior, payload, _actor): Decision<InterruptSnapshot> {
     if (prior) {
-      // Should not happen with a freshly-minted id; defensive.
       return { kind: "conflict", httpStatus: 409, message: `interrupt ${payload.id} already exists` };
     }
     const initial: InterruptSnapshot = {
@@ -149,7 +146,6 @@ type AckInput = { by: string; humanName: string };
 const ackInterruptVerb: VerbDecl<InterruptSnapshot, AckInput> = {
   decide(prior, payload, _actor): Decision<InterruptSnapshot> {
     if (!prior) return { kind: "conflict", httpStatus: 404, message: "not found" };
-    // Human may ack on behalf of a non-responding agent.
     if (prior.to_agent !== payload.by && payload.by !== payload.humanName) {
       return { kind: "conflict", httpStatus: 403, message: "not the recipient" };
     }
@@ -170,7 +166,6 @@ const ackInterruptVerb: VerbDecl<InterruptSnapshot, AckInput> = {
       entry: (post) => interruptEntry(post, "interrupt.ack"),
     };
   },
-  // Ack notifies BOTH parties.
   scope: (post) => ({ kind: "to-agents", agents: [post.from_agent, post.to_agent] }),
 };
 
@@ -203,7 +198,6 @@ export function createInterruptKind(db: Database): KindModule {
         }
         cap.agents.ensure?.(from);
 
-        // Bulk shape (human-only): one interrupt per non-human agent in each named room.
         if (Array.isArray(body.rooms)) {
           if (from !== cap.config.humanName) {
             return Response.json({ error: "bulk interrupt restricted to human" }, { status: 403 });
@@ -220,7 +214,7 @@ export function createInterruptKind(db: Database): KindModule {
                 entity.apply(id, createInterruptVerb, { id, from, to: a.name, text, room }, from, cap);
                 ids.push(id);
               } catch (e) {
-                if (e instanceof LedgerConflict) continue; // shouldn't happen for fresh ids; skip
+                if (e instanceof LedgerConflict) continue;
                 throw e;
               }
             }
@@ -325,6 +319,6 @@ export function createInterruptKind(db: Database): KindModule {
   };
 }
 
-// ---------- Re-exports for back-compat (tests import these) ----------
+// ---------- Re-exports ----------
 
 export { INTERRUPT_TEXT_MAX_CHARS, INTERRUPT_ID_RE };

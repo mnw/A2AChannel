@@ -1,18 +1,4 @@
-// composer.js — input wiring: send (chat + interrupt + slash + shift-tab),
-// autoGrow, key handling.
-//
-// Send mode is an explicit discriminated value (SendIntent), not an emergent
-// property of DOM state. `detectIntent` is a pure function of an input
-// snapshot; `send()` dispatches once on `intent.mode`. The four modes:
-//
-//   { mode: "slash",     parsed: {slashCommand, target, args}, room }     → pty_write
-//   { mode: "shift-tab", parsed: {target}, room }                          → pty_write \x1B[Z
-//   { mode: "interrupt", toAgent, text, hasImage }                         → POST /interrupts
-//   { mode: "chat",      text, image, targetMode, room, mentions }         → POST /send
-//
-// `detectIntent` MUST NOT touch the DOM — no `sendBtn.disabled`, no
-// `input.value` mutation, no `slashPickerOpen/Close`. Callers (send,
-// _refreshSlashState) drive the side effects from the discriminator.
+// composer.js — input wiring. `detectIntent` is a pure SendIntent discriminator; send() dispatches on intent.mode.
 
 const slashErrorEl = document.getElementById('slash-error');
 
@@ -27,14 +13,7 @@ function _hideSlashError() {
   slashErrorEl.hidden = true;
 }
 
-// ─── SendIntent: pure-function mode detection ─────────────────────────
-
-/**
- * Capture the current composer input state as a plain object. The output is the
- * sole input to `detectIntent` — making detectIntent testable without mounting
- * the DOM, and ensuring intent is decided from a single snapshot rather than
- * re-read across the send flow.
- */
+// Pure snapshot of composer state — sole input to detectIntent.
 function captureComposerSnapshot() {
   return {
     text: input.value,
@@ -44,21 +23,10 @@ function captureComposerSnapshot() {
   };
 }
 
-/**
- * Pure function: returns a discriminated SendIntent from a snapshot. Each
- * returned shape carries everything the matching dispatch branch needs;
- * `validationError` is set when the input is malformed for the detected mode
- * (caller surfaces the error message; does not flip modes).
- *
- *   { mode: "slash", room, parsed?, validationError? }
- *   { mode: "shift-tab", room, parsed?, validationError? }
- *   { mode: "interrupt", toAgent, text, hasImage, validationError? }
- *   { mode: "chat", text, image, targetMode, room, mentions, validationError? }
- */
+// Returns a discriminated SendIntent. MUST stay DOM-free — callers drive side effects from the discriminator.
 function detectIntent(snap) {
   const { text, image, room, targetMode } = snap;
 
-  // Slash mode — `/<command> @<target> <args>`
   if (isSlashMode(text)) {
     if (room === ROOM_ALL) {
       return { mode: 'slash', room, validationError: 'no-room' };
@@ -69,7 +37,6 @@ function detectIntent(snap) {
     return { mode: 'slash', room, parsed };
   }
 
-  // Shift+Tab mode — `\<target>` (compose form for the \x1B[Z send key)
   if (isShiftTabMode(text)) {
     if (room === ROOM_ALL) {
       return { mode: 'shift-tab', room, validationError: 'no-room' };
@@ -79,7 +46,6 @@ function detectIntent(snap) {
     return { mode: 'shift-tab', room, parsed };
   }
 
-  // Interrupt mode — target selector prefixed with `!`
   if (targetMode.startsWith('!')) {
     const toAgent = targetMode.slice(1);
     if (!text) return { mode: 'interrupt', toAgent, text: '', hasImage: Boolean(image), validationError: 'no-text' };
@@ -89,15 +55,10 @@ function detectIntent(snap) {
     return { mode: 'interrupt', toAgent, text, hasImage: Boolean(image) };
   }
 
-  // Chat mode — default
   if (!text && !image) return { mode: 'chat', text: '', image: null, targetMode, room, mentions: [], validationError: 'empty' };
   const mentions = parseMentions(text);
   return { mode: 'chat', text, image, targetMode, room, mentions };
 }
-
-// ─── _refreshSlashState — DOM-mutation driver derived from detectIntent ───
-// Listens to `input` events, updates sendBtn.disabled + slash error + slash picker
-// state. Drives side effects from the discriminator — single source of truth.
 
 function _refreshSlashState() {
   const intent = detectIntent(captureComposerSnapshot());
@@ -109,7 +70,6 @@ function _refreshSlashState() {
     return;
   }
 
-  // Slash mode: picker stays open while typing
   if (!slashPickerActive()) slashPickerOpen();
   else slashPickerUpdate();
 
@@ -132,13 +92,8 @@ function _refreshSlashState() {
   sendBtn.disabled = false;
 }
 
-// ─── send — dispatch on intent.mode ────────────────────────────────────
-
 async function send() {
   const intent = detectIntent(captureComposerSnapshot());
-
-  // Slash and shift-tab: keep their own input-clear-on-success semantics.
-  // Interrupt and chat: clear input immediately before fetch.
   switch (intent.mode) {
     case 'slash':
       return _dispatchSlash(intent);
@@ -152,7 +107,7 @@ async function send() {
 }
 
 async function _dispatchSlash(intent) {
-  if (intent.validationError) return; // _refreshSlashState already surfaced it
+  if (intent.validationError) return;
   sendBtn.disabled = true;
   try {
     const ok = await sendSlash(intent.parsed);
@@ -236,7 +191,6 @@ async function _dispatchChat(intent) {
   } else {
     body.target = intent.targetMode;
   }
-  // Hub requires room scope on broadcasts ("all" is ambiguous across projects).
   if ((body.target === 'all' || (Array.isArray(body.targets) && body.targets.length === 0))
       && intent.room !== ROOM_ALL) {
     body.room = intent.room;
@@ -268,12 +222,9 @@ async function _dispatchChat(intent) {
   }
 }
 
-// ─── Input event wiring (unchanged) ────────────────────────────────────
-
 input.addEventListener('keydown', (e) => {
   const mentionOpen = mentionPop.classList.contains('open');
   const slashOpen   = slashPickerActive();
-  // Mention popover wins: once `@` is typed we're picking a target, not slash commands.
   if (mentionOpen) {
     if (e.key === 'ArrowDown') { e.preventDefault(); mentionActive = (mentionActive + 1) % mentionMatches.length; renderMentionPopover(); return; }
     if (e.key === 'ArrowUp')   { e.preventDefault(); mentionActive = (mentionActive - 1 + mentionMatches.length) % mentionMatches.length; renderMentionPopover(); return; }
@@ -322,7 +273,5 @@ input.addEventListener('blur', () => setTimeout(() => { hideMentionPopover(); sl
 
 sendBtn.addEventListener('click', () => send());
 
-// Export detectIntent + captureComposerSnapshot for the contract test.
-// (Classic-script load — these become globals on window.)
 window.detectIntent = detectIntent;
 window.captureComposerSnapshot = captureComposerSnapshot;

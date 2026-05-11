@@ -1,10 +1,4 @@
-// Streams feature — /stream (Webview SSE) + /agent-stream (per-Agent SSE).
-//
-// Carved out of hub.ts inline routes in architecture-cycle-2a §4. Per design.md
-// Decision 3, these handlers do NOT go through the dispatcher: they own per-
-// connection state (briefing seed, hydration trigger, Phase 3 summariser
-// backfill, kind replay, queue subscribe). hub.ts wires them directly into
-// Bun.serve's URL match.
+// /stream (Webview SSE) + /agent-stream (per-Agent SSE). Owns per-connection state — wired directly, not via dispatcher.
 
 import type { Entry, AgentCtx, Agent, HubCapabilities, KindModule } from "../core/types";
 import type { AgentRegistry } from "../core/agents";
@@ -116,7 +110,6 @@ export function createStreamHandlers(deps: StreamsDeps): StreamHandlers {
         }
       }
 
-      // Chat is NOT replayed (UI replays via /stream's chatLog). Kinds replay via pendingFor().
       if (deps.ledgerEnabled()) {
         const ctx: AgentCtx = {
           name: agent,

@@ -1,13 +1,4 @@
-// store.ts — INTERNAL collaborator of LedgerEntity. NOT exported from any package barrel.
-// Only `hub/core/ledger-entity.ts` should import from this file. Kind code (hub/kinds/*.ts)
-// MUST NOT import Store, createSqliteStore, or createInMemoryStore directly — only
-// createLedgerEntity, which captures the Store in closure and never re-exposes it.
-//
-// Honest seam acknowledgment (per LANGUAGE.md "two adapters means a real seam"):
-// today there is one production adapter (createSqliteStore) and one test adapter
-// (createInMemoryStore). The seam is hypothetical until a second production adapter
-// (multi-process, Postgres, replicated) appears. Cost: ~150 LOC. Benefit: sub-ms verb
-// tests + idempotency edge case coverage without SQLite fixtures. See ADR-0004.
+// INTERNAL collaborator of LedgerEntity. Only ledger-entity.ts imports this. See ADR-0004.
 
 import type { Database } from "bun:sqlite";
 import type {
@@ -29,24 +20,16 @@ export type ListFilter = {
 };
 
 export type StoreTransaction<S extends Snapshot> = {
-  /** Entity id. */
   id: string;
-  /** Field changes for the derived row. `version` is set by the Store, do not include here. */
   next: Partial<S>;
-  /** Event kind written to events.kind, e.g. "handoff.accepted". */
   eventKind: string;
-  /** Actor written to events.actor. */
   actor: string;
-  /** Wall-clock ms; caller-controlled for determinism in tests. */
   at: number;
-  /** Event payload; receives the synthesized post-update snapshot (= prior + next). */
   payload: (post: S) => Record<string, unknown>;
-  /** Optional same-transaction side effect; runs after derived-row UPDATE. */
   sideEffect?: (ctx: SideEffectCtx<S>) => unknown;
 };
 
 export type StoreInsert<S extends Snapshot> = {
-  /** Initial snapshot for a brand-new row (status must be non-terminal start state). */
   initial: S;
   eventKind: string;
   actor: string;
@@ -56,15 +39,10 @@ export type StoreInsert<S extends Snapshot> = {
 };
 
 export type Store<S extends Snapshot> = {
-  /** Idempotent DDL; safe to call on every hub start. */
   migrate(db: Database): void;
-  /** Primary-key lookup. Reads the `version` column directly — no MAX(seq) subquery. */
   load(db: Database, id: string): S | null;
-  /** Single-query SELECT; uses (status, for_col) composite index. */
   listByStatus(db: Database, filter: ListFilter): S[];
-  /** Atomic INSERT-row + INSERT-event; returns the post-create snapshot. */
   create(db: Database, c: StoreInsert<S>): { snapshot: S; sideEffectResult: unknown };
-  /** Atomic UPDATE-row + INSERT-event + sideEffect; returns the post-transition snapshot. */
   transact(db: Database, t: StoreTransaction<S>): { snapshot: S; sideEffectResult: unknown };
 };
 
@@ -77,7 +55,7 @@ function sqliteType(t: ColumnType): string {
     case "INTEGER":
       return "INTEGER NOT NULL";
     case "JSON":
-      return "TEXT"; // JSON stored as TEXT, nullable
+      return "TEXT";
     case "TEXT_NULL":
       return "TEXT";
     case "INTEGER_NULL":
@@ -85,8 +63,6 @@ function sqliteType(t: ColumnType): string {
   }
 }
 
-// Bun's SQLite db.run/query expects SQLQueryBindings; we widen via `as never` only on the
-// outermost call site to keep the inner types honest.
 type SqlParam = string | number | bigint | boolean | null | Uint8Array;
 
 function makeTxHandle(db: Database): TxHandle {
@@ -111,7 +87,6 @@ export function createSqliteStore<S extends Snapshot>(decl: StateMachineDecl<S>)
   if (!colNames.includes("status")) {
     throw new Error(`store(${decl.kind}): columns must include "status"`);
   }
-  // version is added by the Store, not in the user-supplied columns map.
   if (colNames.includes("version")) {
     throw new Error(`store(${decl.kind}): "version" is reserved — Store manages it`);
   }
@@ -144,7 +119,6 @@ export function createSqliteStore<S extends Snapshot>(decl: StateMachineDecl<S>)
 
   function rowToSnap(row: Record<string, unknown>): S {
     const snap = decl.rowToSnapshot(row);
-    // The store guarantees version is on the row; copy it into the snapshot if rowToSnapshot didn't.
     return { ...snap, version: Number(row.version ?? 0) };
   }
 
@@ -191,7 +165,7 @@ export function createSqliteStore<S extends Snapshot>(decl: StateMachineDecl<S>)
         let sideEffectResult: unknown = null;
         if (c.sideEffect) {
           sideEffectResult = c.sideEffect({
-            prior: finalSnap, // for create, prior == post
+            prior: finalSnap,
             next: finalSnap,
             seq,
             tx: makeTxHandle(db),
@@ -214,7 +188,6 @@ export function createSqliteStore<S extends Snapshot>(decl: StateMachineDecl<S>)
         const eventPayload = t.payload(synthPost);
         const seq = insertEvent(db, t.id, t.eventKind, t.actor, eventPayload, t.at);
         const finalPost: S = { ...synthPost, version: seq };
-        // UPDATE only the fields in `next` plus version.
         const setCols = Object.keys(t.next);
         if (setCols.length === 0) {
           db.run(`UPDATE ${tableQ} SET "version" = ? WHERE id = ?`, [seq, t.id]);
@@ -264,9 +237,7 @@ export function createInMemoryStore<S extends Snapshot>(decl: StateMachineDecl<S
   }
 
   return {
-    migrate() {
-      // No-op for in-memory; rows live in the Map.
-    },
+    migrate() {},
 
     load(_db, id) {
       const snap = rows.get(id);

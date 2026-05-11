@@ -96,15 +96,12 @@ fn mcp_configs_dir() -> PathBuf {
 }
 
 // User-editable global MCP config; merged into per-agent .mcp.json with `chatbridge` force-injected.
-// Non-standard `prompts: []` per server lets our picker know slash-prompts without a JSON-RPC handshake.
 pub fn global_mcp_config_path() -> PathBuf {
     app_data_dir().join("mcp.json")
 }
 
-// Reserved name; user entries with this name are silently dropped from the global config.
 const RESERVED_MCP_SERVER: &str = "chatbridge";
 
-// Best-effort: missing/malformed file returns empty map, never an error.
 pub fn read_global_mcp_servers() -> serde_json::Map<String, serde_json::Value> {
     let path = global_mcp_config_path();
     let raw = match std::fs::read_to_string(&path) {
@@ -138,7 +135,6 @@ fn write_mcp_config_for(agent: &str, room: &str) -> Result<PathBuf, String> {
     let path = dir.join(format!("{agent}.json"));
     let a2a_bin = resolve_a2a_bin()?;
 
-    // `prompts` is our picker-only annotation; not part of the .mcp.json contract claude reads.
     let mut servers = read_global_mcp_servers();
     for (_, server_cfg) in servers.iter_mut() {
         if let Some(obj) = server_cfg.as_object_mut() {
@@ -179,7 +175,6 @@ fn claude_command(agent: &str, room: &str, session_mode: Option<&str>) -> Result
     };
     let claude_path = resolve_claude_path();
     let claude_escaped = claude_path.to_string_lossy().replace('\'', r"'\''");
-    // Pre-allow tools the briefing tells agents to use; otherwise normal chat flow raises permission cards.
     Ok(format!(
         "'{claude_escaped}' {mode_part}--mcp-config '{path_str}' --allowed-tools 'mcp__chatbridge__ack_permission,mcp__chatbridge__post,mcp__chatbridge__post_file' --dangerously-load-development-channels server:chatbridge"
     ))
@@ -273,44 +268,20 @@ fn attach_and_stream(
     Ok(())
 }
 
-// remain-on-exit off is critical: legacy "on" held panes after claude exits and broke tab-close.
-/// Ensure the named tmux session is configured. Returns Ok(true) when an existing
-/// session was found and reconfigured, Ok(false) when no session exists (caller
-/// creates one via `new-session`), Err when a CRITICAL tmux operation fails.
-///
-/// Critical operations (errors propagate):
-///   - `set-option remain-on-exit off` — CLAUDE.md hard rule on Tab/respawn cleanup
-///   - `resize-window -A` + `set-option window-size latest` — load-bearing window-sizing
-///     handshake (pre-v0.6 regressed without it)
-///
-/// Best-effort operations (errors logged, not propagated):
-///   - status bar toggle (cosmetic)
-///   - env-var injection for TERM/COLORTERM (xterm has fallbacks)
-///   - LANG/LC_ALL set-environment (the new-session path sets these via `-e`;
-///     re-applying on existing sessions is best-effort because long-running
-///     sessions inherit from their original `-e`)
-///   - allow-passthrough (only matters if a feature uses passthrough sequences)
-///   - refresh-client (cosmetic redraw)
-///
-/// Replaces the prior `configure_existing_session` whose 10 `let _ = tmux_run(...)`
-/// calls swallowed every error including the CLAUDE.md-load-bearing `remain-on-exit
-/// off` failure mode.
+/// Reconfigure existing tmux session; Ok(false) when none exists. Propagates errors from CRITICAL ops.
 fn ensure_session_configured(agent: &str, lang: &str) -> Result<bool, String> {
     if !session_exists(agent) {
         return Ok(false);
     }
 
-    // CRITICAL — propagate errors
     tmux_run(&["set-option", "-t", agent, "remain-on-exit", "off"])
         .map_err(|e| format!("ensure_session_configured/remain-on-exit: {e}"))?;
-    // CRITICAL ORDER: resize FIRST then `latest`. resize-window -A pins window-size=manual implicitly;
-    // setting `latest` first would be undone by the resize.
+    // resize BEFORE `latest`: resize-window -A pins manual mode that `latest` would undo.
     tmux_run(&["resize-window", "-t", agent, "-A"])
         .map_err(|e| format!("ensure_session_configured/resize-window: {e}"))?;
     tmux_run(&["set-option", "-w", "-t", agent, "window-size", "latest"])
         .map_err(|e| format!("ensure_session_configured/window-size latest: {e}"))?;
 
-    // Best-effort — log + continue
     if let Err(e) = tmux_run(&["set-option", "-t", agent, "status", "off"]) {
         eprintln!("[pty] ensure_session_configured/status-off (best-effort): {e}");
     }
@@ -330,7 +301,6 @@ fn ensure_session_configured(agent: &str, lang: &str) -> Result<bool, String> {
     if let Err(e) = tmux_run(&["set-option", "-t", agent, "allow-passthrough", "on"]) {
         eprintln!("[pty] ensure_session_configured/allow-passthrough (best-effort): {e}");
     }
-    // Reset the window-size override so `latest` takes effect cleanly.
     if let Err(e) = tmux_run(&["set-option", "-w", "-u", "-t", agent, "window-size"]) {
         eprintln!("[pty] ensure_session_configured/window-size-unset (best-effort): {e}");
     }
@@ -341,14 +311,7 @@ fn ensure_session_configured(agent: &str, lang: &str) -> Result<bool, String> {
     Ok(true)
 }
 
-/// Pure: build the `tmux new-session -d -s <agent> -e ... -x 80 -y 24 -c <cwd> <spawn_cmd>`
-/// argv as a vector of owned strings. No I/O, no tmux invocation, no environment reads —
-/// the locale + API-key env decisions live in the caller. Owned-strings shape lets the
-/// caller pass references to args via `iter().map(String::as_str).collect()`.
-///
-/// CRITICAL: `spawn_cmd` is passed as a SINGLE argv element. Splitting it on whitespace
-/// would re-trigger the v0.6 regression where quoted `--mcp-config '/path with spaces'`
-/// got split by /bin/sh's argv-join into multiple tokens.
+/// Pure argv builder. `spawn_cmd` MUST stay a single argv element (quoted-path safety).
 fn build_spawn_argv(
     agent: &str,
     cwd: &str,
@@ -380,7 +343,7 @@ fn build_spawn_argv(
     argv.push("24".to_string());
     argv.push("-c".to_string());
     argv.push(cwd.to_string());
-    argv.push(spawn_cmd.to_string()); // single argv element — preserves quoting in spawn_cmd
+    argv.push(spawn_cmd.to_string());
     argv
 }
 
@@ -455,14 +418,11 @@ pub fn pty_spawn(
     let api_key = resolve_anthropic_api_key();
     let lang = resolve_utf8_locale();
 
-    // Reconfigure-existing-or-create. Errors from CRITICAL tmux operations propagate
-    // (was silently swallowed via `let _ = tmux_run(...)` in the prior shape).
     let existed = ensure_session_configured(&agent, &lang)?;
     if !existed {
         let argv = build_spawn_argv(&agent, &cwd, &lang, api_key.as_deref(), &spawn_cmd);
         let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
         tmux_run(&argv_refs)?;
-        // Best-effort — status bar off is cosmetic.
         if let Err(e) = tmux_run(&["set-option", "-t", &agent, "status", "off"]) {
             eprintln!("[pty] pty_spawn/status-off (best-effort): {e}");
         }
@@ -538,7 +498,7 @@ pub fn pty_spawn_shell(
     {
         let map = state.0.lock().unwrap();
         if map.contains_key(name) {
-            return Ok(()); // already attached
+            return Ok(());
         }
     }
 
@@ -628,20 +588,13 @@ pub fn pane_current_path(agent: &str) -> Result<PathBuf, String> {
     Ok(PathBuf::from(trimmed))
 }
 
-// ─── CaptureTransaction: RAII wrapper for the geometry/pipe-pane state ────────
-//
-// `pty_capture_turn` previously open-coded cleanup at every error-exit branch
-// (~7 sites). RAII via `Drop` makes cleanup automatic on every exit path —
-// success, error, panic. `TmuxRunner` trait lets tests substitute a fake so
-// the Drop logic can be panic-tested without real tmux.
+// CaptureTransaction: RAII for geometry + pipe-pane state used by pty_capture_turn.
 
 /// Tmux command runner — `RealTmux` for production, `FakeTmux` for tests.
 pub trait TmuxRunner: Send + Sync {
     fn run(&self, args: &[&str]) -> Result<String, String>;
 }
 
-/// Production runner — delegates to the file-scope `tmux_run` (uses the resolved
-/// tmux binary + the per-process tmux socket).
 pub struct RealTmux;
 impl TmuxRunner for RealTmux {
     fn run(&self, args: &[&str]) -> Result<String, String> {
@@ -649,15 +602,8 @@ impl TmuxRunner for RealTmux {
     }
 }
 
-/// RAII transaction wrapping the two pieces of tmux state `pty_capture_turn`
-/// mutates: window-size geometry (manual + resize 240×100) and pipe-pane on/off.
-/// `Drop` restores both in canonical order regardless of how the scope exits
-/// (success, `?` propagation, panic unwind).
-///
-/// Cleanup order — pipe-pane DISABLE before geometry-restore. Disabling pipe
-/// first stops the capture stream from recording the redraw bytes that the
-/// geometry-restore triggers; the .log file ends at the last in-stream byte
-/// rather than carrying trailing resize noise.
+/// RAII for window-size geometry + pipe-pane. Drop disables pipe BEFORE restoring geometry
+/// so the redraw bytes don't pollute the capture file.
 pub struct CaptureTransaction<'a> {
     agent: &'a str,
     runner: &'a dyn TmuxRunner,
@@ -670,13 +616,11 @@ impl<'a> CaptureTransaction<'a> {
         Self { agent, runner, pipe_on: false, geometry_set: false }
     }
 
-    /// Set window-size=manual + resize to CAPTURE_COLS × CAPTURE_ROWS.
-    /// On success, the geometry-restore step runs in Drop.
     pub fn set_geometry(&mut self, cols: u16, rows: u16) -> Result<(), String> {
         self.runner
             .run(&["set-option", "-w", "-t", self.agent, "window-size", "manual"])
             .map_err(|e| format!("set window-size manual: {e}"))?;
-        self.geometry_set = true; // mark BEFORE resize so a failed resize still gets cleaned up
+        self.geometry_set = true;
         let cols_s = cols.to_string();
         let rows_s = rows.to_string();
         self.runner
@@ -685,10 +629,7 @@ impl<'a> CaptureTransaction<'a> {
         Ok(())
     }
 
-    /// Turn pipe-pane on, redirecting output to `cat >> <log_path>`.
-    /// On success, the pipe-pane-disable step runs in Drop.
     pub fn enable_pipe(&mut self, log_path: &std::path::Path) -> Result<(), String> {
-        // Single-quote the path; escape any single quotes inside it.
         let pipe_target = format!(
             "cat >> '{}'",
             log_path.to_string_lossy().replace('\'', r"'\''")
@@ -710,8 +651,7 @@ impl<'a> Drop for CaptureTransaction<'a> {
             }
         }
         if self.geometry_set {
-            // CRITICAL ORDER: resize -A FIRST then `latest`; resize-window pins
-            // window-size=manual implicitly; setting `latest` first would be undone.
+            // resize -A BEFORE `latest`; `latest` first would be undone by the resize.
             if let Err(e) = self.runner.run(&["resize-window", "-t", self.agent, "-A"]) {
                 eprintln!("[capture] Drop/resize -A (best-effort): {e}");
             }
@@ -847,8 +787,6 @@ pub fn pty_capture_turn(
     std::fs::create_dir_all(&cap_dir)
         .map_err(|e| format!("mkdir {}: {e}", cap_dir.display()))?;
 
-    // RAII: every `?` below + every implicit drop + every panic unwind triggers
-    // cleanup automatically. No manual cleanup-on-error branches needed.
     let real_tmux = RealTmux;
     let mut tx = CaptureTransaction::new(&agent, &real_tmux);
 
@@ -861,10 +799,8 @@ pub fn pty_capture_turn(
     std::fs::write(&log_path, b"")
         .map_err(|e| format!("touch {}: {e}", log_path.display()))?;
 
-    // pipe-pane BEFORE inject so we don't miss leading bytes.
     tx.enable_pipe(&log_path)?;
 
-    // Inject the input bytes into the agent's PTY.
     {
         let handle_arc = {
             let map = state.0.lock().unwrap();
@@ -932,7 +868,6 @@ pub fn pty_capture_turn(
     }
     let final_status = status.unwrap_or("timeout");
 
-    // CaptureTransaction `tx` drops at end of scope — pipe-pane off + geometry restored.
     // Timeouts retained for forensics; only prune on success.
     if final_status != "timeout" {
         prune_captures(&cap_dir, CAPTURE_KEEP_RECENT);
@@ -944,7 +879,7 @@ pub fn pty_capture_turn(
         end_ms: epoch_ms(),
         status: final_status.to_string(),
     };
-    drop(tx); // explicit, to make the cleanup-before-return ordering visible to readers
+    drop(tx);
     Ok(result)
 }
 
@@ -954,7 +889,6 @@ pub fn pty_heal_geometry(agent: String) -> Result<(), String> {
     if !valid_agent_name(&agent) {
         return Err(format!("invalid agent: {agent}"));
     }
-    // CRITICAL ORDER: resize FIRST then `latest`; resize-window pins window-size=manual implicitly.
     let _ = tmux_run(&["resize-window", "-t", &agent, "-A"]);
     let _ = tmux_run(&["set-option", "-w", "-u", "-t", &agent, "window-size"]);
     let _ = tmux_run(&["set-option", "-w", "-t", &agent, "window-size", "latest"]);
@@ -968,7 +902,6 @@ pub fn pty_tap_read(agent: String, duration_ms: Option<u32>) -> Result<String, S
     if !valid_agent_name(&agent) {
         return Err(format!("invalid agent: {agent}"));
     }
-    // Sleep first so claude has time to redraw the footer after the preceding keypress (e.g. Shift+Tab).
     let duration = duration_ms.unwrap_or(250).clamp(0, 2000) as u64;
     if duration > 0 {
         std::thread::sleep(std::time::Duration::from_millis(duration));
@@ -1070,19 +1003,13 @@ mod capture_tests {
 
 #[cfg(test)]
 mod capture_transaction_tests {
-    //! Tests for `CaptureTransaction` Drop behavior. Uses a fake `TmuxRunner` that
-    //! records calls in a `RefCell<Vec<...>>` — no real tmux required.
-
     use super::{CaptureTransaction, TmuxRunner};
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::path::PathBuf;
     use std::sync::Mutex;
 
-    /// Records every `run` call. `Mutex` (not `RefCell`) because TmuxRunner: Send + Sync.
     struct FakeTmux {
         calls: Mutex<Vec<Vec<String>>>,
-        /// If `Some`, the Nth call (1-indexed) returns Err with this message.
-        /// Used to test that Drop is panic-safe when a cleanup arm itself fails.
         fail_on_call: Option<(usize, String)>,
     }
     impl FakeTmux {

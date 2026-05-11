@@ -1,17 +1,4 @@
 // Handoff kind — pending → accepted | declined | cancelled | expired. TTL sweep + nutshell coupling.
-// Migrated to LedgerEntity in architecture-cycle-2a — see ADR-0004.
-//
-// The accept verb uses applyWithSideEffect when the handoff has task prefix
-// "[nutshell]" + valid context.patch + recipient is human — the nutshell row
-// upsert lands in the same db.transaction as the handoff event + handoffs UPDATE
-// (per CLAUDE.md "exactly one event + one derived-table update in one transaction"
-// extended to cover the handoff/nutshell coupling).
-//
-// expireHandoff and findExpirable keep inline SQL for now — they're called from
-// hub.ts's TTL sweep loop (no HubCapabilities cap available there). They preserve
-// the atomic invariant manually (insertEvent + UPDATE in one db.transaction with
-// version=seq written to the version column). Folding them into a kind-internal
-// admin path is §4 scope.
 
 import type { Database } from "bun:sqlite";
 import type {
@@ -323,13 +310,7 @@ const cancelHandoffVerb: VerbDecl<HandoffSnapshot, CancelInput> = {
   scope: (post) => ({ kind: "to-agents", agents: [post.from_agent, post.to_agent] }),
 };
 
-// ---------- Standalone helpers (TTL sweep — see comment at file top) ----------
-
-/**
- * Broadcast a handoff state-change to its sender + recipient. Used by hub.ts's
- * TTL-sweep loop where there's no `cap` available (the verb-driven path uses
- * `cap.sse.emit` via `entity.apply`'s scope resolver instead).
- */
+// Used by hub.ts's TTL-sweep loop where no `cap` is available.
 export function broadcastHandoffSnapshot(
   fanoutSend: (entry: Entry, scope: import("../core/types").Scope) => void,
   snapshot: HandoffSnapshot,
@@ -469,7 +450,6 @@ export function createHandoffKind(db: Database): KindModule {
           );
         }
 
-        // Pre-load to detect "[nutshell]" task → use applyWithSideEffect for atomic nutshell patch.
         const prior = entity.load(id);
         const wantsNutshell =
           prior !== null &&
@@ -484,7 +464,6 @@ export function createHandoffKind(db: Database): KindModule {
           const ctx = prior.context as { patch?: unknown; room?: unknown };
           if (typeof ctx.patch === "string") nutshellPatch = ctx.patch;
           if (typeof ctx.room === "string" && validRoomLabel(ctx.room)) {
-            // Explicit room wins; non-human cross-room edits drop the patch.
             if (ctx.room === prior.room || prior.from_agent === cap.config.humanName) {
               nutshellRoom = ctx.room;
             } else {
@@ -502,10 +481,7 @@ export function createHandoffKind(db: Database): KindModule {
               { by, comment: body.comment, humanName: cap.config.humanName },
               by,
               cap,
-              ({ tx: _tx }) => {
-                // writeNutshellInTx uses cap.db directly — same db, same open transaction.
-                return writeNutshellInTx(cap.db, nutshellRoom, nutshellPatch!, fromAgent);
-              },
+              ({ tx: _tx }) => writeNutshellInTx(cap.db, nutshellRoom, nutshellPatch!, fromAgent),
             );
             const nutshell = (r.sideEffectResult ?? null) as NutshellSnapshot | null;
             if (r.emitted && nutshell) {
@@ -626,8 +602,6 @@ export function createHandoffKind(db: Database): KindModule {
           return Response.json({ error: "invalid limit" }, { status: 400 });
         }
 
-        // Symmetric `for` filter (sender OR recipient) — Store's index covers to_agent;
-        // the from_agent direction is filtered in TS after the status-bounded scan.
         const statuses: HandoffStatus[] = statusParam === "all"
           ? ["pending", "accepted", "declined", "cancelled", "expired"]
           : [statusParam];
@@ -647,7 +621,6 @@ export function createHandoffKind(db: Database): KindModule {
   ];
 
   function pendingFor(agent: AgentCtx, _cap: HubCapabilities): Entry[] {
-    // Symmetric: sender + recipient both see pending handoffs they're party to.
     return entity
       .listByStatus({ status: "pending", limit: 1000 })
       .filter((s) => s.from_agent === agent.name || s.to_agent === agent.name)
