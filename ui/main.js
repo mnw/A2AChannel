@@ -25,9 +25,9 @@ async function loadPending(path, toEvent, renderFn) {
   }
 }
 
-const loadPendingHandoffs    = () => loadPending('/handoffs', (s) => ({ handoff_id: s.id, version: s.version, snapshot: s, replay: true }), renderHandoffCard);
-const loadPendingInterrupts  = () => loadPending('/interrupts', (s) => ({ interrupt_id: s.id, version: s.version, snapshot: s, replay: true }), renderInterruptCard);
-const loadPendingPermissions = () => loadPending('/permissions', (s) => ({ permission_id: s.id, kind: 'permission.new', version: s.version, snapshot: s, replay: true }), renderPermissionCard);
+// Replay-on-connect for every registered Kind. Adapters self-register from
+// ui/kinds/<kind>.js → KindCardRenderer; main.js doesn't enumerate them.
+const loadAllPending = () => KindCardRenderer.loadAllPending();
 
 async function loadNutshell(room) {
   if (!room || room === ROOM_ALL) return;
@@ -64,18 +64,9 @@ function handleEvent(data) {
     lastSeenId = data.id;
     localStorage.setItem('a2achannel_last_event_id', String(lastSeenId));
   }
-  if (typeof data.kind === 'string' && data.kind.startsWith('handoff.')) {
-    renderHandoffCard(data);
-    return;
-  }
-  if (typeof data.kind === 'string' && data.kind.startsWith('interrupt.')) {
-    renderInterruptCard(data);
-    return;
-  }
-  if (typeof data.kind === 'string' && data.kind.startsWith('permission.')) {
-    renderPermissionCard(data);
-    return;
-  }
+  // Registry dispatch — every registered Kind matches by prefix. Returns true if
+  // a renderer handled the event, false otherwise (fall through to addMessage).
+  if (typeof data.kind === 'string' && KindCardRenderer.dispatch(data.kind, data)) return;
   addMessage(data);
 }
 
@@ -180,9 +171,7 @@ async function bootstrap() {
         loadNutshell(r);
       }
     }
-    await loadPendingHandoffs();
-    await loadPendingInterrupts();
-    await loadPendingPermissions();
+    await loadAllPending();
     connect();
     renderNutshell();
   } catch (e) {
@@ -262,8 +251,7 @@ if (reloadBtn) {
       nutshellByRoom.clear();
       connect();
       if (SELECTED_ROOM !== ROOM_ALL) await loadNutshell(SELECTED_ROOM);
-      await loadPendingHandoffs();
-      await loadPendingInterrupts();
+      await loadAllPending();
       addMessage({
         from: 'system',
         to: HUMAN_NAME,

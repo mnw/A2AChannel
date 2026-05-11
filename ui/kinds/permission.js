@@ -147,3 +147,10 @@ async function handlePermissionDismiss(id) {
     addMessage({ from: 'system', to: HUMAN_NAME, text: `Permission dismiss error: ${e?.message ?? e}`, ts: '' });
   }
 }
+
+KindCardRenderer.register({
+  prefix: 'permission',
+  loadPath: '/permissions',
+  toLoadEventShape: (s) => ({ permission_id: s.id, kind: 'permission.new', version: s.version, snapshot: s, replay: true }),
+  render: renderPermissionCard,
+});

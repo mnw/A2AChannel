@@ -88,3 +88,10 @@ async function handleInterruptAction(id) {
     addMessage({ from: 'system', to: HUMAN_NAME, text: `Interrupt ack error: ${e?.message ?? e}`, ts: '' });
   }
 }
+
+KindCardRenderer.register({
+  prefix: 'interrupt',
+  loadPath: '/interrupts',
+  toLoadEventShape: (s) => ({ interrupt_id: s.id, version: s.version, snapshot: s, replay: true }),
+  render: renderInterruptCard,
+});

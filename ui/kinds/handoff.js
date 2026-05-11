@@ -145,3 +145,12 @@ async function handleHandoffAction(id, action) {
     addMessage({ from: 'system', to: HUMAN_NAME, text: `Handoff ${action} error: ${e?.message ?? e}`, ts: '' });
   }
 }
+
+// Self-register with the KindCardRenderer registry — main.js dispatches via the
+// registry instead of hardcoded per-Kind branches.
+KindCardRenderer.register({
+  prefix: 'handoff',
+  loadPath: '/handoffs',
+  toLoadEventShape: (s) => ({ handoff_id: s.id, version: s.version, snapshot: s, replay: true }),
+  render: renderHandoffCard,
+});
