@@ -274,21 +274,114 @@ fn attach_and_stream(
 }
 
 // remain-on-exit off is critical: legacy "on" held panes after claude exits and broke tab-close.
-fn configure_existing_session(name: &str, lang: &str) {
-    let _ = tmux_run(&["set-option", "-t", name, "remain-on-exit", "off"]);
-    let _ = tmux_run(&["set-option", "-t", name, "status", "off"]);
-    let _ = tmux_run(&["set-environment", "-t", name, "TERM", "xterm-256color"]);
-    let _ = tmux_run(&["set-environment", "-t", name, "COLORTERM", "truecolor"]);
-    let _ = tmux_run(&["set-environment", "-t", name, "LANG", lang]);
-    let _ = tmux_run(&["set-environment", "-t", name, "LC_ALL", lang]);
-    // Do NOT enable extended-keys/CSI-u: xterm.js doesn't speak it, breaks Shift+Enter for claude.
-    let _ = tmux_run(&["set-option", "-t", name, "allow-passthrough", "on"]);
+/// Ensure the named tmux session is configured. Returns Ok(true) when an existing
+/// session was found and reconfigured, Ok(false) when no session exists (caller
+/// creates one via `new-session`), Err when a CRITICAL tmux operation fails.
+///
+/// Critical operations (errors propagate):
+///   - `set-option remain-on-exit off` — CLAUDE.md hard rule on Tab/respawn cleanup
+///   - `resize-window -A` + `set-option window-size latest` — load-bearing window-sizing
+///     handshake (pre-v0.6 regressed without it)
+///
+/// Best-effort operations (errors logged, not propagated):
+///   - status bar toggle (cosmetic)
+///   - env-var injection for TERM/COLORTERM (xterm has fallbacks)
+///   - LANG/LC_ALL set-environment (the new-session path sets these via `-e`;
+///     re-applying on existing sessions is best-effort because long-running
+///     sessions inherit from their original `-e`)
+///   - allow-passthrough (only matters if a feature uses passthrough sequences)
+///   - refresh-client (cosmetic redraw)
+///
+/// Replaces the prior `configure_existing_session` whose 10 `let _ = tmux_run(...)`
+/// calls swallowed every error including the CLAUDE.md-load-bearing `remain-on-exit
+/// off` failure mode.
+fn ensure_session_configured(agent: &str, lang: &str) -> Result<bool, String> {
+    if !session_exists(agent) {
+        return Ok(false);
+    }
+
+    // CRITICAL — propagate errors
+    tmux_run(&["set-option", "-t", agent, "remain-on-exit", "off"])
+        .map_err(|e| format!("ensure_session_configured/remain-on-exit: {e}"))?;
     // CRITICAL ORDER: resize FIRST then `latest`. resize-window -A pins window-size=manual implicitly;
     // setting `latest` first would be undone by the resize.
-    let _ = tmux_run(&["resize-window", "-t", name, "-A"]);
-    let _ = tmux_run(&["set-option", "-w", "-u", "-t", name, "window-size"]);
-    let _ = tmux_run(&["set-option", "-w", "-t", name, "window-size", "latest"]);
-    let _ = tmux_run(&["refresh-client", "-t", name, "-S"]);
+    tmux_run(&["resize-window", "-t", agent, "-A"])
+        .map_err(|e| format!("ensure_session_configured/resize-window: {e}"))?;
+    tmux_run(&["set-option", "-w", "-t", agent, "window-size", "latest"])
+        .map_err(|e| format!("ensure_session_configured/window-size latest: {e}"))?;
+
+    // Best-effort — log + continue
+    if let Err(e) = tmux_run(&["set-option", "-t", agent, "status", "off"]) {
+        eprintln!("[pty] ensure_session_configured/status-off (best-effort): {e}");
+    }
+    if let Err(e) = tmux_run(&["set-environment", "-t", agent, "TERM", "xterm-256color"]) {
+        eprintln!("[pty] ensure_session_configured/TERM (best-effort): {e}");
+    }
+    if let Err(e) = tmux_run(&["set-environment", "-t", agent, "COLORTERM", "truecolor"]) {
+        eprintln!("[pty] ensure_session_configured/COLORTERM (best-effort): {e}");
+    }
+    if let Err(e) = tmux_run(&["set-environment", "-t", agent, "LANG", lang]) {
+        eprintln!("[pty] ensure_session_configured/LANG (best-effort): {e}");
+    }
+    if let Err(e) = tmux_run(&["set-environment", "-t", agent, "LC_ALL", lang]) {
+        eprintln!("[pty] ensure_session_configured/LC_ALL (best-effort): {e}");
+    }
+    // Do NOT enable extended-keys/CSI-u: xterm.js doesn't speak it, breaks Shift+Enter for claude.
+    if let Err(e) = tmux_run(&["set-option", "-t", agent, "allow-passthrough", "on"]) {
+        eprintln!("[pty] ensure_session_configured/allow-passthrough (best-effort): {e}");
+    }
+    // Reset the window-size override so `latest` takes effect cleanly.
+    if let Err(e) = tmux_run(&["set-option", "-w", "-u", "-t", agent, "window-size"]) {
+        eprintln!("[pty] ensure_session_configured/window-size-unset (best-effort): {e}");
+    }
+    if let Err(e) = tmux_run(&["refresh-client", "-t", agent, "-S"]) {
+        eprintln!("[pty] ensure_session_configured/refresh-client (best-effort): {e}");
+    }
+
+    Ok(true)
+}
+
+/// Pure: build the `tmux new-session -d -s <agent> -e ... -x 80 -y 24 -c <cwd> <spawn_cmd>`
+/// argv as a vector of owned strings. No I/O, no tmux invocation, no environment reads —
+/// the locale + API-key env decisions live in the caller. Owned-strings shape lets the
+/// caller pass references to args via `iter().map(String::as_str).collect()`.
+///
+/// CRITICAL: `spawn_cmd` is passed as a SINGLE argv element. Splitting it on whitespace
+/// would re-trigger the v0.6 regression where quoted `--mcp-config '/path with spaces'`
+/// got split by /bin/sh's argv-join into multiple tokens.
+fn build_spawn_argv(
+    agent: &str,
+    cwd: &str,
+    lang: &str,
+    api_key: Option<&str>,
+    spawn_cmd: &str,
+) -> Vec<String> {
+    let mut argv: Vec<String> = Vec::with_capacity(20);
+    argv.push("new-session".to_string());
+    argv.push("-d".to_string());
+    argv.push("-s".to_string());
+    argv.push(agent.to_string());
+    argv.push("-e".to_string());
+    argv.push("TERM=xterm-256color".to_string());
+    argv.push("-e".to_string());
+    argv.push("COLORTERM=truecolor".to_string());
+    argv.push("-e".to_string());
+    argv.push(format!("LANG={lang}"));
+    argv.push("-e".to_string());
+    argv.push(format!("LC_ALL={lang}"));
+    if let Some(key) = api_key {
+        argv.push("-e".to_string());
+        argv.push(format!("ANTHROPIC_API_KEY={key}"));
+    }
+    // -x 80 -y 24 load-bearing: without dims tmux probes TIOCGWINSZ and we have no controlling TTY.
+    argv.push("-x".to_string());
+    argv.push("80".to_string());
+    argv.push("-y".to_string());
+    argv.push("24".to_string());
+    argv.push("-c".to_string());
+    argv.push(cwd.to_string());
+    argv.push(spawn_cmd.to_string()); // single argv element — preserves quoting in spawn_cmd
+    argv
 }
 
 // launchd inherits "C" locale; claude downgrades capability detection to ASCII without UTF-8.
@@ -360,39 +453,19 @@ pub fn pty_spawn(
 
     let spawn_cmd = claude_command(&agent, &resolved_room, session_mode.as_deref())?;
     let api_key = resolve_anthropic_api_key();
-
     let lang = resolve_utf8_locale();
-    let lang_env = format!("LANG={lang}");
-    let lc_all_env = format!("LC_ALL={lang}");
 
-    if session_exists(&agent) {
-        configure_existing_session(&agent, &lang);
-    } else {
-        // -x 80 -y 24 load-bearing: without dims tmux probes TIOCGWINSZ and we have no controlling TTY.
-        let api_env = api_key
-            .as_ref()
-            .map(|k| format!("ANTHROPIC_API_KEY={k}"));
-        let mut args: Vec<&str> = vec!["new-session", "-d", "-s", &agent];
-        args.push("-e");
-        args.push("TERM=xterm-256color");
-        args.push("-e");
-        args.push("COLORTERM=truecolor");
-        args.push("-e");
-        args.push(&lang_env);
-        args.push("-e");
-        args.push(&lc_all_env);
-        if let Some(ref env) = api_env {
-            args.push("-e");
-            args.push(env);
+    // Reconfigure-existing-or-create. Errors from CRITICAL tmux operations propagate
+    // (was silently swallowed via `let _ = tmux_run(...)` in the prior shape).
+    let existed = ensure_session_configured(&agent, &lang)?;
+    if !existed {
+        let argv = build_spawn_argv(&agent, &cwd, &lang, api_key.as_deref(), &spawn_cmd);
+        let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+        tmux_run(&argv_refs)?;
+        // Best-effort — status bar off is cosmetic.
+        if let Err(e) = tmux_run(&["set-option", "-t", &agent, "status", "off"]) {
+            eprintln!("[pty] pty_spawn/status-off (best-effort): {e}");
         }
-        args.extend_from_slice(&[
-            "-x", "80",
-            "-y", "24",
-            "-c", &cwd,
-            &spawn_cmd,
-        ]);
-        tmux_run(&args)?;
-        let _ = tmux_run(&["set-option", "-t", &agent, "status", "off"]);
     }
 
     attach_and_stream(app, state.0.clone(), &agent, &lang)
@@ -481,8 +554,8 @@ pub fn pty_spawn_shell(
     // .zshrc checks $A2ACHANNEL_SHELL to scope A2AChannel-only theming.
     let a2a_marker_env = "A2ACHANNEL_SHELL=1";
 
-    if session_exists(name) {
-        configure_existing_session(name, &lang);
+    let existed_shell = ensure_session_configured(name, &lang)?;
+    if existed_shell {
         // allow-passthrough lets yazi's DA1/DSR probes reach xterm.js (silences "response timeout").
         let _ = tmux_run(&["set-option", "-t", name, "allow-passthrough", "on"]);
         let _ = tmux_run(&["set-environment", "-t", name, "A2ACHANNEL_SHELL", "1"]);
@@ -930,5 +1003,76 @@ mod capture_tests {
         let remaining: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
         assert_eq!(remaining.len(), 2);
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod spawn_argv_tests {
+    //! Pure-function tests for `build_spawn_argv`. No tmux required.
+
+    use super::build_spawn_argv;
+
+    #[test]
+    fn argv_starts_with_new_session_form() {
+        let argv = build_spawn_argv("alice", "/tmp", "en_US.UTF-8", None, "claude --resume");
+        assert_eq!(&argv[0..4], &["new-session", "-d", "-s", "alice"]);
+    }
+
+    #[test]
+    fn argv_includes_terminal_env_vars() {
+        let argv = build_spawn_argv("alice", "/tmp", "en_US.UTF-8", None, "claude");
+        let joined = argv.join(" ");
+        assert!(joined.contains("TERM=xterm-256color"), "missing TERM env: {joined}");
+        assert!(joined.contains("COLORTERM=truecolor"), "missing COLORTERM env: {joined}");
+        assert!(joined.contains("LANG=en_US.UTF-8"), "missing LANG env: {joined}");
+        assert!(joined.contains("LC_ALL=en_US.UTF-8"), "missing LC_ALL env: {joined}");
+    }
+
+    #[test]
+    fn argv_includes_anthropic_api_key_when_provided() {
+        let argv = build_spawn_argv("alice", "/tmp", "en_US.UTF-8", Some("sk-test-123"), "claude");
+        let joined = argv.join(" ");
+        assert!(joined.contains("ANTHROPIC_API_KEY=sk-test-123"), "missing API key env: {joined}");
+    }
+
+    #[test]
+    fn argv_omits_anthropic_api_key_when_none() {
+        let argv = build_spawn_argv("alice", "/tmp", "en_US.UTF-8", None, "claude");
+        let joined = argv.join(" ");
+        assert!(!joined.contains("ANTHROPIC_API_KEY"), "should omit API key env when None: {joined}");
+    }
+
+    #[test]
+    fn argv_includes_xy_dimensions_and_cwd() {
+        let argv = build_spawn_argv("alice", "/some/cwd", "en_US.UTF-8", None, "claude");
+        // -x 80 -y 24 is load-bearing: tmux probes TIOCGWINSZ without these dims.
+        assert!(argv.iter().any(|s| s == "-x"));
+        assert!(argv.iter().any(|s| s == "80"));
+        assert!(argv.iter().any(|s| s == "-y"));
+        assert!(argv.iter().any(|s| s == "24"));
+        assert!(argv.iter().any(|s| s == "/some/cwd"));
+    }
+
+    #[test]
+    fn argv_passes_spawn_cmd_as_single_element() {
+        // The v0.6 regression: a spawn cmd containing quoted paths-with-spaces was being
+        // tokenized by /bin/sh's argv-join. The fix is to pass spawn_cmd as a SINGLE
+        // tmux argv element so tmux sees it as one shell-quoted command-string argument.
+        let spawn_cmd = r#"claude --mcp-config '/Users/me/Some Path/mcp.json' --dangerously-load-development-channels server:chatbridge"#;
+        let argv = build_spawn_argv("alice", "/tmp", "en_US.UTF-8", None, spawn_cmd);
+        let last = argv.last().unwrap();
+        // The spawn_cmd appears verbatim as a SINGLE argv element — quotes, spaces, and all.
+        assert_eq!(last, spawn_cmd);
+        // Sanity: no element of argv splits the spawn_cmd into multiple tokens.
+        let occurrences = argv.iter().filter(|s| s.contains("--mcp-config")).count();
+        assert_eq!(occurrences, 1, "spawn_cmd appears multiple times — got split: {argv:?}");
+    }
+
+    #[test]
+    fn argv_cwd_with_spaces_preserved_as_single_element() {
+        let argv = build_spawn_argv("alice", "/Users/me/Path With Spaces", "en_US.UTF-8", None, "claude");
+        // The -c flag's value MUST be one element; -c then its arg.
+        let cwd_idx = argv.iter().position(|s| s == "-c").expect("missing -c");
+        assert_eq!(argv[cwd_idx + 1], "/Users/me/Path With Spaces");
     }
 }
