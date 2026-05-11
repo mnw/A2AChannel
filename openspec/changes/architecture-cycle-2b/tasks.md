@@ -1,3 +1,49 @@
+# Implementation status (2026-05-11)
+
+The cycle was implemented opportunistically across 5 commits (`2eacc1f`, `0392a2d`,
+`2ad99a5`, `bfe8e87`, `6c741f8`, `86cacff`, `2206162`) ahead of the originally-planned
+gated rollout. Not every task in this file maps 1:1 to what landed — the gate rule
+from design.md "Closing" section was applied: load-bearing items shipped; non-
+load-bearing items (full ES-module migration, audit-style unit tests requiring
+ES-module extraction, Tab/XtermBinder split) were deferred.
+
+**Shipped (commits on `main` after 2a merge + on `architecture-cycle-2b`):**
+- §2 CSS consolidation (5 sources → `ui/styles/kinds.css`; `[data-kind]` selectors;
+  rooms.js [data-kind] migration; contract test) — `2eacc1f` + `0392a2d`
+- §3 Composer SendIntent discriminated union + 4 per-mode adapters (chat / slash /
+  shift-tab / interrupt) — `2ad99a5`
+- §5 pty_spawn → `build_spawn_argv` + `ensure_session_configured`; silent-failure
+  let-_-tmux_run replaced with Result propagation; 7 pure-function unit tests — `bfe8e87`
+- §6 CaptureTransaction RAII + Drop cleanup; TmuxRunner trait + FakeTmux test double;
+  7 unit tests inc. panic-path — `86cacff`
+- §1 KindCardRenderer registry (dispatch + loadAllPending self-registering pattern;
+  contract test) — `6c741f8`
+- ADRs 0007 (CaptureTransaction), 0008 (KindRenderer registry), 0009 (Composer
+  SendIntent), 0010 (pty_spawn extractions) — `2206162` + inline with implementation commits
+
+**Deferred per cycle 2b "Closing" discipline rule** (filed in
+`docs/architecture/known-friction.md` or left as-is):
+- §1 full ES-module migration (createCtx factory + per-Kind createXRenderer(ctx)
+  factories): all-or-nothing across ~12 UI files; not load-bearing; deferred.
+- §1 per-placement dismiss matrix (append → keep + terminal-class; pin → move-inline;
+  stack → remove): gated on ES-module migration; deferred.
+- §1.9 `tests/unit/kind-renderer.test.ts` + §3.6/3.7 `composer-*.test.ts`: gated on
+  ES-module migration for importability; deferred.
+- §4 Tab / XtermBinder / PtyEvents split: explicitly gated by smoke-checklist;
+  needs user keyboard + eyeball verification (theme refit, reconnect storm) which
+  auto-mode cannot drive. Deferred to a separate verified session if/when terminal
+  friction surfaces.
+- §5.6 `pty_spawn` orchestrator integration test: needs Tauri-IPC test-double infra
+  not in place (`tests/integration/pty-plumbing.test.ts` tests tmux primitives
+  directly). Per-helper coverage (7 `spawn_argv_tests` + existing `pty-plumbing.test.ts`
+  scenarios) carries forward. Deferred.
+
+**Original task list retained below for spec-archival completeness.** Do not
+treat unchecked items as outstanding work — see status block above for the
+actual disposition.
+
+---
+
 ## 0. Pre-grilling + smoke-checklist authoring
 
 - [ ] 0.1 Confirm `architecture-cycle-2a` has been merged to main AND soaked for at least one week with the long-running test agents (Drupal/Copernicus/Django/EIFE) before starting this cycle. Re-grill 2b's `KindRenderer/KindCard` contract against THEN-CURRENT 2a code (not against 2a's design at split-time) — see design.md Risks "2a's structural completion is a substantive gate."
