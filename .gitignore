@@ -34,7 +34,12 @@ src-tauri/binaries/*
 # AI assistant local config / memory (not part of the product)
 CLAUDE.md
 .claude/
+.agents/
 .cursor/
 .cursorrules
 .github/copilot-instructions.md
 dist/
+skills-lock.json
+
+# Generated icon backups
+src-tauri/icons/*.bak
