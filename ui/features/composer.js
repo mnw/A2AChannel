@@ -1,4 +1,18 @@
-// composer.js — input wiring: send (chat + interrupt + slash), autoGrow, key handling.
+// composer.js — input wiring: send (chat + interrupt + slash + shift-tab),
+// autoGrow, key handling.
+//
+// Send mode is an explicit discriminated value (SendIntent), not an emergent
+// property of DOM state. `detectIntent` is a pure function of an input
+// snapshot; `send()` dispatches once on `intent.mode`. The four modes:
+//
+//   { mode: "slash",     parsed: {slashCommand, target, args}, room }     → pty_write
+//   { mode: "shift-tab", parsed: {target}, room }                          → pty_write \x1B[Z
+//   { mode: "interrupt", toAgent, text, hasImage }                         → POST /interrupts
+//   { mode: "chat",      text, image, targetMode, room, mentions }         → POST /send
+//
+// `detectIntent` MUST NOT touch the DOM — no `sendBtn.disabled`, no
+// `input.value` mutation, no `slashPickerOpen/Close`. Callers (send,
+// _refreshSlashState) drive the side effects from the discriminator.
 
 const slashErrorEl = document.getElementById('slash-error');
 
@@ -13,30 +27,103 @@ function _hideSlashError() {
   slashErrorEl.hidden = true;
 }
 
+// ─── SendIntent: pure-function mode detection ─────────────────────────
+
+/**
+ * Capture the current composer input state as a plain object. The output is the
+ * sole input to `detectIntent` — making detectIntent testable without mounting
+ * the DOM, and ensuring intent is decided from a single snapshot rather than
+ * re-read across the send flow.
+ */
+function captureComposerSnapshot() {
+  return {
+    text: input.value,
+    image: pendingImageUrl,
+    room: SELECTED_ROOM,
+    targetMode: targetEl.value || 'auto',
+  };
+}
+
+/**
+ * Pure function: returns a discriminated SendIntent from a snapshot. Each
+ * returned shape carries everything the matching dispatch branch needs;
+ * `validationError` is set when the input is malformed for the detected mode
+ * (caller surfaces the error message; does not flip modes).
+ *
+ *   { mode: "slash", room, parsed?, validationError? }
+ *   { mode: "shift-tab", room, parsed?, validationError? }
+ *   { mode: "interrupt", toAgent, text, hasImage, validationError? }
+ *   { mode: "chat", text, image, targetMode, room, mentions, validationError? }
+ */
+function detectIntent(snap) {
+  const { text, image, room, targetMode } = snap;
+
+  // Slash mode — `/<command> @<target> <args>`
+  if (isSlashMode(text)) {
+    if (room === ROOM_ALL) {
+      return { mode: 'slash', room, validationError: 'no-room' };
+    }
+    const parsed = parseSlashMessage(text);
+    if (!parsed.slashCommand) return { mode: 'slash', room, validationError: 'incomplete' };
+    if (!parsed.target) return { mode: 'slash', room, validationError: 'no-target' };
+    return { mode: 'slash', room, parsed };
+  }
+
+  // Shift+Tab mode — `\<target>` (compose form for the \x1B[Z send key)
+  if (isShiftTabMode(text)) {
+    if (room === ROOM_ALL) {
+      return { mode: 'shift-tab', room, validationError: 'no-room' };
+    }
+    const parsed = parseShiftTab(text);
+    if (!parsed.target) return { mode: 'shift-tab', room, validationError: 'no-target' };
+    return { mode: 'shift-tab', room, parsed };
+  }
+
+  // Interrupt mode — target selector prefixed with `!`
+  if (targetMode.startsWith('!')) {
+    const toAgent = targetMode.slice(1);
+    if (!text) return { mode: 'interrupt', toAgent, text: '', hasImage: Boolean(image), validationError: 'no-text' };
+    if (text.length > 500) {
+      return { mode: 'interrupt', toAgent, text, hasImage: Boolean(image), validationError: 'too-long' };
+    }
+    return { mode: 'interrupt', toAgent, text, hasImage: Boolean(image) };
+  }
+
+  // Chat mode — default
+  if (!text && !image) return { mode: 'chat', text: '', image: null, targetMode, room, mentions: [], validationError: 'empty' };
+  const mentions = parseMentions(text);
+  return { mode: 'chat', text, image, targetMode, room, mentions };
+}
+
+// ─── _refreshSlashState — DOM-mutation driver derived from detectIntent ───
+// Listens to `input` events, updates sendBtn.disabled + slash error + slash picker
+// state. Drives side effects from the discriminator — single source of truth.
+
 function _refreshSlashState() {
-  const inSlash = isSlashMode(input.value);
-  if (!inSlash) {
+  const intent = detectIntent(captureComposerSnapshot());
+
+  if (intent.mode !== 'slash') {
     if (slashPickerActive()) slashPickerClose();
     _hideSlashError();
     sendBtn.disabled = false;
     return;
   }
-  if (SELECTED_ROOM === ROOM_ALL) {
-    if (!slashPickerActive()) slashPickerOpen();
-    else slashPickerUpdate();
+
+  // Slash mode: picker stays open while typing
+  if (!slashPickerActive()) slashPickerOpen();
+  else slashPickerUpdate();
+
+  if (intent.validationError === 'no-room') {
     _showSlashError('Select a room first');
     sendBtn.disabled = true;
     return;
   }
-  if (!slashPickerActive()) slashPickerOpen();
-  else slashPickerUpdate();
-  const parsed = parseSlashMessage(input.value);
-  if (!parsed.slashCommand) {
+  if (intent.validationError === 'incomplete') {
     _hideSlashError();
     sendBtn.disabled = true;
     return;
   }
-  if (!parsed.target) {
+  if (intent.validationError === 'no-target') {
     _showSlashError('specify @agent or @all');
     sendBtn.disabled = true;
     return;
@@ -45,110 +132,114 @@ function _refreshSlashState() {
   sendBtn.disabled = false;
 }
 
+// ─── send — dispatch on intent.mode ────────────────────────────────────
+
 async function send() {
-  const text = input.value.trim();
-  const image = pendingImageUrl;
-  if (!text && !image) return;
+  const intent = detectIntent(captureComposerSnapshot());
 
-  // Slash mode bypass: PTY-direct, bypasses channel.
-  if (isSlashMode(input.value)) {
-    if (SELECTED_ROOM === ROOM_ALL) return;
-    const parsed = parseSlashMessage(input.value);
-    if (!parsed.slashCommand || !parsed.target) return;
-    sendBtn.disabled = true;
-    try {
-      const ok = await sendSlash(parsed);
-      if (ok) {
-        input.value = '';
-        autoGrow();
-        slashPickerClose();
-        _hideSlashError();
-      }
-    } finally {
-      sendBtn.disabled = false;
-      input.focus();
+  // Slash and shift-tab: keep their own input-clear-on-success semantics.
+  // Interrupt and chat: clear input immediately before fetch.
+  switch (intent.mode) {
+    case 'slash':
+      return _dispatchSlash(intent);
+    case 'shift-tab':
+      return _dispatchShiftTab(intent);
+    case 'interrupt':
+      return _dispatchInterrupt(intent);
+    case 'chat':
+      return _dispatchChat(intent);
+  }
+}
+
+async function _dispatchSlash(intent) {
+  if (intent.validationError) return; // _refreshSlashState already surfaced it
+  sendBtn.disabled = true;
+  try {
+    const ok = await sendSlash(intent.parsed);
+    if (ok) {
+      input.value = '';
+      autoGrow();
+      slashPickerClose();
+      _hideSlashError();
     }
+  } finally {
+    sendBtn.disabled = false;
+    input.focus();
+  }
+}
+
+async function _dispatchShiftTab(intent) {
+  if (intent.validationError === 'no-room') {
+    _showSlashError('Select a room first');
     return;
   }
-
-  // Shift+Tab bypass: sends `\x1B[Z` to cycle claude modes; same room rules as slash.
-  if (isShiftTabMode(input.value)) {
-    if (SELECTED_ROOM === ROOM_ALL) {
-      _showSlashError('Select a room first');
-      return;
-    }
-    const parsed = parseShiftTab(input.value);
-    if (!parsed.target) {
-      _showSlashError('specify @agent or @all');
-      return;
-    }
-    sendBtn.disabled = true;
-    try {
-      const ok = await sendShiftTab(parsed);
-      if (ok) {
-        input.value = '';
-        autoGrow();
-        _hideSlashError();
-      }
-    } finally {
-      sendBtn.disabled = false;
-      input.focus();
-    }
+  if (intent.validationError === 'no-target') {
+    _showSlashError('specify @agent or @all');
     return;
   }
+  sendBtn.disabled = true;
+  try {
+    const ok = await sendShiftTab(intent.parsed);
+    if (ok) {
+      input.value = '';
+      autoGrow();
+      _hideSlashError();
+    }
+  } finally {
+    sendBtn.disabled = false;
+    input.focus();
+  }
+}
 
-  const mode = targetEl.value || 'auto';
-
-  // "!"-prefixed targets route through /interrupts.
-  if (mode.startsWith('!')) {
-    const toAgent = mode.slice(1);
-    if (!text) {
-      addMessage({ from: 'system', to: HUMAN_NAME, text: 'Interrupt text required.', ts: '' });
-      return;
-    }
-    if (text.length > 500) {
-      addMessage({ from: 'system', to: HUMAN_NAME, text: 'Interrupt text must be 500 chars or fewer.', ts: '' });
-      return;
-    }
-    if (image) {
-      addMessage({ from: 'system', to: HUMAN_NAME, text: 'Attachments not supported on interrupts (dropped).', ts: '' });
-    }
-    sendBtn.disabled = true;
-    input.value = '';
-    autoGrow();
-    clearAttachment();
-    hideMentionPopover();
-    try {
-      const r = await authedFetch('/interrupts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from: HUMAN_NAME, to: toAgent, text }),
-      });
-      if (!r.ok) {
-        const err = await parseErrorBody(r);
-        addMessage({ from: 'system', to: HUMAN_NAME, text: `Interrupt failed: ${err}`, ts: '' });
-      }
-    } catch (e) {
-      addMessage({ from: 'system', to: HUMAN_NAME, text: `Interrupt error: ${e?.message ?? e}`, ts: '' });
-    } finally {
-      sendBtn.disabled = false;
-      input.focus();
-    }
+async function _dispatchInterrupt(intent) {
+  if (intent.validationError === 'no-text') {
+    addMessage({ from: 'system', to: HUMAN_NAME, text: 'Interrupt text required.', ts: '' });
     return;
   }
+  if (intent.validationError === 'too-long') {
+    addMessage({ from: 'system', to: HUMAN_NAME, text: 'Interrupt text must be 500 chars or fewer.', ts: '' });
+    return;
+  }
+  if (intent.hasImage) {
+    addMessage({ from: 'system', to: HUMAN_NAME, text: 'Attachments not supported on interrupts (dropped).', ts: '' });
+  }
+  sendBtn.disabled = true;
+  input.value = '';
+  autoGrow();
+  clearAttachment();
+  hideMentionPopover();
+  try {
+    const r = await authedFetch('/interrupts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: HUMAN_NAME, to: intent.toAgent, text: intent.text }),
+    });
+    if (!r.ok) {
+      const err = await parseErrorBody(r);
+      addMessage({ from: 'system', to: HUMAN_NAME, text: `Interrupt failed: ${err}`, ts: '' });
+    }
+  } catch (e) {
+    addMessage({ from: 'system', to: HUMAN_NAME, text: `Interrupt error: ${e?.message ?? e}`, ts: '' });
+  } finally {
+    sendBtn.disabled = false;
+    input.focus();
+  }
+}
 
-  const mentions = parseMentions(text);
-  let body = { text, image };
-  if (mode === 'auto') {
-    if (mentions.length) body.targets = mentions;
+async function _dispatchChat(intent) {
+  if (intent.validationError === 'empty') return;
+
+  let body = { text: intent.text, image: intent.image };
+  if (intent.targetMode === 'auto') {
+    if (intent.mentions.length) body.targets = intent.mentions;
     else body.target = 'all';
   } else {
-    body.target = mode;
+    body.target = intent.targetMode;
   }
   // Hub requires room scope on broadcasts ("all" is ambiguous across projects).
   if ((body.target === 'all' || (Array.isArray(body.targets) && body.targets.length === 0))
-      && SELECTED_ROOM !== ROOM_ALL) {
-    body.room = SELECTED_ROOM;
+      && intent.room !== ROOM_ALL) {
+    body.room = intent.room;
   }
 
   sendBtn.disabled = true;
@@ -176,6 +267,8 @@ async function send() {
     input.focus();
   }
 }
+
+// ─── Input event wiring (unchanged) ────────────────────────────────────
 
 input.addEventListener('keydown', (e) => {
   const mentionOpen = mentionPop.classList.contains('open');
@@ -228,3 +321,8 @@ input.addEventListener('click', updateMentionPopover);
 input.addEventListener('blur', () => setTimeout(() => { hideMentionPopover(); slashPickerClose(); }, 150));
 
 sendBtn.addEventListener('click', () => send());
+
+// Export detectIntent + captureComposerSnapshot for the contract test.
+// (Classic-script load — these become globals on window.)
+window.detectIntent = detectIntent;
+window.captureComposerSnapshot = captureComposerSnapshot;
