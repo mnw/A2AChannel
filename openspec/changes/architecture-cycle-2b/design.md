@@ -238,3 +238,16 @@ Add one integration scenario to `tests/integration/pty-plumbing.test.ts`: "spawn
 - **Does `XtermBinder` own the resize-cycle SIGWINCH dance for dev-channels prompt auto-dismiss, or does that stay in `PtyEvents` (which sees the output stream)?** Argument for both ways; default to `PtyEvents` (output-scan triggers SIGWINCH; SIGWINCH is a PTY event, not an xterm event) unless smoke-testing reveals a cleaner shape.
 - **Should the `tests/smoke/tab-lifecycle.md` checklist add a 5th scenario for `pty_capture_turn` interaction?** Capture is invoked from the chat composer's slash-command flow, not the Tab itself, so probably not — but verify during grilling that no Tab-lifecycle event interrupts an in-flight capture.
 - **Is the `ctx` shape for renderer factories the same across all three Kinds, or do they need different ctx subsets?** Default is one shared `ctx` shape; pre-grill verifies via the strawman whether any Kind needs a field the others don't (in which case extra fields are fine — TypeScript-flavor structural typing handles "this Kind uses fewer fields").
+
+## Closing — last planned architectural cycle
+
+**2b is the planned terminus of the architecture-skill arc.** No `architecture-cycle-2c` is on the roadmap. The post-2a code audit surfaced six deepening opportunities; two (#1 Kind cards triplicated, #6 SSE event dispatch) were already covered by 2b's `kind-rendering` capability. Two (#4 Composer mode dispatch, #5 `pty_spawn` extractions) are folded into this cycle. The remaining two (#2 `paths.rs` carve, #3 `AppConfig` struct collapse) are explicitly **filed as known friction, not actioned** — catalogued in `docs/architecture/known-friction.md`.
+
+**Rationale:** The architecture-skill cadence has high cost on this single-developer codebase. Cycle 2a took ~2 weeks of test-agent disruption to fix CLAUDE.md hard rules that had degraded into convention-enforced invariants. 2b's ~3 weeks (6 commits + 1-week soak + 1-week test-agent settle) close the remaining load-bearing items (Webview KindRenderer parity with the Hub-side LedgerEntity carve from 2a; Composer mode-discrimination bug class; the `pty_spawn` silent-failure correctness gap). Beyond 2b, every audit finding lands at the polish end of the curve — LOC reductions, test-surface improvements, organizational cleanups. None of them address bug classes or convention-enforced invariants. Continuing the architecture-skill loop would consume feature-delivery time on diminishing-return cleanups.
+
+**Discipline rule for future audits (recorded for self-enforcement):** Audit findings get filed in `docs/architecture/known-friction.md`. A finding becomes a cycle only if it meets at least one of:
+- Addresses a CLAUDE.md hard rule currently convention-enforced.
+- Eliminates a real production bug class observed in the wild.
+- Closes a structural gap in test coverage that the per-helper rule was explicitly designed to prevent (the gap #5 closes).
+
+Audits that surface only LOC-reduction, test-surface, or organizational-locality improvements DO NOT trigger cycles — they accumulate in the friction log. If `lib.rs` or `pty.rs` is being touched for an unrelated feature reason, opportunistically address the relevant friction entries while you're already there. Don't open a refactor branch for them.
