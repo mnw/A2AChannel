@@ -628,6 +628,106 @@ pub fn pane_current_path(agent: &str) -> Result<PathBuf, String> {
     Ok(PathBuf::from(trimmed))
 }
 
+// ─── CaptureTransaction: RAII wrapper for the geometry/pipe-pane state ────────
+//
+// `pty_capture_turn` previously open-coded cleanup at every error-exit branch
+// (~7 sites). RAII via `Drop` makes cleanup automatic on every exit path —
+// success, error, panic. `TmuxRunner` trait lets tests substitute a fake so
+// the Drop logic can be panic-tested without real tmux.
+
+/// Tmux command runner — `RealTmux` for production, `FakeTmux` for tests.
+pub trait TmuxRunner: Send + Sync {
+    fn run(&self, args: &[&str]) -> Result<String, String>;
+}
+
+/// Production runner — delegates to the file-scope `tmux_run` (uses the resolved
+/// tmux binary + the per-process tmux socket).
+pub struct RealTmux;
+impl TmuxRunner for RealTmux {
+    fn run(&self, args: &[&str]) -> Result<String, String> {
+        tmux_run(args)
+    }
+}
+
+/// RAII transaction wrapping the two pieces of tmux state `pty_capture_turn`
+/// mutates: window-size geometry (manual + resize 240×100) and pipe-pane on/off.
+/// `Drop` restores both in canonical order regardless of how the scope exits
+/// (success, `?` propagation, panic unwind).
+///
+/// Cleanup order — pipe-pane DISABLE before geometry-restore. Disabling pipe
+/// first stops the capture stream from recording the redraw bytes that the
+/// geometry-restore triggers; the .log file ends at the last in-stream byte
+/// rather than carrying trailing resize noise.
+pub struct CaptureTransaction<'a> {
+    agent: &'a str,
+    runner: &'a dyn TmuxRunner,
+    pipe_on: bool,
+    geometry_set: bool,
+}
+
+impl<'a> CaptureTransaction<'a> {
+    pub fn new(agent: &'a str, runner: &'a dyn TmuxRunner) -> Self {
+        Self { agent, runner, pipe_on: false, geometry_set: false }
+    }
+
+    /// Set window-size=manual + resize to CAPTURE_COLS × CAPTURE_ROWS.
+    /// On success, the geometry-restore step runs in Drop.
+    pub fn set_geometry(&mut self, cols: u16, rows: u16) -> Result<(), String> {
+        self.runner
+            .run(&["set-option", "-w", "-t", self.agent, "window-size", "manual"])
+            .map_err(|e| format!("set window-size manual: {e}"))?;
+        self.geometry_set = true; // mark BEFORE resize so a failed resize still gets cleaned up
+        let cols_s = cols.to_string();
+        let rows_s = rows.to_string();
+        self.runner
+            .run(&["resize-window", "-t", self.agent, "-x", &cols_s, "-y", &rows_s])
+            .map_err(|e| format!("resize-window: {e}"))?;
+        Ok(())
+    }
+
+    /// Turn pipe-pane on, redirecting output to `cat >> <log_path>`.
+    /// On success, the pipe-pane-disable step runs in Drop.
+    pub fn enable_pipe(&mut self, log_path: &std::path::Path) -> Result<(), String> {
+        // Single-quote the path; escape any single quotes inside it.
+        let pipe_target = format!(
+            "cat >> '{}'",
+            log_path.to_string_lossy().replace('\'', r"'\''")
+        );
+        self.runner
+            .run(&["pipe-pane", "-o", "-t", self.agent, &pipe_target])
+            .map_err(|e| format!("pipe-pane on: {e}"))?;
+        self.pipe_on = true;
+        Ok(())
+    }
+}
+
+impl<'a> Drop for CaptureTransaction<'a> {
+    fn drop(&mut self) {
+        // Pipe FIRST so the geometry-restore redraw doesn't pollute the capture file.
+        if self.pipe_on {
+            if let Err(e) = self.runner.run(&["pipe-pane", "-t", self.agent]) {
+                eprintln!("[capture] Drop/pipe-pane-off (best-effort): {e}");
+            }
+        }
+        if self.geometry_set {
+            // CRITICAL ORDER: resize -A FIRST then `latest`; resize-window pins
+            // window-size=manual implicitly; setting `latest` first would be undone.
+            if let Err(e) = self.runner.run(&["resize-window", "-t", self.agent, "-A"]) {
+                eprintln!("[capture] Drop/resize -A (best-effort): {e}");
+            }
+            if let Err(e) = self.runner.run(&["set-option", "-w", "-u", "-t", self.agent, "window-size"]) {
+                eprintln!("[capture] Drop/window-size-unset (best-effort): {e}");
+            }
+            if let Err(e) = self.runner.run(&["set-option", "-w", "-t", self.agent, "window-size", "latest"]) {
+                eprintln!("[capture] Drop/window-size latest (best-effort): {e}");
+            }
+            if let Err(e) = self.runner.run(&["refresh-client", "-t", self.agent, "-S"]) {
+                eprintln!("[capture] Drop/refresh-client (best-effort): {e}");
+            }
+        }
+    }
+}
+
 // pty_capture_turn — deterministic single-turn TUI capture (geometry + pipe-pane + completion markers).
 const CAPTURE_COLS: u16 = 240;
 const CAPTURE_ROWS: u16 = 100;
@@ -747,80 +847,42 @@ pub fn pty_capture_turn(
     std::fs::create_dir_all(&cap_dir)
         .map_err(|e| format!("mkdir {}: {e}", cap_dir.display()))?;
 
-    let cleanup_geometry = || {
-        // CRITICAL ORDER: resize FIRST then `latest`; resize-window pins window-size=manual implicitly.
-        if let Err(e) = tmux_run(&["resize-window", "-t", &agent, "-A"]) {
-            eprintln!("[capture] resize -A failed: {e}");
-        }
-        let _ = tmux_run(&["set-option", "-w", "-u", "-t", &agent, "window-size"]);
-        if let Err(e) = tmux_run(&["set-option", "-w", "-t", &agent, "window-size", "latest"]) {
-            eprintln!("[capture] restore window-size failed: {e}");
-        }
-        if let Err(e) = tmux_run(&["refresh-client", "-t", &agent, "-S"]) {
-            eprintln!("[capture] refresh-client failed: {e}");
-        }
-    };
-    let cleanup_pipe = || {
-        let _ = tmux_run(&["pipe-pane", "-t", &agent]);
-    };
+    // RAII: every `?` below + every implicit drop + every panic unwind triggers
+    // cleanup automatically. No manual cleanup-on-error branches needed.
+    let real_tmux = RealTmux;
+    let mut tx = CaptureTransaction::new(&agent, &real_tmux);
 
-    // Geometry FIRST so resize redraw doesn't pollute the captured stream.
-    if let Err(e) = tmux_run(&["set-option", "-w", "-t", &agent, "window-size", "manual"]) {
-        return Err(format!("set window-size manual: {e}"));
-    }
-    if let Err(e) = tmux_run(&[
-        "resize-window", "-t", &agent,
-        "-x", &CAPTURE_COLS.to_string(),
-        "-y", &CAPTURE_ROWS.to_string(),
-    ]) {
-        cleanup_geometry();
-        return Err(format!("resize-window: {e}"));
-    }
+    // Geometry FIRST so the resize redraw doesn't pollute the captured stream.
+    tx.set_geometry(CAPTURE_COLS, CAPTURE_ROWS)?;
     std::thread::sleep(std::time::Duration::from_millis(CAPTURE_RESIZE_SETTLE_MS));
 
     let start_ms = epoch_ms();
     let log_path = cap_dir.join(format!("turn-{start_ms}.log"));
-    if let Err(e) = std::fs::write(&log_path, b"") {
-        cleanup_geometry();
-        return Err(format!("touch {}: {e}", log_path.display()));
-    }
+    std::fs::write(&log_path, b"")
+        .map_err(|e| format!("touch {}: {e}", log_path.display()))?;
 
     // pipe-pane BEFORE inject so we don't miss leading bytes.
-    let pipe_target = format!(
-        "cat >> '{}'",
-        log_path.to_string_lossy().replace('\'', r"'\''")
-    );
-    if let Err(e) = tmux_run(&["pipe-pane", "-o", "-t", &agent, &pipe_target]) {
-        cleanup_geometry();
-        return Err(format!("pipe-pane on: {e}"));
-    }
+    tx.enable_pipe(&log_path)?;
 
-    let bytes = input.as_bytes().to_vec();
-    let write_result = (|| -> Result<(), String> {
+    // Inject the input bytes into the agent's PTY.
+    {
         let handle_arc = {
             let map = state.0.lock().unwrap();
-            map.get(&agent).cloned().ok_or_else(|| format!("unknown agent: {agent}"))?
+            map.get(&agent)
+                .cloned()
+                .ok_or_else(|| format!("unknown agent: {agent}"))?
         };
         let mut h = handle_arc.lock().unwrap();
-        h.writer.write_all(&bytes).map_err(|e| format!("write: {e}"))?;
+        let bytes = input.as_bytes();
+        h.writer
+            .write_all(bytes)
+            .map_err(|e| format!("write: {e}"))?;
         h.writer.flush().map_err(|e| format!("flush: {e}"))?;
-        Ok(())
-    })();
-    if let Err(e) = write_result {
-        cleanup_pipe();
-        cleanup_geometry();
-        return Err(format!("inject: {e}"));
     }
 
     let mut buf: Vec<u8> = Vec::with_capacity(8192);
-    let mut file_handle = match std::fs::File::open(&log_path) {
-        Ok(f) => f,
-        Err(e) => {
-            cleanup_pipe();
-            cleanup_geometry();
-            return Err(format!("open {}: {e}", log_path.display()));
-        }
-    };
+    let mut file_handle = std::fs::File::open(&log_path)
+        .map_err(|e| format!("open {}: {e}", log_path.display()))?;
     let inject_instant = std::time::Instant::now();
     let deadline = inject_instant + std::time::Duration::from_millis(timeout);
     let mut last_change = inject_instant;
@@ -870,20 +932,20 @@ pub fn pty_capture_turn(
     }
     let final_status = status.unwrap_or("timeout");
 
-    cleanup_pipe();
-    cleanup_geometry();
-
+    // CaptureTransaction `tx` drops at end of scope — pipe-pane off + geometry restored.
     // Timeouts retained for forensics; only prune on success.
     if final_status != "timeout" {
         prune_captures(&cap_dir, CAPTURE_KEEP_RECENT);
     }
 
-    Ok(CaptureResult {
+    let result = CaptureResult {
         log_path: log_path.to_string_lossy().to_string(),
         start_ms,
         end_ms: epoch_ms(),
         status: final_status.to_string(),
-    })
+    };
+    drop(tx); // explicit, to make the cleanup-before-return ordering visible to readers
+    Ok(result)
 }
 
 // Idempotent heal so a stuck pane (e.g. interrupted capture left window-size=manual) self-heals.
@@ -1003,6 +1065,205 @@ mod capture_tests {
         let remaining: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
         assert_eq!(remaining.len(), 2);
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod capture_transaction_tests {
+    //! Tests for `CaptureTransaction` Drop behavior. Uses a fake `TmuxRunner` that
+    //! records calls in a `RefCell<Vec<...>>` — no real tmux required.
+
+    use super::{CaptureTransaction, TmuxRunner};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    /// Records every `run` call. `Mutex` (not `RefCell`) because TmuxRunner: Send + Sync.
+    struct FakeTmux {
+        calls: Mutex<Vec<Vec<String>>>,
+        /// If `Some`, the Nth call (1-indexed) returns Err with this message.
+        /// Used to test that Drop is panic-safe when a cleanup arm itself fails.
+        fail_on_call: Option<(usize, String)>,
+    }
+    impl FakeTmux {
+        fn new() -> Self {
+            Self { calls: Mutex::new(Vec::new()), fail_on_call: None }
+        }
+        fn calls(&self) -> Vec<Vec<String>> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+    impl TmuxRunner for FakeTmux {
+        fn run(&self, args: &[&str]) -> Result<String, String> {
+            let mut calls = self.calls.lock().unwrap();
+            calls.push(args.iter().map(|s| s.to_string()).collect());
+            let call_idx = calls.len();
+            if let Some((n, msg)) = &self.fail_on_call {
+                if *n == call_idx {
+                    return Err(msg.clone());
+                }
+            }
+            Ok(String::new())
+        }
+    }
+
+    fn args_match(call: &[String], expected: &[&str]) -> bool {
+        if call.len() != expected.len() {
+            return false;
+        }
+        call.iter().zip(expected.iter()).all(|(a, b)| a == b)
+    }
+
+    fn count_calls_starting_with(calls: &[Vec<String>], prefix: &str) -> usize {
+        calls.iter().filter(|c| c.first().map(String::as_str) == Some(prefix)).count()
+    }
+
+    #[test]
+    fn set_geometry_records_window_size_manual_and_resize() {
+        let fake = FakeTmux::new();
+        {
+            let mut tx = CaptureTransaction::new("alice", &fake);
+            tx.set_geometry(240, 100).unwrap();
+        }
+        let calls = fake.calls();
+        // set-option window-size manual
+        assert!(calls.iter().any(|c| args_match(c, &["set-option", "-w", "-t", "alice", "window-size", "manual"])));
+        // resize-window -x 240 -y 100
+        assert!(calls.iter().any(|c| args_match(c, &["resize-window", "-t", "alice", "-x", "240", "-y", "100"])));
+    }
+
+    #[test]
+    fn drop_restores_geometry_when_set() {
+        let fake = FakeTmux::new();
+        {
+            let mut tx = CaptureTransaction::new("alice", &fake);
+            tx.set_geometry(240, 100).unwrap();
+        } // tx drops here
+        let calls = fake.calls();
+        // Cleanup sequence in declared order: resize -A, window-size unset, window-size latest, refresh-client
+        assert!(calls.iter().any(|c| args_match(c, &["resize-window", "-t", "alice", "-A"])),
+            "expected resize -A in cleanup; got {calls:?}");
+        assert!(calls.iter().any(|c| args_match(c, &["set-option", "-w", "-u", "-t", "alice", "window-size"])),
+            "expected window-size unset; got {calls:?}");
+        assert!(calls.iter().any(|c| args_match(c, &["set-option", "-w", "-t", "alice", "window-size", "latest"])),
+            "expected window-size latest; got {calls:?}");
+        assert!(calls.iter().any(|c| args_match(c, &["refresh-client", "-t", "alice", "-S"])),
+            "expected refresh-client; got {calls:?}");
+    }
+
+    #[test]
+    fn drop_disables_pipe_when_enabled() {
+        let fake = FakeTmux::new();
+        {
+            let mut tx = CaptureTransaction::new("alice", &fake);
+            tx.enable_pipe(&PathBuf::from("/tmp/test.log")).unwrap();
+        }
+        let calls = fake.calls();
+        // pipe-pane -o -t alice 'cat >> /tmp/test.log'  (the enable)
+        let enable = calls.iter().find(|c|
+            c.len() >= 4
+            && c[0] == "pipe-pane"
+            && c[1] == "-o"
+            && c[2] == "-t"
+            && c[3] == "alice"
+        );
+        assert!(enable.is_some(), "expected pipe-pane enable; got {calls:?}");
+        // pipe-pane -t alice   (the disable, 3 args)
+        let disable = calls.iter().find(|c|
+            args_match(c, &["pipe-pane", "-t", "alice"])
+        );
+        assert!(disable.is_some(), "expected pipe-pane disable; got {calls:?}");
+    }
+
+    #[test]
+    fn drop_runs_cleanup_in_pipe_then_geometry_order() {
+        let fake = FakeTmux::new();
+        {
+            let mut tx = CaptureTransaction::new("alice", &fake);
+            tx.set_geometry(240, 100).unwrap();
+            tx.enable_pipe(&PathBuf::from("/tmp/test.log")).unwrap();
+        }
+        let calls = fake.calls();
+        let pipe_disable_pos = calls.iter().position(|c|
+            args_match(c, &["pipe-pane", "-t", "alice"])
+        ).expect("pipe disable should run");
+        let geometry_restore_pos = calls.iter().position(|c|
+            args_match(c, &["resize-window", "-t", "alice", "-A"])
+        ).expect("geometry restore should run");
+        assert!(pipe_disable_pos < geometry_restore_pos,
+            "pipe disable must run BEFORE geometry restore (avoids resize redraw landing in capture file); \
+            pipe@{pipe_disable_pos} vs geometry@{geometry_restore_pos}: {calls:?}");
+    }
+
+    #[test]
+    fn drop_skips_cleanup_when_state_was_never_set() {
+        let fake = FakeTmux::new();
+        {
+            let _tx = CaptureTransaction::new("alice", &fake);
+            // Never called set_geometry or enable_pipe.
+        }
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 0, "Drop must be a no-op when nothing was enabled; got {calls:?}");
+    }
+
+    #[test]
+    fn drop_runs_on_panic_unwind() {
+        // The panic-path test the audit explicitly called out. Uses catch_unwind +
+        // AssertUnwindSafe (FakeTmux contains Mutex which is !UnwindSafe).
+        // Standard panic-hook suppression is NOT needed because we're inside a `#[test]`
+        // and the catch_unwind absorbs the panic before the test runner sees it.
+
+        let fake = FakeTmux::new();
+        let fake_ref = &fake; // borrow that lives across the closure
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let mut tx = CaptureTransaction::new("alice", fake_ref);
+            tx.set_geometry(240, 100).unwrap();
+            tx.enable_pipe(&PathBuf::from("/tmp/panic.log")).unwrap();
+            panic!("INTENTIONAL PANIC FROM TEST");
+        }));
+
+        // The closure panicked.
+        assert!(result.is_err(), "closure should have panicked");
+
+        // BUT — Drop ran during unwind. Both cleanup arms recorded their tmux calls.
+        let calls = fake.calls();
+        assert!(count_calls_starting_with(&calls, "pipe-pane") >= 2,
+            "expected pipe-pane enable + disable on panic-unwind; got {calls:?}");
+        assert!(calls.iter().any(|c| args_match(c, &["resize-window", "-t", "alice", "-A"])),
+            "expected geometry restore on panic-unwind; got {calls:?}");
+        assert!(calls.iter().any(|c| args_match(c, &["set-option", "-w", "-t", "alice", "window-size", "latest"])),
+            "expected window-size latest on panic-unwind; got {calls:?}");
+    }
+
+    #[test]
+    fn drop_continues_when_one_cleanup_arm_fails() {
+        // Critical invariant: a panic-safe cleanup arm. If `resize-window -A` returns Err,
+        // the SUBSEQUENT cleanup arms must still run. Drop uses if-let-Err + eprintln rather
+        // than `?` propagation specifically so a single tmux failure doesn't strand the
+        // session in window-size=manual.
+        let fake = FakeTmux {
+            calls: Mutex::new(Vec::new()),
+            // Fail call #3 (set_geometry uses calls 1+2; pipe-disable in Drop is call #3 OR
+            // resize-window -A is call #3 depending on what we set). Sequence with both
+            // pipe+geometry enabled: 1=set-option manual, 2=resize 240×100, 3=pipe-pane on,
+            // 4=pipe-pane off (Drop), 5=resize -A (Drop). Fail #5 to test geometry mid-cleanup.
+            fail_on_call: Some((5, "synthetic tmux failure".to_string())),
+        };
+        {
+            let mut tx = CaptureTransaction::new("alice", &fake);
+            tx.set_geometry(240, 100).unwrap();
+            tx.enable_pipe(&PathBuf::from("/tmp/x.log")).unwrap();
+        }
+        let calls = fake.calls();
+        // Despite the failure at call #5, calls #6 and #7 (window-size unset/latest) and #8
+        // (refresh-client) MUST have been attempted.
+        assert!(calls.iter().any(|c| args_match(c, &["set-option", "-w", "-u", "-t", "alice", "window-size"])),
+            "expected window-size unset AFTER a failed cleanup arm; got {calls:?}");
+        assert!(calls.iter().any(|c| args_match(c, &["set-option", "-w", "-t", "alice", "window-size", "latest"])),
+            "expected window-size latest AFTER a failed cleanup arm; got {calls:?}");
+        assert!(calls.iter().any(|c| args_match(c, &["refresh-client", "-t", "alice", "-S"])),
+            "expected refresh-client AFTER a failed cleanup arm; got {calls:?}");
     }
 }
 
