@@ -84,9 +84,14 @@ export async function handleSend(req: Request, deps: ChatDeps): Promise<Response
       ? targets[0]
       : targets.join(",");
 
-  const entryRoom =
-    scopeRoom ??
-    (targets.length === 1 ? deps.agents.get(targets[0])?.room ?? null : null);
+  // Multi-target without explicit scopeRoom: stamp the entry with the shared
+  // target room when one exists, so the chat lands in that room only instead
+  // of leaking into every room view (room===null behaves as "show everywhere").
+  let entryRoom: string | null = scopeRoom;
+  if (!entryRoom && targets.length > 0) {
+    const rooms = new Set(targets.map((t) => deps.agents.get(t)?.room ?? null));
+    if (rooms.size === 1) entryRoom = [...rooms][0] ?? null;
+  }
 
   const entry: Entry = {
     from: "you",

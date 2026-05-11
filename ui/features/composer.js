@@ -191,8 +191,7 @@ async function _dispatchChat(intent) {
   } else {
     body.target = intent.targetMode;
   }
-  if ((body.target === 'all' || (Array.isArray(body.targets) && body.targets.length === 0))
-      && intent.room !== ROOM_ALL) {
+  if (intent.room !== ROOM_ALL) {
     body.room = intent.room;
   }
 
