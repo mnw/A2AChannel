@@ -11,6 +11,8 @@ src-tauri/gen/
 
 # Bundled tmux binary (built via scripts/build-tmux.sh; ~1.1 MB static)
 src-tauri/resources/tmux
+# Bundled pi extension (rebuilt via scripts/build-sidecars.sh)
+src-tauri/resources/pi-extension.js
 
 # Compiled sidecar binaries (rebuilt via scripts/build-sidecars.sh)
 src-tauri/binaries/*

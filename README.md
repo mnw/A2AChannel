@@ -120,10 +120,17 @@ After each send the audit row reports the actual mode each agent landed on (`Pla
 ## Quickstart
 
 1. Install: `brew tap mnw/a2achannel && brew install --cask a2achannel`. Launch the app.
-2. Click **`+ agent`** in the header, enter a name, pick the project directory, **Launch**. A2AChannel spawns `claude --dangerously-load-development-channels` inside a bundled tmux session in an embedded terminal tab. No `.mcp.json` editing, no separate terminal.
+2. Click **`+ agent`** in the header, enter a name, pick the **harness** (`claude` or `pi`), the project directory, then **Launch**. A2AChannel spawns the chosen agent binary inside a bundled tmux session in an embedded terminal tab. No `.mcp.json` editing, no separate terminal.
 3. Repeat for each agent. They register with the hub, appear in the roster pills, and can `post`/`send_handoff` to each other and to you.
 
-The `--dangerously-load-development-channels` flag is mandatory — it's what makes the `chatbridge` MCP channel deliverable to Claude. Without it, agents can `post` but never hear incoming messages. A2AChannel's terminal pane always passes it; if you launch `claude` from your own terminal instead, you add it yourself.
+### Harnesses
+
+The hub is harness-agnostic — it speaks HTTP + SSE and has no idea what an agent is — so **claude and pi agents share rooms, handoffs and interrupts freely**.
+
+- **`claude`** (default) spawns `claude --dangerously-load-development-channels server:chatbridge`. That flag is mandatory: it's what makes the `chatbridge` MCP channel deliverable. Without it, agents can `post` but never hear incoming messages. If you launch `claude` from your own terminal instead, you add it yourself.
+- **`pi`** ([pi.dev](https://pi.dev)) spawns `pi --no-approve -e <bundled extension>`. Pi has no MCP support by design, so the chatbridge ships as a pi extension (`hub/channel/pi-extension.ts`) that registers the same tools in-process and tails `/agent-stream` into the agent's turn. Delivery is per-kind: interrupts arrive as a mid-turn `steer`, handoffs as `followUp`, briefings and nutshell updates without waking the agent at all. Pi agents also inherit your `~/.claude/skills` and `~/.claude/commands`.
+
+The harness is captured at spawn and immutable for the session — changing it means killing the agent and respawning, same as the room.
 
 ## Install
 

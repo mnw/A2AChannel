@@ -57,6 +57,8 @@ struct AppConfig {
     #[serde(default)]
     claude_path: Option<String>,
     #[serde(default)]
+    pi_path: Option<String>,
+    #[serde(default)]
     anthropic_api_key: Option<String>,
     #[serde(default)]
     theme: Option<String>,
@@ -322,6 +324,12 @@ fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(trimmed)
 }
 
+fn default_pi_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("Library/pnpm/bin/pi")
+}
+
 pub fn resolve_claude_path() -> PathBuf {
     let cfg = load_config();
     let raw = cfg
@@ -331,6 +339,18 @@ pub fn resolve_claude_path() -> PathBuf {
     match raw {
         Some(s) => expand_tilde(&s),
         None => default_claude_path(),
+    }
+}
+
+pub fn resolve_pi_path() -> PathBuf {
+    let cfg = load_config();
+    let raw = cfg
+        .pi_path
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    match raw {
+        Some(s) => expand_tilde(&s),
+        None => default_pi_path(),
     }
 }
 
@@ -556,6 +576,10 @@ fn render_seed_yaml(
          # Path to the claude binary. ~ expands to your home dir.\n\
          claude_path: {claude_path}\n\
          \n\
+         # Path to the pi binary, for agents spawned with the \"pi\" runtime.\n\
+         # Default: ~/Library/pnpm/bin/pi\n\
+         # pi_path: ~/Library/pnpm/bin/pi\n\
+         \n\
          # Optional. Exported to spawned claude sessions if non-empty.\n\
          {api_line}\n\
          \n\
@@ -688,6 +712,34 @@ pub(crate) fn resolve_tmux_bin() -> Result<PathBuf, String> {
     }
     Err(format!(
         "tmux not found near {} (checked {:?})",
+        exe_dir.display(),
+        candidates
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+    ))
+}
+
+// Mirrors resolve_tmux_bin: bundle.resources preserves source structure, so the
+// extension can land in either layout depending on bundled vs `tauri dev`.
+pub(crate) fn resolve_pi_extension() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe_dir = exe
+        .parent()
+        .ok_or_else(|| "no exe dir".to_string())?
+        .to_path_buf();
+    let candidates = [
+        exe_dir.join("../Resources/resources/pi-extension.js"),
+        exe_dir.join("../Resources/pi-extension.js"),
+        exe_dir.join("../../resources/pi-extension.js"),
+    ];
+    for p in &candidates {
+        if p.exists() {
+            return Ok(p.clone());
+        }
+    }
+    Err(format!(
+        "pi-extension.js not found near {} (checked {:?}) — run ./scripts/build-sidecars.sh",
         exe_dir.display(),
         candidates
             .iter()
@@ -990,6 +1042,27 @@ fn slash_discover_for_agent(agent: String) -> Vec<SlashCommandEntry> {
     let mut out: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     let cwd = pty::pane_current_path(&agent).ok();
     let home = dirs::home_dir();
+
+    // pi addresses skills as `/skill:<name>` and has no MCP prompts; its prompt
+    // templates are the same `~/.claude/commands` files the spawn passes through.
+    if matches!(pty::pane_harness(&agent), pty::Harness::Pi) {
+        let cwd_str = cwd.as_deref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+        let mut skills: std::collections::BTreeMap<String, String> = Default::default();
+        for root in pty::pi_skill_roots(&cwd_str) {
+            scan_skills_dir(&root, &mut skills);
+        }
+        for (name, desc) in skills {
+            out.insert(format!("skill:{name}"), desc);
+        }
+        for root in [cwd.as_deref(), home.as_deref()].into_iter().flatten() {
+            scan_commands_dir(&root.join(".claude/commands"), &mut out);
+        }
+        return out
+            .into_iter()
+            .map(|(name, description)| SlashCommandEntry { name, description })
+            .collect();
+    }
+
     let roots: Vec<PathBuf> = [cwd.as_deref(), home.as_deref()]
         .into_iter()
         .flatten()
@@ -1139,6 +1212,7 @@ pub fn run() {
             pty::pty_resize,
             pty::pty_kill,
             pty::pty_list,
+            pty::pty_harness,
             pty::resolve_default_room,
             pty::pty_spawn_shell,
             pty::pty_shell_exists,

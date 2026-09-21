@@ -186,10 +186,23 @@
     <h2>Launch terminal for agent</h2>
     <p>
       Creates a tmux session on <code>~/Library/Application Support/A2AChannel/tmux.sock</code>
-      running <code>claude</code> in the chosen directory.
+      running the chosen harness in the chosen directory.
     </p>
     <label>Agent name</label>
     <input id="spawn-agent-input" spellcheck="false" autocomplete="off" placeholder="alice" style="width:100%;" />
+    <div id="spawn-harness-row" style="margin-top:6px;">
+      <label style="text-transform:uppercase; letter-spacing:0.1em; font-family:var(--mono); font-size:10px; color:var(--text-dim);">Harness</label>
+      <div style="display:flex; flex-direction:column; gap:6px; margin-top:4px; font-family:var(--sans); font-size:12px; color:var(--text-muted);">
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; text-transform:none; letter-spacing:0;">
+          <input type="radio" name="spawn-harness" value="claude" id="spawn-harness-claude" checked />
+          <span><code style="font-family:var(--mono); font-size:11px; color:var(--text);">claude</code> Claude Code</span>
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; text-transform:none; letter-spacing:0;">
+          <input type="radio" name="spawn-harness" value="pi" id="spawn-harness-pi" />
+          <span><code style="font-family:var(--mono); font-size:11px; color:var(--text);">pi</code> pi.dev</span>
+        </label>
+      </div>
+    </div>
     <label>Working directory</label>
     <div style="display:flex; gap:6px; align-items:center;">
       <input id="spawn-cwd-input" spellcheck="false" autocomplete="off" placeholder="/Users/you/project" style="flex:1;" readonly />

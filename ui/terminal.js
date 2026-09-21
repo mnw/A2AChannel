@@ -31,6 +31,7 @@
   const spawnAgentEl  = document.getElementById('spawn-agent-input');
   const spawnCwdEl    = document.getElementById('spawn-cwd-input');
   const spawnCwdPick  = document.getElementById('spawn-cwd-pick');
+  const spawnHarnessPi = document.getElementById('spawn-harness-pi');
   const spawnRoomEl     = document.getElementById('spawn-room-input');
   const spawnRoomBtn    = document.getElementById('spawn-room-picker-btn');
   const spawnRoomMenu   = document.getElementById('spawn-room-menu');
@@ -546,7 +547,7 @@
     if (tt) sendResize(tt);
   }
 
-  async function handleLaunch(agent, cwd, sessionMode = null, room = null) {
+  async function handleLaunch(agent, cwd, sessionMode = null, room = null, harness = null) {
     if (!_paneEnabled) {
       _paneEnabled = true;
       applyPaneClass();
@@ -562,7 +563,7 @@
     t._launchStage = stage;
     try {
       stage('invoke pty_spawn');
-      await ptySpawn(agent, cwd, sessionMode, room);
+      await ptySpawn(agent, cwd, sessionMode, room, harness);
       stage('pty_spawn returned');
       rememberCwd(agent, cwd);
       t.cwd = cwd;
@@ -759,8 +760,9 @@
     let sessionMode = null;
     if (spawnSessionContinue?.checked) sessionMode = 'continue';
     else if (spawnSessionResume?.checked) sessionMode = 'resume';
+    const harness = spawnHarnessPi?.checked ? 'pi' : 'claude';
     closeSpawnModal();
-    await handleLaunch(agent, cwd, sessionMode, room || null);
+    await handleLaunch(agent, cwd, sessionMode, room || null, harness);
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && spawnModal.classList.contains('open')) closeSpawnModal();

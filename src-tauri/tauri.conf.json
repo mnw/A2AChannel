@@ -36,7 +36,8 @@
       "binaries/a2a-bin"
     ],
     "resources": [
-      "resources/tmux"
+      "resources/tmux",
+      "resources/pi-extension.js"
     ],
     "macOS": {
       "minimumSystemVersion": "11.0"

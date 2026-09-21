@@ -29,5 +29,15 @@ chmod +x "src-tauri/binaries/a2a-bin-${TRIPLE}"
 codesign --remove-signature "src-tauri/binaries/a2a-bin-${TRIPLE}" 2>/dev/null || true
 codesign --force --sign - "src-tauri/binaries/a2a-bin-${TRIPLE}"
 
-ls -lh src-tauri/binaries/
+# Pi runtime adapter. Not a compiled binary: pi loads it as a JS module via
+# `pi -e`, so it ships as a bundled single file under resources/. Bundling (vs
+# shipping the .ts tree) means no import resolution and no TS parse at spawn.
+echo "bundling pi-extension..."
+mkdir -p src-tauri/resources
+bun build ./hub/channel/pi-extension.ts \
+  --target=node \
+  --format=esm \
+  --outfile src-tauri/resources/pi-extension.js
+
+ls -lh src-tauri/binaries/ src-tauri/resources/
 echo "done."

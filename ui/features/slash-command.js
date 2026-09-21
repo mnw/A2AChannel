@@ -54,8 +54,44 @@ const BUILTIN_SLASH_COMMANDS = new Map([
   ['/vim',               'Toggle vim editing mode in the input'],
 ]);
 
+// pi's built-ins are a different set entirely — no /clear, no /mcp, no /hooks;
+// session handling is a tree (/fork, /tree, /clone) rather than a linear resume.
+// Extracted from pi 0.86.1's command registry; re-check on pi upgrades, same as
+// the claude list above.
+const PI_BUILTIN_SLASH_COMMANDS = new Map([
+  ['/bug',            'Report a bug to the Pi developers'],
+  ['/changelog',      'Show changelog entries'],
+  ['/clone',          'Duplicate the current session at the current position'],
+  ['/compact',        'Manually compact the session context'],
+  ['/copy',           'Copy last agent message to clipboard'],
+  ['/export',         'Export session (HTML default, or .html/.jsonl path)'],
+  ['/fork',           'Create a new fork from a previous user message'],
+  ['/hotkeys',        'Show all keyboard shortcuts'],
+  ['/import',         'Import and resume a session from a JSONL file'],
+  ['/login',          'Configure provider authentication'],
+  ['/logout',         'Remove provider authentication'],
+  ['/model',          'Select model (opens selector UI)'],
+  ['/name',           'Set session display name'],
+  ['/new',            'Start a new session (wipes current context)'],
+  ['/reload',         'Reload extensions, skills, prompts, themes, context files'],
+  ['/resume',         'Resume a different session'],
+  ['/scoped-models',  'Enable/disable models for Ctrl+P cycling'],
+  ['/session',        'Show session info and stats'],
+  ['/settings',       'Open settings menu'],
+  ['/share',          'Share session as a secret GitHub gist'],
+  ['/thinking',       'Set thinking level'],
+  ['/tree',           'Navigate session tree (switch branches)'],
+  ['/trust',          'Save project trust decision for future sessions'],
+]);
+
 // Wipes context per Agent; multi-Agent send requires confirm modal.
 const DESTRUCTIVE_SLASH_COMMANDS = new Set(['/clear', '/compact']);
+// pi has no /clear; /new is the context-wiping equivalent.
+const PI_DESTRUCTIVE_SLASH_COMMANDS = new Set(['/new', '/compact']);
+
+function builtinsFor(harness) {
+  return harness === 'pi' ? PI_BUILTIN_SLASH_COMMANDS : BUILTIN_SLASH_COMMANDS;
+}
 
 // Fast panel-rendering commands safe for pty_capture_turn. Anything outside
 // this set is multi-turn / conversational and would mis-fire on quiescence or
@@ -191,7 +227,14 @@ function _resolveTargets(target, roomName) {
 // =============================================================================
 
 async function _discoverCommandsForAgent(agent) {
-  const map = new Map(BUILTIN_SLASH_COMMANDS);
+  // Harness is read from tmux, so it stays correct across app restarts.
+  let harness = 'claude';
+  try {
+    harness = (await tauriInvoke('pty_harness', { agent })) || 'claude';
+  } catch {
+    // Best-effort: fall back to the claude built-ins.
+  }
+  const map = new Map(builtinsFor(harness));
   try {
     const items = await tauriInvoke('slash_discover_for_agent', { agent });
     if (Array.isArray(items)) {
@@ -507,7 +550,11 @@ async function sendSlash({ slashCommand, target, args }) {
     return false;
   }
 
-  if (DESTRUCTIVE_SLASH_COMMANDS.has(slashCommand) && resolved.length > 1) {
+  // A multi-agent send can span both harnesses, so gate on the union: each
+  // command is only ever offered by the harness that has it, so this is exact.
+  const isDestructive =
+    DESTRUCTIVE_SLASH_COMMANDS.has(slashCommand) || PI_DESTRUCTIVE_SLASH_COMMANDS.has(slashCommand);
+  if (isDestructive && resolved.length > 1) {
     if (typeof askConfirm !== 'function') return false;
     const ok = await askConfirm(
       `Run ${slashCommand}?`,

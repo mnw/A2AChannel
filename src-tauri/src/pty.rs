@@ -13,6 +13,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::{
     app_data_dir, resolve_a2a_bin, resolve_anthropic_api_key, resolve_claude_path,
+    resolve_pi_extension, resolve_pi_path,
     resolve_tmux_bin,
 };
 
@@ -161,6 +162,205 @@ fn write_mcp_config_for(agent: &str, room: &str) -> Result<PathBuf, String> {
         .map_err(|e| format!("write {}: {e}", path.display()))?;
     let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     Ok(path)
+}
+
+/// Which agent binary backs a session. Captured at spawn; immutable for the
+/// session's life (changing it means killing the agent and respawning, same as
+/// room). Unknown values are rejected rather than defaulted, so a UI typo
+/// surfaces instead of silently launching the wrong harness.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Harness {
+    Claude,
+    Pi,
+}
+
+impl Harness {
+    fn parse(raw: Option<&str>) -> Result<Self, String> {
+        match raw.map(str::trim).filter(|s| !s.is_empty()) {
+            None | Some("claude") => Ok(Harness::Claude),
+            Some("pi") => Ok(Harness::Pi),
+            Some(other) => Err(format!("invalid harness: {other}")),
+        }
+    }
+}
+
+fn agent_command(
+    agent: &str,
+    room: &str,
+    cwd: &str,
+    session_mode: Option<&str>,
+    harness: Harness,
+) -> Result<String, String> {
+    match harness {
+        Harness::Claude => claude_command(agent, room, session_mode),
+        Harness::Pi => pi_command(agent, room, cwd, session_mode),
+    }
+}
+
+/// Claude Code's skills and commands are reusable by pi as-is: pi implements the
+/// same Agent Skills standard (`<dir>/SKILL.md` + name/description frontmatter)
+/// and its prompt templates are shaped like `~/.claude/commands/*.md`. Sharing
+/// them is what makes a pi agent feel native in a Claude-centric setup rather
+/// than starting blank.
+///
+/// Only existing paths are passed — pi emits a diagnostic for paths that aren't
+/// there, and a blank project has neither `.claude/skills` nor `.claude/commands`.
+///
+/// ORDER IS LOAD-BEARING: pi resolves name collisions first-one-wins (see
+/// `loadSkills` in pi's core/skills.js), so project-local dirs are passed BEFORE
+/// user-level ones to match Claude Code's "closest scope wins" precedence.
+/// Pi's own `~/.pi/agent/skills` defaults load before any `--skill` path, so a
+/// name present there still beats both; `--skill` is additive, never exclusive.
+/// Which harness a live session is running, read back from tmux rather than
+/// kept in memory: sessions outlive the app, so a restart must still be able to
+/// tell a pi pane from a claude one. `pi_command()` puts `CHATBRIDGE_AGENT=` at
+/// the head of the command, which claude's never has.
+pub fn pane_harness(agent: &str) -> Harness {
+    if !valid_agent_name(agent) {
+        return Harness::Claude;
+    }
+    match tmux_run(&["list-panes", "-t", agent, "-F", "#{pane_start_command}"]) {
+        Ok(cmd) if cmd.contains("CHATBRIDGE_AGENT=") => Harness::Pi,
+        _ => Harness::Claude,
+    }
+}
+
+#[tauri::command]
+pub fn pty_harness(agent: String) -> String {
+    match pane_harness(&agent) {
+        Harness::Pi => "pi".to_string(),
+        Harness::Claude => "claude".to_string(),
+    }
+}
+
+/// Skill roots a pi agent actually sees: the same `--skill` paths
+/// `claude_resource_flags` passes, plus pi's own package and project roots.
+/// Kept next to that function so the two can't drift apart.
+pub fn pi_skill_roots(cwd: &str) -> Vec<PathBuf> {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    let cwd_path = PathBuf::from(cwd);
+    let mut roots = vec![
+        cwd_path.join(".claude/skills"),
+        home.join(".claude/skills"),
+        cwd_path.join(".pi/skills"),
+        home.join(".pi/agent/skills"),
+    ];
+    for key in SHARED_CLAUDE_PLUGINS {
+        if let Some(p) = claude_plugin_skills_dir(key) {
+            roots.push(p);
+        }
+    }
+    // Installed pi packages ship skills under <pkg>/skills.
+    for base in [home.join(".pi/agent/npm/node_modules"), home.join(".pi/agent/git")] {
+        collect_package_skill_dirs(&base, &mut roots, 0);
+    }
+    roots.retain(|p| p.is_dir());
+    roots
+}
+
+// Package layouts differ (npm is flat-ish, git clones nest by host/org/repo),
+// so walk a bounded depth looking for a `skills` dir rather than guessing.
+fn collect_package_skill_dirs(dir: &PathBuf, out: &mut Vec<PathBuf>, depth: usize) {
+    if depth > 3 {
+        return;
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if !p.is_dir() {
+            continue;
+        }
+        let skills = p.join("skills");
+        if skills.is_dir() {
+            out.push(skills);
+        }
+        collect_package_skill_dirs(&p, out, depth + 1);
+    }
+}
+
+/// Resolve a Claude plugin's ACTIVE skills dir via `installed_plugins.json`.
+///
+/// The plugin cache keeps stale version directories next to the live one (figma
+/// currently has both 2.2.107 and 2.2.111), so pointing `--skill` at the plugin
+/// dir would load every skill twice and trip pi's name-collision diagnostics on
+/// each launch. `installed_plugins.json` is the only record of which version is
+/// actually installed, and it survives plugin updates — unlike a pinned path.
+fn claude_plugin_skills_dir(plugin_key: &str) -> Option<PathBuf> {
+    let manifest = dirs::home_dir()?.join(".claude/plugins/installed_plugins.json");
+    let raw = std::fs::read_to_string(manifest).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let install_path = v
+        .get("plugins")?
+        .get(plugin_key)?
+        .as_array()?
+        .iter()
+        .find_map(|e| e.get("installPath")?.as_str())?;
+    let skills = PathBuf::from(install_path).join("skills");
+    skills.is_dir().then_some(skills)
+}
+
+/// Claude plugins whose skills are shared with pi agents. Explicit rather than a
+/// wildcard over the cache: every entry costs ~155 tokens of system prompt in
+/// every request, so which plugins are worth that is a judgement call, not a
+/// sweep. Listed last so a same-named skill of the user's own still wins.
+const SHARED_CLAUDE_PLUGINS: &[&str] = &["figma@claude-plugins-official"];
+
+fn claude_resource_flags(cwd: &str) -> String {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    let cwd_path = PathBuf::from(cwd);
+    let candidates: [(&str, PathBuf); 4] = [
+        ("--skill", cwd_path.join(".claude/skills")),
+        ("--skill", home.join(".claude/skills")),
+        ("--prompt-template", cwd_path.join(".claude/commands")),
+        ("--prompt-template", home.join(".claude/commands")),
+    ];
+    let mut out = String::new();
+    for (flag, path) in &candidates {
+        if !path.is_dir() {
+            continue;
+        }
+        let escaped = path.to_string_lossy().replace('\'', r"'\''");
+        out.push_str(&format!("{flag} '{escaped}' "));
+    }
+    for key in SHARED_CLAUDE_PLUGINS {
+        if let Some(path) = claude_plugin_skills_dir(key) {
+            let escaped = path.to_string_lossy().replace('\'', r"'\''");
+            out.push_str(&format!("--skill '{escaped}' "));
+        }
+    }
+    out
+}
+
+// Pi has no MCP support by design, so the chatbridge ships as a pi extension
+// loaded with `-e` instead of an MCP config. Identity travels as env on the
+// command (tmux runs it through /bin/sh), which is what the extension reads.
+// `--no-approve` answers pi's "Trust project folder?" prompt deterministically
+// — no output-scanning like the claude dev-channels path needs.
+fn pi_command(
+    agent: &str,
+    room: &str,
+    cwd: &str,
+    session_mode: Option<&str>,
+) -> Result<String, String> {
+    let ext = resolve_pi_extension()?;
+    let ext_str = ext.to_string_lossy().replace('\'', r"'\''");
+    let mode_part = match session_mode {
+        Some("continue") => "--continue ",
+        Some("resume")   => "--resume ",
+        Some(other)      => return Err(format!("invalid session_mode: {other}")),
+        None             => "",
+    };
+    let pi_path = resolve_pi_path();
+    let pi_escaped = pi_path.to_string_lossy().replace('\'', r"'\''");
+    let agent_escaped = agent.replace('\'', r"'\''");
+    let room_escaped = room.replace('\'', r"'\''");
+    let shared = claude_resource_flags(cwd);
+    Ok(format!(
+        "CHATBRIDGE_AGENT='{agent_escaped}' CHATBRIDGE_ROOM='{room_escaped}' '{pi_escaped}' {mode_part}--no-approve {shared}-e '{ext_str}'"
+    ))
 }
 
 // Direct-exec (no shell), so claude_path must be absolute — comes from config.yml.
@@ -396,10 +596,12 @@ pub fn pty_spawn(
     cwd: String,
     session_mode: Option<String>,
     room: Option<String>,
+    harness: Option<String>,
 ) -> Result<(), String> {
     if !valid_agent_name(&agent) {
         return Err(format!("invalid agent name: {agent}"));
     }
+    let harness = Harness::parse(harness.as_deref())?;
 
     let resolved_room = match room.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(r) if valid_room_label(r) => r.to_string(),
@@ -414,7 +616,7 @@ pub fn pty_spawn(
         }
     }
 
-    let spawn_cmd = claude_command(&agent, &resolved_room, session_mode.as_deref())?;
+    let spawn_cmd = agent_command(&agent, &resolved_room, &cwd, session_mode.as_deref(), harness)?;
     let api_key = resolve_anthropic_api_key();
     let lang = resolve_utf8_locale();
 
@@ -1198,7 +1400,7 @@ mod capture_transaction_tests {
 mod spawn_argv_tests {
     //! Pure-function tests for `build_spawn_argv`. No tmux required.
 
-    use super::build_spawn_argv;
+    use super::{build_spawn_argv, claude_resource_flags, Harness};
 
     #[test]
     fn argv_starts_with_new_session_form() {
@@ -1254,6 +1456,58 @@ mod spawn_argv_tests {
         // Sanity: no element of argv splits the spawn_cmd into multiple tokens.
         let occurrences = argv.iter().filter(|s| s.contains("--mcp-config")).count();
         assert_eq!(occurrences, 1, "spawn_cmd appears multiple times — got split: {argv:?}");
+    }
+
+    #[test]
+    fn claude_resource_flags_only_emits_paths_that_exist() {
+        // A blank project has no .claude/ at all — pi must not be handed paths
+        // that aren't there, or it emits a diagnostic on every launch.
+        let empty = std::env::temp_dir().join("a2a-res-flags-empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let flags = claude_resource_flags(empty.to_str().unwrap());
+        assert!(
+            !flags.contains(&empty.to_string_lossy().to_string()),
+            "emitted a project path that does not exist: {flags}"
+        );
+
+        // With .claude/skills present, it is passed as --skill.
+        let proj = std::env::temp_dir().join("a2a-res-flags-proj");
+        std::fs::create_dir_all(proj.join(".claude/skills")).unwrap();
+        let flags = claude_resource_flags(proj.to_str().unwrap());
+        assert!(
+            flags.contains("--skill") && flags.contains(".claude/skills"),
+            "project skills dir not picked up: {flags}"
+        );
+        assert!(
+            !flags.contains("--prompt-template ") || !flags.contains("a2a-res-flags-proj/.claude/commands"),
+            "emitted a commands dir that does not exist: {flags}"
+        );
+
+        let _ = std::fs::remove_dir_all(&empty);
+        let _ = std::fs::remove_dir_all(&proj);
+    }
+
+    #[test]
+    fn harness_parse_accepts_known_values_and_rejects_typos() {
+        assert_eq!(Harness::parse(None).unwrap(), Harness::Claude);
+        assert_eq!(Harness::parse(Some("")).unwrap(), Harness::Claude);
+        assert_eq!(Harness::parse(Some("claude")).unwrap(), Harness::Claude);
+        assert_eq!(Harness::parse(Some(" pi ")).unwrap(), Harness::Pi);
+        // A UI typo must surface, not silently launch the default harness.
+        assert!(Harness::parse(Some("pi.dev")).is_err());
+        assert!(Harness::parse(Some("gpt")).is_err());
+    }
+
+    #[test]
+    fn pi_spawn_cmd_survives_argv_join_like_claude_does() {
+        // Same v0.6 regression guard as the claude path: the pi command carries
+        // quoted paths (extension, binary) AND env prefixes, so it must reach
+        // tmux as ONE argv element or /bin/sh's argv-join splits it.
+        let spawn_cmd = "CHATBRIDGE_AGENT='alice' CHATBRIDGE_ROOM='EU Space' '/Users/me/bin/pi' --no-approve -e '/Users/me/Some Path/pi-extension.js'";
+        let argv = build_spawn_argv("alice", "/tmp", "en_US.UTF-8", None, spawn_cmd);
+        assert_eq!(argv.last().unwrap(), spawn_cmd);
+        let occurrences = argv.iter().filter(|s| s.contains("--no-approve")).count();
+        assert_eq!(occurrences, 1, "spawn_cmd got split: {argv:?}");
     }
 
     #[test]

@@ -5,12 +5,14 @@
     return window.__TAURI__?.core?.invoke || window.__TAURI_INTERNALS__?.invoke;
   }
 
-  async function ptySpawn(agent, cwd, sessionMode, room) {
+  async function ptySpawn(agent, cwd, sessionMode, room, harness) {
     const args = { agent, cwd };
     if (sessionMode === 'resume' || sessionMode === 'continue') {
       args.sessionMode = sessionMode;
     }
     if (room) args.room = room;
+    // Omitted → Rust defaults to claude, so existing call sites keep working.
+    if (harness) args.harness = harness;
     return _invoke()('pty_spawn', args);
   }
   async function ptyWrite(agent, b64) {
