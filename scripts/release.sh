@@ -92,6 +92,7 @@ cd "$REPO_ROOT"
 command -v gh   >/dev/null || die "gh CLI not found — brew install gh"
 command -v jq   >/dev/null || die "jq not found — brew install jq"
 command -v bun  >/dev/null || die "bun not found — see bun.sh"
+command -v cargo >/dev/null || die "cargo not found — install Rust via rustup.rs"
 
 [[ -f scripts/install.sh ]] || die "scripts/install.sh not found (wrong cwd?)"
 
@@ -134,6 +135,19 @@ if [[ -f src-tauri/Cargo.toml ]]; then
   ' src-tauri/Cargo.toml > src-tauri/Cargo.toml.tmp \
     && mv src-tauri/Cargo.toml.tmp src-tauri/Cargo.toml
   ok "Cargo.toml → $VERSION"
+
+  # Cargo.lock carries the package version too, and only cargo can rewrite it.
+  # Refresh it HERE, before the commit — otherwise the build (step 4) rewrites
+  # it after the commit has been made and every release leaves the lock dirty
+  # for the next one to trip over. --workspace limits this to our own version
+  # line; --offline guarantees no dependency drift sneaks into a release.
+  if [[ -f src-tauri/Cargo.lock ]]; then
+    cargo update --manifest-path src-tauri/Cargo.toml --workspace --offline >/dev/null 2>&1 \
+      || die "cargo update failed — cannot sync Cargo.lock to $VERSION"
+    grep -q "^version = \"${VERSION}\"$" <(grep -A1 '^name = "a2achannel"$' src-tauri/Cargo.lock) \
+      || die "Cargo.lock did not pick up $VERSION"
+    ok "Cargo.lock → $VERSION"
+  fi
 fi
 
 # ─── commit version bump ────────────────────────────────────────────────────
