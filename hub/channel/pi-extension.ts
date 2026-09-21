@@ -12,6 +12,7 @@
 // CHATBRIDGE_AGENT / CHATBRIDGE_ROOM as env on the tmux session.
 
 import { CHATBRIDGE_TOOLS } from "./tools";
+import { buildInstructions } from "./instructions";
 import { resolveHub, URL_PATH, TOKEN_PATH } from "./hub-client";
 
 const AGENT = (process.env.CHATBRIDGE_AGENT ?? "").trim();
@@ -168,6 +169,19 @@ async function tail(pi: any, signal: AbortSignal): Promise<void> {
   }
 }
 
+function firstSentence(text: string): string {
+  const cut = text.indexOf(". ");
+  return (cut === -1 ? text : text.slice(0, cut + 1)).trim();
+}
+
+// The one behaviour a channel agent must not get wrong: terminal output is
+// private. Only `post` is visible to the room.
+const POST_GUIDELINES = [
+  "Your terminal output is visible to NOBODY. Writing a reply as ordinary prose does not communicate it — the room never sees it.",
+  "To say anything to the human or another agent you MUST call the `post` tool. Narrating that you have posted is not posting.",
+  "Reply via `post` whenever a message is addressed to you, even to acknowledge or decline.",
+];
+
 export default function (pi: any): void {
   if (!AGENT) {
     console.error("[channel] CHATBRIDGE_AGENT not set — chatbridge inactive");
@@ -179,6 +193,11 @@ export default function (pi: any): void {
       name: t.name,
       label: t.name,
       description: t.description,
+      // Without promptSnippet pi OMITS custom tools from the system prompt's
+      // "Available tools" section entirely — the model then has no standing
+      // reason to reach for them. First sentence of the description is enough.
+      promptSnippet: `${t.name} — ${firstSentence(t.description)}`,
+      promptGuidelines: t.name === "post" ? POST_GUIDELINES : undefined,
       // Pi accepts the same JSON Schema the MCP path advertises — no conversion.
       parameters: t.inputSchema,
       async execute(_toolCallId: string, params: Record<string, unknown>) {
@@ -190,6 +209,14 @@ export default function (pi: any): void {
 
   // Pi's docs name session_start/session_shutdown as the place for background
   // resources; a reload fires session_start again, so abort the previous tail.
+  // MCP passes `instructions` to the Server constructor; pi's equivalent is to
+  // append to the rendered system prompt each turn. Same source of truth
+  // (instructions.json) so the two harnesses cannot drift.
+  const CHANNEL_INSTRUCTIONS = buildInstructions({ agent: AGENT, room: ROOM });
+  pi.on("before_agent_start", (event: { systemPrompt: string }) => ({
+    systemPrompt: `${event.systemPrompt}\n\n${CHANNEL_INSTRUCTIONS}`,
+  }));
+
   let ac: AbortController | null = null;
   pi.on("session_start", () => {
     ac?.abort();
