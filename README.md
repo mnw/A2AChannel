@@ -119,7 +119,7 @@ After each send the audit row reports the actual mode each agent landed on (`Pla
 
 ## Quickstart
 
-1. Install: `brew tap mnw/a2achannel && brew install --cask a2achannel`. Launch the app.
+1. Install: `brew tap mnw/a2achannel && brew trust mnw/a2achannel && brew install --cask a2achannel`. Launch the app.
 2. Click **`+ agent`** in the header, enter a name, pick the **harness** (`claude` or `pi`), the project directory, then **Launch**. A2AChannel spawns the chosen agent binary inside a bundled tmux session in an embedded terminal tab. No `.mcp.json` editing, no separate terminal.
 3. Repeat for each agent. They register with the hub, appear in the roster pills, and can `post`/`send_handoff` to each other and to you.
 
@@ -138,8 +138,11 @@ The harness is captured at spawn and immutable for the session — changing it m
 
 ```bash
 brew tap mnw/a2achannel
+brew trust mnw/a2achannel
 brew install --cask a2achannel
 ```
+
+`brew trust` is required: Homebrew refuses to load casks from third-party taps until you explicitly trust them. Without it the install fails with `Refusing to load cask … from untrusted tap`.
 
 Apple Silicon macOS only. `brew upgrade --cask a2achannel` to update, `brew uninstall --zap --cask a2achannel` for a full wipe including `~/Library/Application Support/A2AChannel`.
 
